@@ -206,6 +206,20 @@ deferred `plugin.json` licence key.
 - Don't add a gate without a test. Three fail-open bugs shipped in 0.2.0
   precisely because the gates had no tests.
 
+## Branch protection (2026-09-08)
+
+All five public repos carry an active ruleset on their default branch —
+`deletion` + `non_fast_forward`, i.e. the branch cannot be deleted or
+force-pushed. Verified by attempting a real force push against
+`devswarm-ledger-reference`: rejected with "Cannot force-push to this branch",
+remote unchanged.
+
+Direct pushes to the default branch still work — no PR requirement, no required
+status checks. That is deliberate for a solo maintainer; the gap this closes is
+history rewriting, which is what an append-only hash chain actually needs.
+Rulesets are free on public repos, which is why this was unavailable while the
+ledger was private (`devswarm-ledger/README.md` flags it as unmitigated on Free).
+
 ## Sibling repos
 
 - pxx (PyPI `pxx-orchestrator>=2.5.4`) — https://github.com/cdnwetzel/pxx
