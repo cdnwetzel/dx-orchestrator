@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dx-orchestrator"
+version = "0.1.0"
+description = "Sovereign orchestration layer for AI coding agents and GUI automation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Chris Wetzel" }]
+dependencies = [
+    "pxx-orchestrator>=2.5.4",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+opencv = ["opencv-python-headless"]
+ocr = ["pytesseract"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+dx = "dx.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
