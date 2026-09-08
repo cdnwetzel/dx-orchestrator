@@ -64,12 +64,28 @@ repos. `dx` must **conform** to them, not compete with them.
   are invalid — RL-003). Real signed approvals for T-0002/3/4/7 exist in that
   repo as reference examples.
 
-- **`cdnwetzel/camelid` / `qa/evidence-bundles/`** — the evidence bundle
-  layout (`camelid.public_evidence_bundle.v1`): directory named
-  `<test>-<utc-ts>-head-<sha>/` containing `README.md` (context + explicit
-  boundary), `manifest.json` (schema-versioned, source_head, model SHA, checks
-  map, timings, result), `SHA256SUMS` (portable tamper detector via
-  `sha256sum -c`), plus raw request/response/log artifacts.
+- **`cdnwetzel/camelid` / `qa/evidence-bundles/`** — 111 real evidence
+  bundles catalog what "receipted run" actually looks like when you scale
+  from one to many. Design lessons from surveying the archive:
+    - **Schema-per-family, not one-schema-fits-all.** 40+ distinct schema
+      names (`camelid.public_evidence_bundle.v1`,
+      `camelid.four_row_compact_current_head_public_evidence.v1`,
+      `camelid.backend_q8_stream_diagnostics_loop.v1`, …). Future dx
+      receipts should be `dx.role_task.v1`, `dx.gui_verification.v1`,
+      `dx.merge_gate.v1` — NOT one universal shape.
+    - **Stable core, family-specific tail.** ~150 unique keys observed
+      across bundles. The universal set: `schema`, `title`, `source_head`,
+      `generated_utc`, `result.passed`, `boundary` (explicit non-claims),
+      `checks{}` (name → {ok, path}). Everything else is family-specific.
+    - **`boundary` is non-negotiable.** Every serious bundle has an
+      explicit "what this does NOT prove." Same discipline as pxx's
+      RECEIPTS.md "Boundary" paragraph, in machine form.
+    - **Bundle = directory, not file.** README (human) + manifest.json
+      (machine) + SHA256SUMS (tamper) + raw artifacts. No PKI needed —
+      `sha256sum -c SHA256SUMS` is the verify step.
+    - **Directory name is load-bearing.** `<test>-<utc-ts>-head-<sha>/`
+      tells you what/when/against-what from the name alone; renaming
+      breaks SHA256SUMS.
 
 - **`cdnwetzel/pxx` / `docs/RECEIPTS.md`** — the *claims* register model:
   every public claim is Reproducible or Attested, has a dated record, a
