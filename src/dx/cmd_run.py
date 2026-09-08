@@ -115,6 +115,8 @@ def cmd_run(args) -> None:
     env["PXX_BASE_URL"] = route.endpoint
     if route.model:
         env["PXX_MODEL"] = route.model
+    if route.provider:
+        env["PXX_PROVIDER"] = route.provider
 
     pxx_bin = _resolve_pxx()
     if pxx_bin is None:
@@ -136,6 +138,7 @@ def cmd_run(args) -> None:
         print(f"  fit:           {card.fit.value}")
         print(f"  PXX_BASE_URL:  {route.endpoint}")
         print(f"  PXX_MODEL:     {route.model or '(unset, pxx default)'}")
+        print(f"  PXX_PROVIDER:  {route.provider or '(unset, pxx default: ollama)'}")
         print(f"  pxx:           {pxx_bin}")
         print(f"  command:       {pxx_bin} edit --scope {args.scope} [--commit] <prompt>")
         return

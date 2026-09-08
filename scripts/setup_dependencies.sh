@@ -101,23 +101,39 @@ if [ -f "${CONFIG_FILE}" ]; then
 else
     echo "📝 Creating default hardware_manifest.yml..."
     cat > "${CONFIG_FILE}" <<'YAML'
-# dx hardware routing manifest — edit to match your lab
+# dx hardware routing manifest — edit to match your lab.
+#
+# IMPORTANT: `endpoint` MUST NOT include a trailing /v1. pxx appends the
+# right suffix per `provider`:
+#   ollama   → {endpoint}/api/tags
+#   vllm     → {endpoint}/v1/models
+#   openai   → {endpoint}/v1/models
+# If you double the /v1, probes 404 and every task fails with MODEL_UNAVAILABLE.
+
 roles:
   backend-engineer:
-    endpoint: "http://t5810.lab:8004/v1"      # labrouter → T5810 (Qwen3.8-27B-FP8 on 2× A4500)
+    endpoint: "http://t5810.lab:8007"         # T5810 vLLM (Qwen3.8-27B-FP8)
+    provider: "vllm"
+    model: "qwen3.8-27b"
     description: "Bulk generation, ~33 tok/s"
   frontend-engineer:
-    endpoint: "http://asrock.lab:11434/v1"     # asrock (RTX 5060 Ti)
+    endpoint: "http://asrock.lab:11434"        # asrock Ollama (RTX 5060 Ti)
+    provider: "ollama"
+    model: "q36-moe:latest"
     description: "Fast UI/GUI generation"
   security-architect:
-    endpoint: "http://dgx.lab:8000/v1"      # DGX mesh
+    endpoint: "http://t5810.lab:8007"         # (DGX substitute — .100 offline)
+    provider: "vllm"
+    model: "qwen3.8-27b"
     description: "Heavy reasoning / certification"
   default:
-    endpoint: "http://localhost:11434/v1"
+    endpoint: "http://localhost:11434"
+    provider: "ollama"
     description: "Local Ollama fallback"
 
 gui_verification:
-  vlm_endpoint: "http://orin.lab:11434/api/generate"   # Orin Nano Qwen 2.5 VL 7B
+  vlm_endpoint: "http://orin.lab:11434/api/generate"   # Orin Nano Ollama
+  vlm_model: "qwen2.5vl:3b"
   ssh_host: "operator@orin.lab"
   screenshot_cmd: "import -window root -"                # ImageMagick
 
@@ -125,8 +141,8 @@ psoperator:
   observer_port: 8764
   gatekeeper_port: 8765
   executor_port: 8766
-  model_endpoint: "http://asrock.lab:11434/v1"
-  model_name: "ui-tars-1.5-7b"
+  model_endpoint: "http://asrock.lab:11434"
+  model_name: "q36-moe:latest"
   audit_log_path: "psoperator_audit.jsonl"
 YAML
     echo "⚠️  Edit ${CONFIG_FILE} to match your actual lab IPs."

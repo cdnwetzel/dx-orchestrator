@@ -10,6 +10,7 @@ import yaml
 class RoleRoute:
     endpoint: str
     model: Optional[str] = None
+    provider: Optional[str] = None  # "ollama" | "vllm" | "openai" | "openai-compatible"
 
 DEFAULT_CONFIG_PATH = Path("~/.config/dx/hardware_manifest.yml").expanduser()
 
@@ -52,10 +53,13 @@ def get_route_for_role(role_slug: str) -> RoleRoute:
     default_ep = default_cfg.get("endpoint", "http://localhost:11434/v1")
     default_model = default_cfg.get("model")
 
+    default_provider = default_cfg.get("provider")
+
     role_cfg = roles.get(role_slug) or {}
     return RoleRoute(
         endpoint=role_cfg.get("endpoint", default_ep),
         model=role_cfg.get("model", default_model),
+        provider=role_cfg.get("provider", default_provider),
     )
 
 
