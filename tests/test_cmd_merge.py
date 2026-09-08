@@ -227,3 +227,85 @@ def test_gate_verdicts_appear_in_decision_order_when_piped(fake_ledger, tmp_path
     assert "✅ Ledger chain verifies" in combined
     assert "❌" in combined
     assert combined.index("✅ Ledger chain verifies") < combined.index("❌")
+
+
+class TestPayloadDiagnosis:
+    """Stale and tampered are different failures with different remedies.
+
+    "Stale signature" tells the operator to re-sign against the current head.
+    That is the wrong advice — and actively unsafe — if the payload has been
+    altered rather than merely superseded. Every case here is correctly
+    *rejected* either way; what is under test is that the diagnosis matches.
+    """
+
+    def _write(self, merge, payload: bytes):
+        (merge.ledger / "approvals" / "T-TEST.code_review.msg").write_bytes(payload)
+
+    def test_a_genuinely_stale_head_says_stale(self, merge, capsys, stale_head):
+        self._write(merge, f"T-TEST{stale_head}code_review".encode())
+        with pytest.raises(SystemExit) as exc:
+            merge("T-TEST")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "Stale signature (RL-003)" in err
+        assert "Re-sign" in err
+
+    @pytest.mark.parametrize(
+        "middle,label",
+        [
+            (b"", "empty"),
+            (b"z" * 64, "non-hex"),
+            (b"a" * 10, "too short"),
+            (b"a" * 100, "too long"),
+            (b"A" * 64, "uppercase hex"),
+        ],
+    )
+    def test_a_malformed_head_is_not_called_stale(self, merge, capsys, middle, label):
+        self._write(merge, b"T-TEST" + middle + b"code_review")
+        with pytest.raises(SystemExit) as exc:
+            merge("T-TEST")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "Malformed approval payload" in err, f"{label}: {err}"
+        assert "Stale signature" not in err, f"{label}: misdiagnosed as stale"
+
+    def test_the_malformed_message_warns_against_re_signing(self, merge, capsys):
+        self._write(merge, b"T-TESTcode_review")
+        with pytest.raises(SystemExit):
+            merge("T-TEST")
+        assert "Do not re-sign" in capsys.readouterr().err
+
+    def test_the_malformed_message_names_the_file(self, merge, capsys):
+        self._write(merge, b"T-TESTcode_review")
+        with pytest.raises(SystemExit):
+            merge("T-TEST")
+        assert "T-TEST.code_review.msg" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "payload", [b"", b"T-TEST" + b"a" * 64, b"nonsense", b"code_reviewT-TEST"]
+    )
+    def test_unrecognisable_payloads_report_a_length_mismatch(self, merge, capsys, payload):
+        self._write(merge, payload)
+        with pytest.raises(SystemExit) as exc:
+            merge("T-TEST")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "does not match" in err
+        assert "bytes, found" in err
+
+    def test_every_bad_payload_is_still_rejected(self, merge, capsys, ledger_head):
+        """Diagnosis is cosmetic; refusing to merge is not. None of these may
+        reach the merge step."""
+        for payload in (
+            b"",
+            b"T-TESTcode_review",
+            b"T-TEST" + b"z" * 64 + b"code_review",
+            b"T-TEST" + b"a" * 64 + b"code_review\n",
+            f"T-OTHER{ledger_head}code_review".encode(),
+        ):
+            self._write(merge, payload)
+            with pytest.raises(SystemExit) as exc:
+                merge("T-TEST")
+            out = capsys.readouterr()
+            assert exc.value.code == 1, payload
+            assert "All RL-003 checks passed" not in out.out

@@ -5,6 +5,23 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-09-08
+
+### Fixed
+
+- **`dx merge` reported a malformed approval payload as a stale signature.** Any
+  payload of the form `<task_id><anything><role>` was diagnosed as "Stale
+  signature (RL-003) — re-sign after re-verifying the chain", including payloads
+  whose middle section was empty, non-hex, or the wrong length. Every such
+  payload was correctly *rejected*; the problem was the advice. "Stale" tells an
+  operator to re-sign against the current head, which is the wrong remedy for a
+  tampered file and quietly launders an alteration into a fresh valid signature.
+
+  Staleness is now claimed only when the middle section is a 64-character
+  lowercase hex ledger head. Anything else reports a malformed payload, names
+  the file, and says explicitly not to re-sign it. Unrecognisable payloads
+  report the expected and actual byte lengths.
+
 ## [0.5.0] — 2026-09-08
 
 Two fail-open defects in the governance layer, and the first check for the
@@ -260,6 +277,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.5.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.3.0...v0.4.0

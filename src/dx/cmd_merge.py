@@ -12,6 +12,7 @@ must appear in the order they were reached whether stdout is a tty or a pipe.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -82,6 +83,14 @@ def register_merge_subcommand(subparsers: SubParsers) -> None:
     parser.set_defaults(func=cmd_merge)
 
 
+_HEAD_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _looks_like_head(value: str) -> bool:
+    """A ledger head is a 64-character lowercase hex SHA-256 digest."""
+    return bool(_HEAD_RE.match(value))
+
+
 def _norm(name: str | None) -> str:
     """Case- and whitespace-insensitive compare for author vs signer names."""
     return (name or "").strip().lower()
@@ -146,19 +155,32 @@ def cmd_merge(args: argparse.Namespace) -> None:
         expected_msg = canonical_approval_message(args.task_id, current_head, role)
         actual_msg = msg_path.read_text(encoding="utf-8")
         if actual_msg != expected_msg:
-            # Distinguish stale head (RL-003) from tampered payload
+            # Stale and tampered are different failures with different
+            # remedies. "Stale" tells the operator to re-sign against the
+            # current head — the wrong and actively unsafe advice if the
+            # payload has been altered. Only claim staleness when the middle
+            # section actually looks like a ledger head.
             if actual_msg.startswith(args.task_id) and actual_msg.endswith(role):
                 signed_head = actual_msg[len(args.task_id):-len(role)]
-                if signed_head != current_head:
+                if _looks_like_head(signed_head) and signed_head != current_head:
                     _fail(
                         f"Stale signature (RL-003). Signed head "
                         f"{signed_head[:16]}… but current head is "
                         f"{current_head[:16]}…. Re-sign after re-verifying the "
                         f"chain."
                     )
+                if not _looks_like_head(signed_head):
+                    _fail(
+                        f"Malformed approval payload in {msg_path.name}: the "
+                        f"section between the task id and the role is not a "
+                        f"64-character hex ledger head "
+                        f"(found {len(signed_head)} chars). Do not re-sign this "
+                        f"— establish where it came from."
+                    )
             _fail(
-                "Signed message payload does not match "
-                f"'{args.task_id} + head + {role}'"
+                f"Signed message payload does not match "
+                f"'{args.task_id} + head + {role}'. Expected "
+                f"{len(expected_msg)} bytes, found {len(actual_msg)}."
             )
         _ok("Signed message binds task_id + current head + role.")
 
