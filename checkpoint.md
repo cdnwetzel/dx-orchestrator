@@ -101,6 +101,40 @@ uids with no comment field; revoked and expired keys passed the RL-003 gate; and
    fixed — it had been returning sentence fragments rather than whole
    prohibitions on every real card.
 
+## Go-live status — GO (2026-09-08, v0.6.2)
+
+Reviewed for public peer review and cleared, with scope stated.
+
+**Cleared on evidence, not assertion:**
+
+| | |
+| --- | --- |
+| Clean clone passes cold | ruff, `mypy --strict`, 327 tests, 91% coverage — verified from a fresh `git clone` |
+| RL-003 gate | proved against real revoked and expired GPG keys, not captured transcripts |
+| Live run | `dx run` generated working code on lab hardware at 0.6.2, exit 0 |
+| Privacy | 0 lab addresses in the tree **or** the full git history |
+| Legal | MIT, LICENSE ships inside the wheel |
+| Docs | version, env-override table, command table, tutorial transcripts and test count all machine-checked |
+| CI | 6 jobs, Python 3.11/3.12/3.13, GPG tests asserted to run rather than skip |
+
+**Scope of the GO.** Ready for peer review of *the control plane and its gates*.
+Not ready to be described as a working end-to-end factory — two pipeline stages
+are deliberately stubbed, and the repo says so in three places (`README.md`
+Status, `TUTORIAL.md` §9 and its closing boundary, `SECURITY.md` "Currently
+stubbed").
+
+**Known and stated, not blockers:**
+- `dx merge` verifies but does not merge or append to the ledger.
+- `dx run` does not write evidence bundles.
+- `dx verify-gui` has never run against a live desktop.
+- No all-green merge against the *live* ledger with a fresh RL-010 signature
+  (the gate does pass all-green against real keys in tests).
+- Two of four integrations are private repos — now flagged in the README's first
+  screen rather than at line 108.
+
+**What would flip this to NO-GO:** any of the above being *claimed* as working.
+The gates are honest as long as the stubs stay labelled.
+
 ## Next real work
 
 1. **Wire `TODO(ledger)` in `cmd_merge.py`** — the actual `git merge --no-ff`
