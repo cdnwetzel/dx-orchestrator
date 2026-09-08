@@ -239,3 +239,28 @@ class TestTutorialFidelity:
             "the `dx roles list --fit High` transcript in TUTORIAL.md no longer "
             "matches what that command prints:\n" + result.stdout
         )
+
+
+class TestTestCountClaim:
+    """The README cites a specific test count. That number is persuasive to a
+    reviewer, which is exactly why it must not be allowed to drift — so it is
+    checked against the real collected count rather than trusted.
+    """
+
+    @staticmethod
+    def _claimed() -> int:
+        match = re.search(r"(\d[\d,]*)\s+tests,\s*\n?including real-GPG", README)
+        if match is None:
+            match = re.search(r"(\d[\d,]*)\s+tests", README)
+        assert match, "README no longer states a test count"
+        return int(match.group(1).replace(",", ""))
+
+    def test_the_readme_count_matches_the_suite(self, request):
+        collected = len(request.session.items)
+        # `pytest -k` / single-file runs collect a subset; only assert on a full run.
+        if collected < 50:
+            pytest.skip("partial collection — only meaningful on a full run")
+        claimed = self._claimed()
+        assert claimed == collected, (
+            f"README claims {claimed} tests, the suite collects {collected}"
+        )

@@ -83,7 +83,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.6.1
+dx --version    # dx 0.6.2
 pytest          # all green
 ```
 
@@ -496,7 +496,7 @@ The lesson worth carrying out of 0.3.0: **a gate without a test is a claim, not 
 
 ---
 
-*Re-validated end to end on 2026-09-08 at dx `0.6.1`, from a Surface Pro 6 running
+*Re-validated end to end on 2026-09-08 at dx `0.6.2`, from a Surface Pro 6 running
 Ubuntu 24.04 in WSL2 against a vLLM endpoint (Qwen3.8-27B-FP8) on the LAN. Every
 transcript in §4–§8 was re-captured from that session, including a live `dx run`
 that generated working code on local hardware. The §6 transcript previously showed

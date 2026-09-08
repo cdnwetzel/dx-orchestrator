@@ -5,6 +5,19 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] — 2026-09-08
+
+### Added
+
+- **A "Before you clone" section at the top of the README.** Two of the four
+  integrations — `claude-sdlc-roles` and `devswarm-ledger` — are private repos,
+  and that fact was buried in the Dependencies section. A visitor would follow
+  the quick start and meet it as a 404. It is now the first thing after the
+  intro, with a table of what does and does not work without them, and a
+  pointer to the test suite as the surface built to be evaluated from outside.
+- The README's test count is now checked against the real collected count, so
+  a number a reviewer would reasonably trust cannot quietly drift.
+
 ## [0.6.1] — 2026-09-08
 
 Go-live pass. Every claim in `TUTORIAL.md` was re-run against the real lab and
@@ -338,6 +351,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.6.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.0...v0.5.1

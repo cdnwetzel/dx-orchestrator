@@ -18,6 +18,32 @@ binding constraint, and it stays with a named accountable human. Everything
 mechanical (role parsing, gate enforcement, hardware routing) runs LLM-free.
 **Every gate in `dx` is code, not a prompt.**
 
+## Before you clone
+
+Two of the four integrations — `claude-sdlc-roles` (the 38 role cards) and
+`devswarm-ledger` (the hash-chained ledger and GPG approvals) — are **private
+repositories**. That is worth knowing in the first thirty seconds rather than at
+the first 404.
+
+What that means in practice:
+
+|  | Without the private repos | With them |
+| --- | --- | --- |
+| Read the code and the design | ✅ | ✅ |
+| Run the full test suite | ✅ — it is hermetic by construction | ✅ |
+| `dx --version`, `dx roles list --path <your own cards>` | ✅ | ✅ |
+| `dx doctor` all-green | ❌ — it will correctly report the missing clones | ✅ |
+| `dx run`, `dx merge` against the real ledger | ❌ | ✅ |
+
+The test suite is the part built to be evaluated from outside: 327 tests,
+including real-GPG signature checks against committed keys, all runnable with no
+lab hardware, no keyring, no network and none of the private repos. If you are
+here to assess whether the gates hold, `pytest` is the honest surface.
+
+The role-card *format* is documented and the parser is exercised against
+synthetic cards in `tests/fixtures/roles/`, so `DX_ROLES_PATH` will happily point
+at your own deck.
+
 ## Quick start
 
 Ubuntu 24.04 and other PEP 668 systems refuse `pip install` outside a venv, so:
