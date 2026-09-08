@@ -58,7 +58,9 @@ Stated plainly, because a gate that overstates its coverage is worse than none:
 `dx merge` verifies but **does not yet perform the merge or append to the
 ledger**. Do not read a successful `dx merge` as "this was merged and recorded" —
 it means "this passed the signature gate." The `TODO(ledger)` in `cmd_merge.py`
-marks the boundary. Likewise `dx run` does not yet write evidence bundles.
+marks the boundary. `dx run` does write evidence bundles as of 0.9.0; they are
+tamper-evident (`sha256sum -c SHA256SUMS`) but unsigned — they prove a file was
+not altered since the bundle was written, not who wrote it.
 
 ## Verifying a release
 

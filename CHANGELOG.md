@@ -5,6 +5,57 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-09-08
+
+### Added
+
+- **`dx run` writes `dx.role_task.v1` evidence bundles.** ROADMAP §1.1, the
+  first of the two deliberate stubs to close. A bundle is a directory —
+  `README.md` for a human, `manifest.json` for a machine, `SHA256SUMS` for
+  tamper-evidence, and artifacts beside them: the injected prompt, the resolved
+  endpoint/model/provider, the scope diff, git status. Verification is
+  `sha256sum -c SHA256SUMS` on any POSIX box with no Python and no network.
+
+  Shape comes from `VISION.md § Reference formats`, drawn from surveying 111
+  real bundles in `cdnwetzel/camelid`. It was implemented, not redesigned.
+
+  Bundles land in `~/.local/state/dx/evidence` by default — deliberately outside
+  the repository under edit, so receipts never end up in the tree pxx is
+  committing. `--evidence-dir` and `DX_EVIDENCE_DIR` override; `--no-evidence`
+  skips emission, and skips the git probe with it so it genuinely costs nothing.
+
+  Three decisions worth naming:
+
+  - **Evidence must not perturb what it observes.** pxx's stdout is *not*
+    captured. `cmd_run` hands pxx the inherited fd deliberately, and interposing
+    a pipe changes what pxx sees — the same class of mistake as measuring a
+    circuit with a meter that loads it. The `boundary` block says the transcript
+    is absent rather than pretending otherwise.
+  - **Failed runs get bundles too.** A store that only records successes is a
+    highlight reel.
+  - **An unwritable receipt fails the run closed**, at `EXIT_ERROR` — not
+    `EXIT_TASK_FAILED`, which would report a task that succeeded as one that
+    failed. A receipted run that produced no receipt is not a receipted run.
+
+- **`boundary` is enforced, not documented.** `write_bundle` refuses to emit a
+  bundle whose boundary block is empty, and leaves nothing on disk when it
+  refuses. What a bundle claims is a `compliance-privacy` judgement and that
+  card is Anchored, so the wording is policy text carrying a comment saying so.
+
+- `docs/admissions/T-1101-evidence-bundles.md` — the task admission record this
+  work was done under, issued per the `tech-lead` card's seven-point format.
+  `backend-engineer` requires one as an input and there wasn't one; its absence
+  is why §1.1 was described rather than executable. First time dx's own
+  development has been governed by the deck dx enforces.
+
+### Fixed
+
+- Inserting the evidence hook split the `# unbounded:` justification from the
+  `subprocess.run` it annotates, and `test_every_subprocess_run_in_the_package_is_bounded`
+  caught it. The comment is back against its call. A justification that has
+  drifted away from the thing it justifies is worse than none — it reads as
+  covering the wrong line.
+
 ## [0.8.1] — 2026-09-08
 
 ### Fixed
@@ -522,6 +573,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.9.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.1...v0.7.2

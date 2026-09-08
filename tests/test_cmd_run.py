@@ -1,8 +1,11 @@
 """`dx run` — the Anchored hard-block and hardware routing."""
+import json
+
 import pytest
 
 from dx import cmd_run
 from dx.cli import build_parser
+from dx.evidence import EvidenceError
 
 
 @pytest.fixture(autouse=True)
@@ -110,7 +113,7 @@ def test_role_context_is_injected_into_the_pxx_prompt(monkeypatch):
         return Result()
 
     monkeypatch.setattr("dx.cmd_run.subprocess.run", fake_run)
-    _run("T-004", "--required_role", "widget-engineer", "-m", "build a widget", "--no-commit")
+    _run("T-004", "--no-evidence", "--required_role", "widget-engineer", "-m", "build a widget", "--no-commit")
 
     prompt = captured["cmd"][captured["cmd"].index("--message") + 1]
     assert "[ROLE: widget-engineer" in prompt
@@ -130,7 +133,7 @@ def test_routing_is_passed_to_pxx_as_environment(monkeypatch):
         "dx.cmd_run.subprocess.run",
         lambda cmd, env=None, **k: (captured.update(env=env), Result())[1],
     )
-    _run("T-005", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
+    _run("T-005", "--no-evidence", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
 
     env = captured["env"]
     assert env["PXX_BASE_URL"] == "http://vllm.invalid:8007"
@@ -148,10 +151,10 @@ def test_no_commit_omits_the_commit_flag(monkeypatch):
         "dx.cmd_run.subprocess.run",
         lambda cmd, env=None, **k: (captured.update(cmd=cmd), Result())[1],
     )
-    _run("T-006", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
+    _run("T-006", "--no-evidence", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
     assert "--commit" not in captured["cmd"]
 
-    _run("T-007", "--required_role", "widget-engineer", "-m", "x")
+    _run("T-007", "--no-evidence", "--required_role", "widget-engineer", "-m", "x")
     assert "--commit" in captured["cmd"]
 
 
@@ -171,7 +174,7 @@ def test_pxx_failure_reports_dx_task_failed(monkeypatch, pxx_code):
     """
     monkeypatch.setattr("dx.cmd_run.subprocess.run", _pxx_exiting(pxx_code))
     with pytest.raises(SystemExit) as exc:
-        _run("T-008", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
+        _run("T-008", "--no-evidence", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
     assert exc.value.code == cmd_run.EXIT_TASK_FAILED
 
 
@@ -186,7 +189,7 @@ def test_pxx_exiting_2_is_not_mistaken_for_an_anchored_refusal(monkeypatch, caps
     """
     monkeypatch.setattr("dx.cmd_run.subprocess.run", _pxx_exiting(2))
     with pytest.raises(SystemExit) as exc:
-        _run("T-009", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
+        _run("T-009", "--no-evidence", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
     assert exc.value.code != cmd_run.EXIT_ANCHORED_REFUSED
     assert exc.value.code == cmd_run.EXIT_TASK_FAILED
     # pxx's real code is not discarded — it moves into the message.
@@ -197,3 +200,90 @@ def test_anchored_refusal_still_owns_exit_2():
     """The other half: nothing may erode the code that means 'policy refused'."""
     assert cmd_run.EXIT_ANCHORED_REFUSED == 2
     assert cmd_run.EXIT_TASK_FAILED != cmd_run.EXIT_ANCHORED_REFUSED
+
+
+class TestEvidenceEmission:
+    """`dx run` emits a `dx.role_task.v1` bundle (ROADMAP §1.1).
+
+    Admission record: `docs/admissions/T-1101-evidence-bundles.md`, which
+    requires that emission does not disturb the 0.7.1 exit-code contract.
+    """
+
+    @staticmethod
+    def _no_git(monkeypatch):
+        """Scope is not a git repo here; evidence must degrade, not explode."""
+        monkeypatch.setattr("dx.cmd_run._git", lambda *a, **k: None)
+
+    def _run_with_evidence(self, monkeypatch, tmp_path, pxx_code=0, *extra):
+        class Result:
+            returncode = pxx_code
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        self._no_git(monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+                 "--no-commit", "--evidence-dir", str(tmp_path), *extra)
+        return exc.value.code
+
+    def test_a_successful_run_emits_a_bundle(self, monkeypatch, tmp_path, capsys):
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--no-commit", "--evidence-dir", str(tmp_path))
+        bundles = list((tmp_path / "T-EV").iterdir())
+        assert len(bundles) == 1
+        manifest = json.loads((bundles[0] / "manifest.json").read_text())
+        assert manifest["result"]["passed"] is True
+        assert manifest["role"] == "widget-engineer"
+        assert "Evidence:" in capsys.readouterr().out
+
+    def test_a_failed_run_still_emits_a_bundle(self, monkeypatch, tmp_path):
+        """A store that only records successes is a highlight reel."""
+        code = self._run_with_evidence(monkeypatch, tmp_path, pxx_code=2)
+        assert code == cmd_run.EXIT_TASK_FAILED, "evidence changed the exit contract"
+        manifest = json.loads(
+            (next((tmp_path / "T-EV").iterdir()) / "manifest.json").read_text()
+        )
+        assert manifest["result"]["passed"] is False
+        assert manifest["checks"]["pxx_exit_zero"]["ok"] is False
+
+    def test_no_evidence_skips_emission_without_changing_the_outcome(
+        self, monkeypatch, tmp_path
+    ):
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--no-commit", "--no-evidence", "--evidence-dir", str(tmp_path))
+        assert not tmp_path.exists() or not any(tmp_path.iterdir())
+
+    def test_an_unwritable_receipt_fails_the_run_closed(self, monkeypatch, tmp_path):
+        """A run that produced no receipt is not a receipted run. It must not
+        report success — but it must also not masquerade as a task failure,
+        which is what exit 3 means."""
+        def boom(*a, **k):
+            raise EvidenceError("disk on fire")
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        monkeypatch.setattr("dx.cmd_run.write_bundle", boom)
+        self._no_git(monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+                 "--no-commit", "--evidence-dir", str(tmp_path))
+        assert exc.value.code == cmd_run.EXIT_ERROR
+        assert exc.value.code != cmd_run.EXIT_TASK_FAILED
+
+    def test_the_dry_run_writes_no_evidence(self, monkeypatch, tmp_path):
+        """--dry-run performs no work, so it has nothing to attest to."""
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--dry-run", "--evidence-dir", str(tmp_path))
+        assert not tmp_path.exists() or not any(tmp_path.iterdir())

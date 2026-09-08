@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.8.1
+**Version:** 0.9.0
 
 ## Where we are
 
@@ -13,17 +13,17 @@ dependency public and MIT**, so a stranger can reproduce the results without
 asking for access. Release detail is in `CHANGELOG.md` — this file is for
 resuming, not for history.
 
-**Verified working (every row re-run at 0.8.1, 2026-09-08):**
+**Verified working (every row re-run at 0.9.0, 2026-09-08):**
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 356 passed |
+| `pytest` | 373 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.8.1` |
+| `dx --version` | `dx 0.9.0` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
@@ -33,9 +33,10 @@ resuming, not for history.
 | `dx merge` (head moved) | correctly rejects the stale signature (RL-003), exit 1 |
 | `dx run … --dry-run` | routes per manifest (endpoint + model + provider) |
 | Live `dx run` against the vLLM node | generated working code, exit 0; its own tests pass |
+| Evidence bundle from a live run | `dx.role_task.v1` written; `sha256sum -c SHA256SUMS` passes |
 | Live `dx run` via `openai-compatible` | exit 0 — dx wires to any OpenAI-shaped stack |
 | Live `dx run` with a vendor-style `.../v1` endpoint | exit 0 — the trailing `/v1` is corrected and announced |
-| Clean clone from GitHub | 356 tests, ruff, `mypy --strict` all green cold |
+| Clean clone from GitHub | 373 tests, ruff, `mypy --strict` all green cold |
 
 **Lab topology is NOT recorded in this repo.** The live routing table is in
 `~/.config/dx/hardware_manifest.yml` on each driver box; the manifest seeded by
@@ -109,7 +110,7 @@ uids with no comment field; revoked and expired keys passed the RL-003 gate; and
    fixed — it had been returning sentence fragments rather than whole
    prohibitions on every real card.
 
-## Go-live status — GO (2026-09-08, v0.8.1)
+## Go-live status — GO (2026-09-08, v0.9.0)
 
 Reviewed for public peer review and cleared, with scope stated.
 
@@ -133,7 +134,7 @@ stubbed").
 
 **Known and stated, not blockers:**
 - `dx merge` verifies but does not merge or append to the ledger.
-- `dx run` does not write evidence bundles.
+- `dx merge` still verifies but does not merge or append (ROADMAP §1.2).
 - `dx verify-gui` has never run against a live desktop.
 - No all-green merge against a *live operational* ledger with a fresh RL-010
   signature. The gate does pass all-green against the public reference ledger
@@ -177,10 +178,10 @@ No PR requirement — the gap worth closing is history rewriting.
 ## Next real work
 
 **Sequenced, with acceptance criteria and blockers, in `ROADMAP.md`.** The short
-version: evidence bundles from `dx run` unblock everything and are blocked by
-nothing; the ledger append can be built against the *reference* ledger without
-waiting on DevSwarmX Gate 1; the RL-010 ceremony is a scheduling problem, not an
-engineering one. Roughly two focused weeks to a full end-to-end run.
+version: **§1.1 evidence bundles shipped in 0.9.0**; the ledger append (§1.2) is
+next and can be built against the *reference* ledger without waiting on
+DevSwarmX Gate 1; the RL-010 ceremony is a scheduling problem, not an
+engineering one.
 
 
 1. **Wire `TODO(ledger)` in `cmd_merge.py`** — the actual `git merge --no-ff`

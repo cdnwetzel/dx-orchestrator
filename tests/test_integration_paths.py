@@ -50,7 +50,7 @@ def _run(*argv):
 class TestGuiPipeline:
     def test_gui_task_receives_the_users_message(self, gui_run, capsys):
         _run("T-G", "--required_role", "widget-engineer", "-m", "click ok",
-             "--no-commit", "--gui")
+             "--no-commit", "--no-evidence", "--gui")
         assert gui_run["launched"] == [("click ok", False)]
         out = capsys.readouterr().out
         assert "GUI task completed" in out
@@ -59,12 +59,12 @@ class TestGuiPipeline:
 
     def test_real_input_flag_is_forwarded(self, gui_run):
         _run("T-G", "--required_role", "widget-engineer", "-m", "type",
-             "--no-commit", "--gui", "--real-input")
+             "--no-commit", "--no-evidence", "--gui", "--real-input")
         assert gui_run["launched"] == [("type", True)]
 
     def test_unhealthy_observer_warns_but_still_attempts(self, gui_run, capsys):
         gui_run["health"] = False
-        _run("T-G", "--required_role", "widget-engineer", "-m", "x", "--no-commit", "--gui")
+        _run("T-G", "--required_role", "widget-engineer", "-m", "x", "--no-commit", "--no-evidence", "--gui")
         assert "Observer not healthy" in capsys.readouterr().out
         assert gui_run["launched"], "should still have attempted the task"
 
@@ -72,7 +72,7 @@ class TestGuiPipeline:
         gui_run["launch"] = False
         with pytest.raises(SystemExit) as exc:
             _run("T-G", "--required_role", "widget-engineer", "-m", "x",
-                 "--no-commit", "--gui")
+                 "--no-commit", "--no-evidence", "--gui")
         assert exc.value.code == 1
         assert "GUI task failed" in capsys.readouterr().err
 
@@ -80,7 +80,7 @@ class TestGuiPipeline:
         """The GUI action already happened; dx reports the audit gap rather than
         pretending the task did not run."""
         gui_run["audit"] = False
-        _run("T-G", "--required_role", "widget-engineer", "-m", "x", "--no-commit", "--gui")
+        _run("T-G", "--required_role", "widget-engineer", "-m", "x", "--no-commit", "--no-evidence", "--gui")
         out = capsys.readouterr().out
         assert "Audit log verification failed" in out
         assert "Task T-G completed" in out
@@ -92,7 +92,7 @@ class TestGuiPipeline:
             "dx.cmd_run.PSOperatorClient",
             lambda: pytest.fail("PSOperator constructed without --gui"),
         )
-        _run("T-N", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
+        _run("T-N", "--no-evidence", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
 
 
 class TestVlmCall:

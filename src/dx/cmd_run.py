@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -9,10 +10,101 @@ from pathlib import Path
 
 from ._argtypes import SubParsers
 from .config_loader import get_roles_path, get_route_for_role
+from .evidence import Check, EvidenceError, RoleTaskBundle, write_bundle
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
 from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
 from .role_validate import validate_card
+
+#: Evidence lands outside the repository under edit. Writing it inside would
+#: put receipts in the tree pxx is committing, which is how an evidence store
+#: ends up attesting to itself.
+DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+
+
+def _evidence_root(args: argparse.Namespace) -> Path:
+    if getattr(args, "evidence_dir", None):
+        return Path(args.evidence_dir).expanduser()
+    env = os.environ.get("DX_EVIDENCE_DIR")
+    return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
+
+
+def _git(scope: str, *args: str) -> str | None:
+    """Best-effort git read. Returns None when scope is not a repo or git fails.
+
+    Evidence collection must never be able to fail the task it is recording.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", scope, *args], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _emit_evidence(
+    args: argparse.Namespace,
+    card_fit: str,
+    route: object,
+    prompt: str,
+    cmd: list[str],
+    source_head: str | None,
+    returncode: int,
+) -> Path:
+    """Build and write the `dx.role_task.v1` bundle for this run.
+
+    Raises EvidenceError; the caller decides what a missing receipt is worth.
+    """
+    endpoint = getattr(route, "endpoint", None)
+    model = getattr(route, "model", None)
+    provider = getattr(route, "provider", None)
+
+    diff = _git(args.scope, "diff", source_head) if source_head else None
+    status = _git(args.scope, "status", "--porcelain")
+
+    artifacts: dict[str, str] = {
+        "prompt.txt": prompt,
+        "command.txt": " ".join(cmd) + f"\n\nexit: {returncode}\n",
+        "routing.json": json.dumps(
+            {
+                "endpoint": endpoint,
+                "model": model,
+                "provider": provider,
+                "endpoint_raw": getattr(route, "endpoint_raw", None),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    }
+    checks: dict[str, Check] = {
+        "role_card_valid": Check(ok=True, detail=f"fit={card_fit}"),
+        "routing_resolved": Check(ok=bool(endpoint), path="artifacts/routing.json"),
+        "pxx_exit_zero": Check(ok=returncode == 0, path="artifacts/command.txt",
+                               detail=f"exit={returncode}"),
+    }
+    if diff is not None:
+        artifacts["changes.patch"] = diff
+        checks["scope_diff_captured"] = Check(ok=True, path="artifacts/changes.patch")
+    else:
+        checks["scope_diff_captured"] = Check(
+            ok=False, detail="scope is not a git repository, or git failed"
+        )
+    if status is not None:
+        artifacts["git-status.txt"] = status
+
+    bundle = RoleTaskBundle(
+        task_id=args.task_id,
+        title=f"{args.task_id} — {args.required_role}",
+        passed=returncode == 0,
+        source_head=source_head,
+        role=args.required_role,
+        routing={"endpoint": endpoint, "model": model, "provider": provider},
+        checks=checks,
+        artifacts=artifacts,
+    )
+    return write_bundle(bundle, _evidence_root(args))
 
 
 def _resolve_pxx() -> str | None:
@@ -31,6 +123,16 @@ def register_run_subcommand(subparsers: SubParsers) -> None:
         "--required_role", default="backend-engineer", help="Role slug"
     )
     parser.add_argument("--scope", default=".", help="Path scope for edits")
+    parser.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="Skip evidence-bundle emission (the run still happens; the receipt does not)",
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        help="Where to write evidence bundles (default: DX_EVIDENCE_DIR, "
+        "else ~/.local/state/dx/evidence)",
+    )
     parser.add_argument("--message", "-m", required=True, help="Instruction")
     parser.add_argument(
         "--gui",
@@ -234,10 +336,35 @@ def cmd_run(args: argparse.Namespace) -> None:
         f"on {route.endpoint} (model: {route.model or 'default'})...",
         flush=True,
     )
+    # Captured before the run so the bundle's source_head is the base the diff
+    # is taken against, not whatever pxx committed.
+    source_head = (
+        None
+        if args.no_evidence
+        else ((_git(args.scope, "rev-parse", "HEAD") or "").strip() or None)
+    )
     # unbounded: this is the model doing the work. A large refactor on a slow
     # local endpoint legitimately runs for minutes, and cutting it off at an
     # arbitrary deadline would destroy in-flight edits. Ctrl-C is the control.
     result = subprocess.run(cmd, env=env)
+
+    # Emitted for failed runs too. A failed run's evidence is worth more, not
+    # less, and a store that only records successes is a highlight reel.
+    if not args.no_evidence:
+        try:
+            bundle_path = _emit_evidence(
+                args, card.fit.value, route, enhanced_prompt, cmd,
+                source_head, result.returncode,
+            )
+        except EvidenceError as exc:
+            print(
+                f"❌ The task itself finished (pxx exit {result.returncode}), but its "
+                f"evidence bundle could not be written: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            sys.exit(EXIT_ERROR)
+        print(f"🧾 Evidence: {bundle_path}", flush=True)
 
     if result.returncode != 0:
         print(

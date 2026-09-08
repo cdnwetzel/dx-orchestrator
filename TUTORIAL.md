@@ -27,7 +27,7 @@ you → dx CLI → role card (governance) → hardware manifest (routing) → px
 - **Merge gate** — `dx merge` verifies a GPG-signed approval against `devswarm-ledger/SCHEMA.md` before allowing a merge. Currently enforces the RL-003 signature contract; **does not yet** perform the actual git merge or ledger append (deliberately stubbed until Gate 1 unpauses).
 
 What dx does **not** do today, honestly:
-- No evidence bundle generation (`dx run` does not yet write receipts).
+- No ledger write. `dx run` writes evidence bundles; `dx merge` verifies an approval and stops.
 - No actual git-merge or ledger-append (the merge gate verifies but doesn't commit).
 - No GUI end-to-end run has been exercised (`dx verify-gui` code path works but hasn't been demonstrated on this box).
 
@@ -81,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.8.1
+dx --version    # dx 0.9.0
 pytest          # all green
 ```
 
@@ -477,7 +477,7 @@ Fixed in 0.3.0 because a test caught it, not because anyone noticed in use:
   unconfigured install would silently SSH to somebody else's machine.
 
 Deliberately deferred until DevSwarmX Gate 1 unpauses:
-- ⏸ `dx run` writing evidence bundles (design captured in `VISION.md § Reference formats`, pattern: schema-per-family like camelid, `dx.role_task.v1`)
+- ✅ `dx run` writing `dx.role_task.v1` evidence bundles — shipped in 0.9.0, verified with `sha256sum -c`
 - ⏸ `dx merge` doing the actual `git merge --no-ff` and appending `SIGNED`/`MERGED` rows to `devswarm-ledger/ledger.jsonl`
 - ⏸ pxx review-independence config (`PXX_REVIEW_MODEL`) — currently author and reviewer use the same endpoint, which pxx correctly warns about
 
@@ -513,7 +513,7 @@ Not yet exercised end-to-end:
 - An honest snapshot of what's stubbed and why
 
 What you don't yet have (by design, not accident):
-- Automatic evidence bundles per run
+- Ledger rows appended automatically on merge
 - Actual git merges under MERGE_LOCK
 - A green happy-path merge trace
 
@@ -523,7 +523,7 @@ The lesson worth carrying out of 0.3.0: **a gate without a test is a claim, not 
 
 ---
 
-*Re-validated end to end on 2026-09-08 at dx `0.8.1`, from a Surface Pro 6 running
+*Re-validated end to end on 2026-09-08 at dx `0.9.0`, from a Surface Pro 6 running
 Ubuntu 24.04 in WSL2 against a vLLM endpoint (Qwen3.8-27B-FP8) on the LAN. Every
 transcript in §4–§8 was re-run and re-captured at this version.*
 
@@ -545,4 +545,4 @@ did not drift.*
 
 *No fabrication. The only edit is the host-address substitution declared at the top.*
 
-*What this tutorial does **not** establish: that `dx run` writes evidence bundles (it does not), that `dx merge` performs a git merge or appends to the ledger (it does not — it verifies and stops), or that `dx verify-gui` has been run against a live desktop (it has not). The merge gate does now pass all-green against a real GPG signature, but in `tests/test_gpg_integration.py` against committed keys and a synthetic ledger — not against the live `devswarm-ledger` with a freshly-made RL-010 signature, which remains undemonstrated.*
+*What this tutorial does **not** establish: that `dx merge` performs a git merge or appends to the ledger (it does not — it verifies and stops), or that `dx verify-gui` has been run against a live desktop (it has not). `dx run` does now write evidence bundles, but a bundle is tamper-evident, not signed — it proves nothing was altered after the fact, not who produced it. The merge gate does now pass all-green against a real GPG signature, but in `tests/test_gpg_integration.py` against committed keys and a synthetic ledger — not against the live `devswarm-ledger` with a freshly-made RL-010 signature, which remains undemonstrated.*

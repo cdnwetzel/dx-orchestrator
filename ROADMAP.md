@@ -39,7 +39,7 @@ milestone below states its acceptance as an artifact, not an assertion.
 **Goal:** `dx run` emits an evidence bundle. Unblocks everything downstream,
 depends on nothing external, and is the single highest-value item here.
 
-### 1.1 — `dx.role_task.v1` evidence bundles
+### 1.1 — `dx.role_task.v1` evidence bundles — ✅ SHIPPED in 0.9.0
 
 Design is settled in `VISION.md § Reference formats`, drawn from surveying 111
 real bundles in `cdnwetzel/camelid`. Do not redesign it:
@@ -62,7 +62,23 @@ passes; `manifest.json` validates against the schema; the `boundary` block is
 non-empty and its absence fails the build. A test mutates one artifact byte and
 requires the checksum step to fail.
 
-**Effort:** 2–3 days. **Blocked by:** nothing.
+**Shipped 2026-09-08 in 0.9.0.** Admission record:
+`docs/admissions/T-1101-evidence-bundles.md`. Every acceptance criterion met and
+verified: a live run against lab hardware produced a bundle, `sha256sum -c
+SHA256SUMS` passed on it, the manifest carries the stable core, the writer
+refuses an empty `boundary` (and leaves nothing behind when it refuses), and
+mutating one byte of one artifact makes verification fail.
+
+Two decisions worth carrying into §1.2 and the other bundle families:
+
+- **Evidence must not perturb what it observes.** pxx's stdout is *not*
+  captured: `cmd_run.py` hands it the inherited fd deliberately, and interposing
+  a pipe changes what pxx sees. The bundle records the routed command, the
+  resolved endpoint/model/provider, the scope diff and git status instead, and
+  the `boundary` block says the transcript is absent.
+- **Failed runs get bundles too**, and an unwritable receipt fails the run
+  closed at `EXIT_ERROR` — not `EXIT_TASK_FAILED`, which would misreport a
+  successful task as a failed one.
 
 ### 1.2 — Wire `TODO(ledger)` in `cmd_merge.py`
 

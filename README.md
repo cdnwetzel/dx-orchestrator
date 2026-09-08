@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 356 tests,
+The test suite is the part built to be evaluated from outside: 373 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -87,6 +87,39 @@ code-generation task.
 Exit codes: `0` success, `1` error or gate failure, `2` Anchored role refused, `3` the task itself failed.
 
 `2` is reserved for dx's own governance decision and is never produced by a tool dx shells out to — pxx exits 2 in the wild, so its code is printed rather than returned. If you read `2`, policy refused the run; if you read `3`, the run was allowed and the work failed.
+
+## Evidence
+
+Every `dx run` writes a `dx.role_task.v1` evidence bundle — a directory, not a
+file:
+
+```
+<task_id>/<utc-timestamp>/
+├── README.md        what happened, for a human
+├── manifest.json    the same, for a machine
+├── SHA256SUMS       tamper-evidence
+└── artifacts/       prompt, routed endpoint/model/provider, the diff, git status
+```
+
+Verify one anywhere, with no Python and no network:
+
+```bash
+cd <bundle> && sha256sum -c SHA256SUMS
+```
+
+Bundles land in `~/.local/state/dx/evidence` by default — deliberately *outside*
+the repository under edit, so receipts never end up in the tree pxx is
+committing. Override with `--evidence-dir` or `DX_EVIDENCE_DIR`. `--no-evidence`
+skips emission entirely.
+
+**Failed runs get bundles too.** A store that only records successes is a
+highlight reel. And a run whose receipt cannot be written fails closed: the task
+may have succeeded, but a receipted run that produced no receipt is not one.
+
+Every bundle carries a mandatory `boundary` block stating what it does **not**
+prove — that the code is correct, that anyone reviewed it, that any test of the
+generated behaviour was run. A bundle without one is a claim wearing a receipt's
+clothing, so the writer refuses to emit it.
 
 ## Configuration
 
@@ -148,6 +181,7 @@ file ends up saying what actually runs.
 | --- | --- |
 | `DX_CONFIG` | Path to the hardware manifest |
 | `DX_ROLES_PATH` | Role-card directory (also settable as `roles_path:` in the manifest) |
+| `DX_EVIDENCE_DIR` | Where evidence bundles are written (default `~/.local/state/dx/evidence`) |
 | `DX_LEDGER_REPO` | Path to a ledger repo — set this to your own operational ledger; the default is the public reference one |
 | `DX_VLM_ENDPOINT` / `DX_VLM_MODEL` | GUI verification model endpoint and name |
 | `DX_GUI_SSH_HOST` | Host to capture screenshots from |
@@ -218,9 +252,9 @@ fails the build if this README drifts from the implementation.
 - **Phase 4** — team mode: a second GPG key in the ledger, Author ≠ Signer
   enforced at the Git level.
 
-Deliberately not implemented yet: evidence-bundle generation in `dx run`, and
-the actual `git merge` + ledger append in `dx merge`. Both are stubbed with the
-design recorded in `VISION.md § Reference formats`.
+Deliberately not implemented yet: the actual `git merge` + ledger append in
+`dx merge`, stubbed with the design recorded in `VISION.md § Reference formats`
+and sequenced in `ROADMAP.md` §1.2.
 
 ## License
 
