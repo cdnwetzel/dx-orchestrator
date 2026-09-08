@@ -43,8 +43,18 @@ def cmd_merge(args) -> None:
         if not sig_path.exists():
             print(f"ERROR: signature file {sig_path} not found", file=sys.stderr)
             sys.exit(1)
-        # TODO(gpg): actually verify against ledger head + enforce Author != Signer
-        # for Partial/Anchored roles. See VISION.md "Known gaps".
+        # TODO(gpg): verify per devswarm-ledger SCHEMA.md "approvals/" contract.
+        # The signature is GPG-detached over the canonical UTF-8 string:
+        #     task_id + ledger_head_hash + role      (exact concat, no separators)
+        # Valid iff:
+        #   1. Signer's key is registered in devswarm-ledger/docs/keys/<name>.asc
+        #      as the human accountable for `role`.
+        #   2. Signer != task's author_human (when separation-of-duties applies —
+        #      Partial or Anchored fit).
+        #   3. Signed head hash equals the CURRENT head of ledger.jsonl
+        #      (stale-head signatures rejected per RL-003).
+        # Reference impl: devswarm-ledger/tools/verify_chain.py.
+        # Real signed examples: approvals/T-0002.code_review.{msg,asc} etc.
         print(f"✅ Signature file present: {sig_path} (GPG verification pending)")
 
     if args.force:
@@ -52,7 +62,15 @@ def cmd_merge(args) -> None:
     else:
         print(f"✅ Pre-merge checks passed for {args.task_id}.")
 
-    # TODO(ledger): perform actual git merge --no-ff and append hash-chained
-    # ledger entry. See VISION.md "Known gaps".
+    # TODO(ledger): append rows to devswarm-ledger/ledger.jsonl per SCHEMA.md.
+    # Sequence for a successful merge:
+    #   1. SIGNED row (if not already appended by the signer)
+    #   2. MERGED row after git merge --no-ff succeeds
+    # Row canonical form:
+    #     json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    # Fields: ts (ISO 8601 UTC), task_id, author_seat, author_human, reviewer_seat,
+    #         action, sha (merge commit), evidence (redacted per RL-011), prev_hash.
+    # prev_hash MUST equal sha256(canonical_form(previous row including its own
+    # prev_hash)). MERGE_LOCK.json in queue/ serializes concurrent merges.
     print(f"🔄 Merging {args.task_id}... (stub — wire to devswarm-ledger)")
     sys.exit(0)

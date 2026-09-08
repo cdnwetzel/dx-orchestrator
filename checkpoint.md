@@ -81,7 +81,7 @@ If `claude-sdlc-roles` clone fails via HTTPS (private/404), use `gh repo clone c
 3. ~~Wire per-role PXX_MODEL~~ — **done 2026-09-07**. `config_loader.get_route_for_role()` returns `(endpoint, model)`, `cmd_run` sets both PXX_BASE_URL and PXX_MODEL. GUI verifier reads `vlm_model` from manifest.
 4. ~~Doctor network probes derived from manifest~~ — **done 2026-09-07**. Switched from `curl -f` (which flags vLLM's 404-on-/ as failure) to raw TCP connect via `socket.create_connection`.
 5. Live `dx run` (no `--dry-run`) against T5810 — try it now that endpoint + model + network are all confirmed live.
-6. Wire `TODO(gpg)` and `TODO(ledger)` in `cmd_merge.py`. Needs a design call: what artifact gets signed? (Options: ledger head SHA, evidence file, or task admission record.)
+6. Wire `TODO(gpg)` and `TODO(ledger)` in `cmd_merge.py`. **Design settled 2026-09-07**: conform to `cdnwetzel/devswarm-ledger` `SCHEMA.md`. Signature is GPG-detached over `task_id + ledger_head_hash + role`; reference verifier at `devswarm-ledger/tools/verify_chain.py`; real signed pairs at `approvals/T-000{2,3,4,7}.code_review.{msg,asc}`. Evidence bundles follow `camelid.public_evidence_bundle.v1` (README + manifest.json + SHA256SUMS + raw artifacts, directory named `<test>-<utc-ts>-head-<sha>/`). Full cross-repo references now in `VISION.md#reference-formats-from-sibling-repos`.
 7. Git init + push to GitHub. Needs decisions: public vs private, whether to scrub lab IPs from the seeded manifest first.
 
 **Confirmed live network path** (verified 2026-09-07 from Surface Pro WSL2):

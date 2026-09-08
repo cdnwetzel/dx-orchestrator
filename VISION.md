@@ -42,6 +42,46 @@ RL-011 (evidence redacted at capture time) is enforced at merge time, optionally
 - **Phase 3** — Openterface Mini-KVM lands. Add framebuffer hash to `dx merge` as a second GUI gate alongside the Qwen VL semantic check.
 - **Phase 4** — Team mode: second GPG key registered in the ledger. `dx merge` enforces Author ≠ Signer at the Git level.
 
+## Reference formats (from sibling repos — do not reinvent)
+
+The signing, ledger, and evidence contracts already exist across your other
+repos. `dx` must **conform** to them, not compete with them.
+
+- **`cdnwetzel/devswarm-ledger` / `SCHEMA.md`** — the authoritative ledger row
+  schema (`ts, task_id, author_seat, author_human, reviewer_seat, action, sha,
+  evidence, prev_hash`), canonical form
+  (`json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`),
+  hash chain rule, and the action enum (`GENESIS | ADMITTED | EXECUTED |
+  EVIDENCE | REVIEWED | SIGNED | MERGED | INCOMPLETE | ABANDONED | ESCALATED |
+  REDLINE | CORRECTION`). `tools/verify_chain.py` is the reference verifier.
+
+- **Approvals** (same repo, `approvals/<task_id>.<role>.asc` + `.msg`) — GPG
+  **detached** signature over the canonical UTF-8 string
+  `task_id + ledger_head_hash + role` (exact concatenation, no separators).
+  Valid only if the key belongs to the human accountable for the role
+  (registered in `docs/keys/`), the signer is not the author when separation
+  applies, and the signed head hash is the **current** head (stale signatures
+  are invalid — RL-003). Real signed approvals for T-0002/3/4/7 exist in that
+  repo as reference examples.
+
+- **`cdnwetzel/camelid` / `qa/evidence-bundles/`** — the evidence bundle
+  layout (`camelid.public_evidence_bundle.v1`): directory named
+  `<test>-<utc-ts>-head-<sha>/` containing `README.md` (context + explicit
+  boundary), `manifest.json` (schema-versioned, source_head, model SHA, checks
+  map, timings, result), `SHA256SUMS` (portable tamper detector via
+  `sha256sum -c`), plus raw request/response/log artifacts.
+
+- **`cdnwetzel/pxx` / `docs/RECEIPTS.md`** — the *claims* register model:
+  every public claim is Reproducible or Attested, has a dated record, a
+  procedure a stranger can run, and an explicit boundary of what is NOT
+  claimed. `pxx/manifest.py` computes an `agent_version_id` content hash so
+  "which agent produced this" is deterministic.
+
+- **`cdnwetzel/psoperator` / `docs/attestation.md`** — HMAC-SHA256 signed
+  observer snapshots with canonical-JSON body (`key_id`, `observer_epoch`,
+  `issued_at`, `expires_at ≤ 60s`, fresh 256-bit `nonce`, frame hash, element
+  inventory) and replay-protection primitives.
+
 ## Known gaps (to design and build)
 
 - **`dx run` role injection** — spec drafted, needs wiring into `pxx` subprocess env.
