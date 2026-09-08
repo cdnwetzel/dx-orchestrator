@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.7.0
+**Version:** 0.7.1
 
 ## Where we are
 
@@ -15,13 +15,13 @@ and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 327 passed |
+| `pytest` | 335 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.6.2` |
+| `dx --version` | `dx 0.7.1` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
@@ -205,6 +205,19 @@ deferred `plugin.json` licence key.
 - Don't put real lab addresses back into tracked files.
 - Don't add a gate without a test. Three fail-open bugs shipped in 0.2.0
   precisely because the gates had no tests.
+
+## Exit-code contract fixed (0.7.1)
+
+`dx run` returned pxx's exit code verbatim, and `2` is dx's code for "Anchored
+role refused". pxx exits 2 in the wild — a missing shell safeguard does it — so
+a caller could read exit 2 and conclude governance refused the run when the run
+was allowed and merely failed. A downstream failure is now `3`; pxx's real code
+moves into the message. `2` is unreachable from a subprocess and machine-checked
+to stay that way (`TestExitCodeContract`).
+
+Found by running a real end-to-end `dx run` after the 0.7.0 rename — not by
+reading the code. Worth remembering: the rename was fully green on 327 tests
+while this was live.
 
 ## Fleet addressing policy (2026-09-08)
 

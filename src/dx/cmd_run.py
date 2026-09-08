@@ -64,12 +64,26 @@ def register_run_subcommand(subparsers: SubParsers) -> None:
     parser.set_defaults(func=cmd_run)
 
 
+# Exit codes are dx's own contract, not a downstream tool's.
+#
+# EXIT_ANCHORED_REFUSED is a governance decision: dx looked at the role card and
+# refused. It must never be producible by a tool dx shells out to, or a caller
+# cannot tell "policy refused this role" from "the task tried and failed" —
+# and pxx does exit 2 in the wild (a missing shell safeguard does it). So a
+# downstream failure gets its own code and pxx's real code is printed, not
+# returned.
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_ANCHORED_REFUSED = 2
+EXIT_TASK_FAILED = 3
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     roles_path = get_roles_path()
     if not roles_path.exists():
         print(f"ERROR: role cards not found at {roles_path}", file=sys.stderr)
         print("Set DX_ROLES_PATH or run scripts/setup_dependencies.sh", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_ERROR)
 
     load_registry(roles_path)
     card = get_role(args.required_role)
@@ -89,10 +103,10 @@ def cmd_run(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             print("Run: dx roles validate", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         print(f"ERROR: role '{args.required_role}' not found.", file=sys.stderr)
         print("Run: dx roles list", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_ERROR)
 
     # Anchored roles require a named accountable human. dx run refuses to
     # execute autonomously; --force is the audit-visible escape hatch.
@@ -125,7 +139,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             "\n   To proceed anyway (audit-visible), re-run with --force.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        sys.exit(EXIT_ANCHORED_REFUSED)
 
     # A card that fails structural validation cannot govern a run. Without this
     # dx would inject an empty MANDATE and an empty MUST NOT into the prompt and
@@ -146,7 +160,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 "To proceed anyway (audit-visible), re-run with --force.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         print(
             f"⚠️  --force in effect: running under invalid role card "
             f"'{card.slug}' ({'; '.join(card_errors)}).",
@@ -165,7 +179,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         route = get_route_for_role(args.required_role)
     except FileNotFoundError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_ERROR)
 
     env = os.environ.copy()
     env["PXX_BASE_URL"] = route.endpoint
@@ -181,7 +195,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             "in this venv.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        sys.exit(EXIT_ERROR)
 
     cmd = [pxx_bin, "edit", "--scope", args.scope, "--message", enhanced_prompt]
     if not args.no_commit:
@@ -214,8 +228,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     result = subprocess.run(cmd, env=env)
 
     if result.returncode != 0:
-        print("❌ pxx task failed.", file=sys.stderr, flush=True)
-        sys.exit(result.returncode)
+        print(
+            f"❌ pxx task failed (pxx exit {result.returncode}).",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(EXIT_TASK_FAILED)
 
     if args.gui:
         print("🖥️  Launching GUI via PSOperator...", flush=True)
@@ -230,7 +248,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         if not success:
             print("❌ GUI task failed.", file=sys.stderr, flush=True)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         print("✅ GUI task completed.", flush=True)
         if client.verify_audit_log():
             print("✅ PSOperator audit log verified.")

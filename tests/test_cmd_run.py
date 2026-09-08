@@ -1,6 +1,7 @@
 """`dx run` — the Anchored hard-block and hardware routing."""
 import pytest
 
+from dx import cmd_run
 from dx.cli import build_parser
 
 
@@ -154,11 +155,45 @@ def test_no_commit_omits_the_commit_flag(monkeypatch):
     assert "--commit" in captured["cmd"]
 
 
-def test_pxx_failure_propagates_the_exit_code(monkeypatch):
+def _pxx_exiting(code):
     class Result:
-        returncode = 3
+        returncode = code
 
-    monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+    return lambda *a, **k: Result()
+
+
+@pytest.mark.parametrize("pxx_code", [1, 3, 42, 127])
+def test_pxx_failure_reports_dx_task_failed(monkeypatch, pxx_code):
+    """A failing pxx is EXIT_TASK_FAILED whatever pxx itself returned.
+
+    dx used to return pxx's code verbatim, which put a downstream tool in
+    charge of dx's contract.
+    """
+    monkeypatch.setattr("dx.cmd_run.subprocess.run", _pxx_exiting(pxx_code))
     with pytest.raises(SystemExit) as exc:
         _run("T-008", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
-    assert exc.value.code == 3
+    assert exc.value.code == cmd_run.EXIT_TASK_FAILED
+
+
+def test_pxx_exiting_2_is_not_mistaken_for_an_anchored_refusal(monkeypatch, capsys):
+    """The regression this contract exists for.
+
+    pxx exits 2 in the wild — a missing shell safeguard does it — and dx used to
+    hand that straight back. A caller reading exit 2 would conclude governance
+    had refused the role when in fact the task ran and failed. The two outcomes
+    demand opposite responses: one is "fix your task", the other is "you are not
+    allowed to run this at all".
+    """
+    monkeypatch.setattr("dx.cmd_run.subprocess.run", _pxx_exiting(2))
+    with pytest.raises(SystemExit) as exc:
+        _run("T-009", "--required_role", "widget-engineer", "-m", "x", "--no-commit")
+    assert exc.value.code != cmd_run.EXIT_ANCHORED_REFUSED
+    assert exc.value.code == cmd_run.EXIT_TASK_FAILED
+    # pxx's real code is not discarded — it moves into the message.
+    assert "pxx exit 2" in capsys.readouterr().err
+
+
+def test_anchored_refusal_still_owns_exit_2():
+    """The other half: nothing may erode the code that means 'policy refused'."""
+    assert cmd_run.EXIT_ANCHORED_REFUSED == 2
+    assert cmd_run.EXIT_TASK_FAILED != cmd_run.EXIT_ANCHORED_REFUSED

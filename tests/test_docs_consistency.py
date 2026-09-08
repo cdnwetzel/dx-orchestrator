@@ -279,3 +279,50 @@ class TestTestCountClaim:
         assert claimed == collected, (
             f"README claims {claimed} tests, the suite collects {collected}"
         )
+
+
+class TestExitCodeContract:
+    """The README's exit-code line is the CLI's published contract. It drifted
+    once already: `dx run` returned pxx's exit code verbatim, so an undocumented
+    `3` (and a `2` meaning something entirely different) could reach a caller."""
+
+    @staticmethod
+    def _documented() -> set[int]:
+        line = next(
+            (ln for ln in README.splitlines() if ln.startswith("Exit codes:")), ""
+        )
+        assert line, "README no longer states exit codes"
+        return {int(m) for m in re.findall(r"`(\d+)`", line)}
+
+    def test_every_defined_code_is_documented(self):
+        from dx import cmd_run
+
+        defined = {
+            v for k, v in vars(cmd_run).items()
+            if k.startswith("EXIT_") and isinstance(v, int)
+        }
+        undocumented = defined - self._documented()
+        assert not undocumented, (
+            f"cmd_run defines exit code(s) {sorted(undocumented)} the README does not "
+            "document"
+        )
+
+    def test_no_documented_code_is_imaginary(self):
+        from dx import cmd_run
+
+        defined = {
+            v for k, v in vars(cmd_run).items()
+            if k.startswith("EXIT_") and isinstance(v, int)
+        }
+        assert self._documented() <= defined, (
+            "the README documents an exit code the code cannot produce"
+        )
+
+    def test_anchored_refusal_is_not_reachable_from_a_subprocess(self):
+        """The whole point: no `sys.exit(<a subprocess returncode>)` in cmd_run,
+        because that hands a downstream tool the ability to forge exit 2."""
+        src = (SRC / "cmd_run.py").read_text(encoding="utf-8")
+        assert "sys.exit(result.returncode)" not in src, (
+            "cmd_run returns a subprocess's exit code, so pxx can forge "
+            "EXIT_ANCHORED_REFUSED"
+        )

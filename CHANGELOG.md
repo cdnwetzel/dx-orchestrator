@@ -5,6 +5,33 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-09-08
+
+### Fixed
+
+- **`dx run` let pxx forge an Anchored refusal.** It returned pxx's exit code
+  verbatim, and `2` is `dx`'s code for "governance refused this role". pxx exits
+  2 in the wild — a missing shell safeguard does it — so a caller could read
+  exit 2 and conclude policy had refused the run when in fact the run was
+  allowed and the work failed. Those demand opposite responses: "you are not
+  permitted to run this" versus "fix your task".
+
+  A downstream failure is now `3`, and pxx's real code moves into the message
+  (`❌ pxx task failed (pxx exit 2).`) rather than being returned. Exit codes are
+  named constants in `cmd_run.py`; `2` is reserved for `dx`'s own decision and
+  is no longer reachable from a subprocess.
+
+  Found by running a real `dx run` end-to-end after the 0.7.0 rename, not by
+  reading the code.
+
+### Added
+
+- `TestExitCodeContract` in `tests/test_docs_consistency.py` — the README's
+  exit-code line is now machine-checked against the constants in both
+  directions (no undocumented code, no documented code the CLI cannot produce),
+  plus a guard that fails the build if `cmd_run` ever returns a subprocess's
+  exit code again. Each guard was verified to fire by reintroducing the defect.
+
 ## [0.7.0] — 2026-09-08
 
 ### Changed
@@ -390,6 +417,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.7.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.0...v0.6.1
