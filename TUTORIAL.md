@@ -129,7 +129,7 @@ gui_verification:
 
 If your role cards live somewhere other than `~/ai/claude-sdlc-roles/skills/sdlc-role/roles`, either add a top-level `roles_path:` key to this file or set `DX_ROLES_PATH`.
 
-**Why the `/v1` warning is non-negotiable.** In an earlier iteration the manifest had `endpoint: "http://t5810.lab:8007/v1"` and every `dx run` failed with `[MODEL_UNAVAILABLE] http://t5810.lab:8007/v1 returned HTTP 404`. Root cause: `pxx/router.py` constructs probe URLs as `{base}/v1/models`, so the `/v1` doubles. Fix is to strip it. Documented in commit `9a424f5` and captured here so nobody else has to rediscover it.
+**Why the `/v1` warning is non-negotiable.** In an earlier iteration the manifest had `endpoint: "http://t5810.lab:8007/v1"` and every `dx run` failed with `[MODEL_UNAVAILABLE] http://t5810.lab:8007/v1 returned HTTP 404`. Root cause: `pxx/router.py` constructs probe URLs as `{base}/v1/models`, so the `/v1` doubles. Fix is to strip it. Documented in commit `c5cd52d` and captured here so nobody else has to rediscover it.
 
 ---
 
@@ -469,6 +469,6 @@ The lesson worth carrying out of 0.3.0: **a gate without a test is a claim, not 
 
 ---
 
-*Validated live on 2026-09-07 against a vLLM endpoint (Qwen3.8-27B-FP8) from a Surface Pro 6 running Ubuntu 24.04 in WSL2. The §6 live-run transcript was captured at dx `9a424f5`; the §4, §7 and §8 transcripts were re-captured at 0.3.0 after the output-ordering and `--force` fixes. Every command output shown was captured from a real session — no fabrication. The only edit is the host-address substitution declared at the top.*
+*Validated live on 2026-09-07 against a vLLM endpoint (Qwen3.8-27B-FP8) from a Surface Pro 6 running Ubuntu 24.04 in WSL2. The §6 live-run transcript was captured at dx `c5cd52d`; the §4, §7 and §8 transcripts were re-captured at 0.3.0 after the output-ordering and `--force` fixes. Every command output shown was captured from a real session — no fabrication. The only edit is the host-address substitution declared at the top.*
 
 *What this tutorial does **not** establish: that `dx run` writes evidence bundles (it does not), that `dx merge` performs a git merge or appends to the ledger (it does not), that the merge gate has passed all-green against a real GPG signature (only against a stubbed one, in tests), or that `dx verify-gui` has been run against a live desktop (it has not).*
