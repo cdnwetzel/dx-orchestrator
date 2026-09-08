@@ -205,6 +205,7 @@ fails the build if this README drifts from the implementation.
 | `CHANGELOG.md` | Release history |
 | `SECURITY.md` | Trust boundaries, disclosure route, what dx does *not* protect |
 | `CONTRIBUTING.md` | Dev setup, the gates, fixture rules |
+| `ROADMAP.md` | What closing the gap to a full end-to-end run actually takes |
 | `checkpoint.md` | Current state and next work |
 | `RELEASE_READINESS.md` | Cross-repo open-source readiness: the five repos, what each scan found, cost to publish |
 

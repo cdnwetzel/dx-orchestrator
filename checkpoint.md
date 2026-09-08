@@ -54,6 +54,7 @@ dx-orchestrator/
 ├── CHANGELOG.md                  — 0.1.0 → 0.8.0
 ├── SECURITY.md                   — trust boundaries + disclosure
 ├── CONTRIBUTING.md               — gates, fixture rules
+├── ROADMAP.md                    — the gap to a full end-to-end run, and how to close it
 ├── RELEASE_READINESS.md          — cross-repo scan behind the 0.7–0.8 opening-up (historical)
 ├── checkpoint.md                 — this file
 ├── pyproject.toml                — metadata, deps, ruff + pytest config
@@ -174,6 +175,13 @@ to publishing all future operational state. `dx merge` needs only the format.
 No PR requirement — the gap worth closing is history rewriting.
 
 ## Next real work
+
+**Sequenced, with acceptance criteria and blockers, in `ROADMAP.md`.** The short
+version: evidence bundles from `dx run` unblock everything and are blocked by
+nothing; the ledger append can be built against the *reference* ledger without
+waiting on DevSwarmX Gate 1; the RL-010 ceremony is a scheduling problem, not an
+engineering one. Roughly two focused weeks to a full end-to-end run.
+
 
 1. **Wire `TODO(ledger)` in `cmd_merge.py`** — the actual `git merge --no-ff`
    under `MERGE_LOCK.json` plus `SIGNED`/`MERGED` rows appended to
