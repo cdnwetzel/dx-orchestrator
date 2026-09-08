@@ -191,6 +191,21 @@ TUTORIAL = (ROOT / "TUTORIAL.md").read_text(encoding="utf-8")
 REAL_CARDS = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 
 
+def _subprocess_path() -> str:
+    """System dirs only — plus wherever gpg lives, since `dx merge` shells out to
+    it and Homebrew puts it in /opt/homebrew/bin, outside /usr/bin:/bin."""
+    import shutil
+
+    dirs = ["/usr/bin", "/bin"]
+    gpg = shutil.which("gpg")
+    if gpg and str(Path(gpg).parent) not in dirs:
+        dirs.append(str(Path(gpg).parent))
+    return ":".join(dirs)
+
+
+_SUBPROCESS_PATH = _subprocess_path()
+
+
 class TestTutorialFidelity:
     """TUTORIAL.md stakes its worth on one claim: every output shown was
     captured from a real session. That claim decays silently.
@@ -234,7 +249,7 @@ class TestTutorialFidelity:
             capture_output=True,
             text=True,
             env={
-                "PATH": "/usr/bin:/bin",
+                "PATH": _SUBPROCESS_PATH,
                 "HOME": str(Path.home()),
                 "PYTHONPATH": str(ROOT / "src"),
             },
@@ -267,7 +282,7 @@ class TestMergeTranscriptFidelity:
             capture_output=True,
             text=True,
             env={
-                "PATH": "/usr/bin:/bin",
+                "PATH": _SUBPROCESS_PATH,
                 "HOME": str(Path.home()),
                 "PYTHONPATH": str(ROOT / "src"),
             },

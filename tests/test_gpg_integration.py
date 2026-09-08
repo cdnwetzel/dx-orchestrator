@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -50,10 +51,15 @@ def ledger_with_keys(tmp_path) -> Path:
     return repo
 
 
-def _raw_gpg(tmp_path, name: str, payload: Path) -> tuple[int, str]:
+def _raw_gpg(name: str, payload: Path) -> tuple[int, str]:
     """What gpg itself says, in a pristine keyring — the premise under test."""
-    home = tmp_path / f"gpghome-{name}"
-    home.mkdir(mode=0o700)
+    # Not under tmp_path: pytest's per-test directory is ~130 chars on macOS,
+    # past the 104-byte AF_UNIX limit, and gpg then exits 2 on --import with
+    # "can't connect to the gpg-agent: File name too long". The production
+    # path already works on macOS because ledger_utils keeps its scratch
+    # keyring in a short TemporaryDirectory; mirror that here.
+    home = Path(tempfile.mkdtemp(prefix=f"dx-gpg-{name}-"))
+    home.chmod(0o700)
     base = ["gpg", "--homedir", str(home), "--batch", "--no-tty"]
     subprocess.run(
         [*base, "--import", str(GPG_FIXTURES / f"{name}.pub.asc")],
@@ -66,6 +72,7 @@ def _raw_gpg(tmp_path, name: str, payload: Path) -> tuple[int, str]:
     )
     subprocess.run(["gpgconf", "--homedir", str(home), "--kill", "all"],
                    capture_output=True, check=False)
+    shutil.rmtree(home, ignore_errors=True)
     return r.returncode, r.stdout
 
 
@@ -78,9 +85,9 @@ def _raw_gpg(tmp_path, name: str, payload: Path) -> tuple[int, str]:
     "name,marker,notice",
     [("revoked", "REVKEYSIG", "KEYREVOKED"), ("expired", "EXPKEYSIG", "KEYEXPIRED")],
 )
-def test_gpg_exits_zero_for_degraded_keys(tmp_path, payload, name, marker, notice):
+def test_gpg_exits_zero_for_degraded_keys(payload, name, marker, notice):
     """This is the entire reason the return code is not a sufficient gate."""
-    rc, status = _raw_gpg(tmp_path, name, payload)
+    rc, status = _raw_gpg(name, payload)
     assert rc == 0, f"expected gpg to exit 0 for a {name} key, got {rc}"
     assert "VALIDSIG" in status, "gpg still considers the signature cryptographically valid"
     assert marker in status
@@ -88,19 +95,19 @@ def test_gpg_exits_zero_for_degraded_keys(tmp_path, payload, name, marker, notic
     assert "GOODSIG" not in status, f"gpg emits {marker} in place of GOODSIG"
 
 
-def test_gpg_reports_goodsig_for_the_usable_key(tmp_path, payload):
-    rc, status = _raw_gpg(tmp_path, "valid", payload)
+def test_gpg_reports_goodsig_for_the_usable_key(payload):
+    rc, status = _raw_gpg("valid", payload)
     assert rc == 0
     assert "GOODSIG" in status
     assert "VALIDSIG" in status
 
 
-def test_the_old_gate_would_have_accepted_all_three(tmp_path, payload):
+def test_the_old_gate_would_have_accepted_all_three(payload):
     """Pins the regression itself: `rc == 0 and VALIDSIG present` — the pre-0.3.0
     condition — cannot distinguish a usable key from a retired one.
     """
     for name in KEYS:
-        rc, status = _raw_gpg(tmp_path, name, payload)
+        rc, status = _raw_gpg(name, payload)
         assert rc == 0 and "VALIDSIG" in status, (
             f"{name} should satisfy the old, insufficient condition"
         )
