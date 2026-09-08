@@ -57,6 +57,14 @@ Two corollaries, both learned the hard way:
 - **No real hosts anywhere.** Test endpoints use `.invalid` (RFC 6761 guarantees
   it never resolves). A hardcoded routable address in the package fails
   `tests/test_docs_consistency.py`.
+
+  This is the **fleet-wide addressing policy**, and it holds identically in
+  `psoperator` (see its `CONTRIBUTING.md` §4): example configuration uses
+  reserved documentation ranges — RFC 6761 `.invalid` names here, RFC 5737
+  `192.0.2.0/24` and `203.0.113.0/24` in `psoperator`'s fleet presets. There is
+  **no approved exception**: a real deployment address or hostname in a tracked
+  file is a defect whatever range it comes from, RFC1918 included. `psoperator`
+  carried such an exception until 2026-09-08 and no longer does.
 - **No wall-clock dependencies.** The GPG fixtures are committed rather than
   generated because the generated version was flaky on a host whose clock
   stepped backwards. See `tests/fixtures/gpg/README.md`.

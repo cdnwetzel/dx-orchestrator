@@ -113,7 +113,7 @@ Reviewed for public peer review and cleared, with scope stated.
 | Clean clone passes cold | ruff, `mypy --strict`, 327 tests, 91% coverage — verified from a fresh `git clone` |
 | RL-003 gate | proved against real revoked and expired GPG keys, not captured transcripts |
 | Live run | `dx run` generated working code on lab hardware at 0.6.2, exit 0 |
-| Privacy | 0 lab addresses in the tree **or** the full git history |
+| Privacy | 0 lab addresses in the tree **or** the full git history (`psoperator` matches in-tree as of 2026-09-08; its pre-existing history still carries them — see `CONTRIBUTING.md`) |
 | Legal | MIT, LICENSE ships inside the wheel |
 | Docs | version, env-override table, command table, tutorial transcripts and test count all machine-checked |
 | CI | 6 jobs, Python 3.11/3.12/3.13, GPG tests asserted to run rather than skip |
@@ -205,6 +205,26 @@ deferred `plugin.json` licence key.
 - Don't put real lab addresses back into tracked files.
 - Don't add a gate without a test. Three fail-open bugs shipped in 0.2.0
   precisely because the gates had no tests.
+
+## Fleet addressing policy (2026-09-08)
+
+Settled, and now uniform. `psoperator` published real RFC1918 lab addresses
+(`10.0.1.x`, including the t5810 this box routes to) while its own `config.py`
+claimed those addresses "are RFC-5737 documentation placeholders" — true of its
+work fleet, false of its home fleet. Its home fleet now uses `192.0.2.0/24`
+(TEST-NET-1); the fail-closed addressing invariants were untouched in substance
+and all still fire by name.
+
+The "device-model hostnames and the 10.0.1.0/24 range are an approved exception"
+carve-out in its `CONTRIBUTING.md`, `greptile.json` and `.coderabbit.yaml` is
+gone rather than renumbered — the exception was the defect. Both repos now state
+the same rule, and `dx`'s `CONTRIBUTING.md` records it.
+
+**Honest limitation:** those addresses remain in `psoperator` commit `f895f0f`
+in the public history. Removing them needs a force-push, which the new ruleset
+correctly forbids and which is the wrong trade on a published repo. `dx`'s own
+"0 addresses in tree *or* history" claim still holds for `dx`; it does not hold
+for `psoperator`'s history, and the claim is now scoped to say so.
 
 ## Branch protection (2026-09-08)
 
