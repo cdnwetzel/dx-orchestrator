@@ -246,6 +246,104 @@ class TestTutorialFidelity:
         )
 
 
+REF_LEDGER = Path("~/ai/devswarm-ledger-reference").expanduser()
+
+
+class TestMergeTranscriptFidelity:
+    """§7 is the tutorial's most load-bearing section and nothing checked it.
+
+    When 0.7.0 repointed DEFAULT_LEDGER_REPO, §7 still told readers to run
+    `dx merge T-0007` — a task that exists only in a private operational ledger.
+    Every new reader got "queue file not found" from the section demonstrating
+    the gate the whole project is about, and 337 tests stayed green.
+    """
+
+    @staticmethod
+    def _merge(task_id, *extra):
+        import subprocess
+
+        return subprocess.run(
+            [sys.executable, "-m", "dx.cli", "merge", task_id, *extra],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(Path.home()),
+                "PYTHONPATH": str(ROOT / "src"),
+            },
+        )
+
+    def test_the_pxx_failure_line_matches_what_cmd_run_prints(self):
+        """§6 quoted "pxx task failed." for two releases after 0.7.1 changed it
+        to carry pxx's own code — the change that stopped a failing task looking
+        like a governance refusal. A tutorial quoting the old line teaches the
+        old contract."""
+        src = (SRC / "cmd_run.py").read_text(encoding="utf-8")
+        assert "pxx task failed (pxx exit {result.returncode})" in src, (
+            "cmd_run's failure message changed; update this guard and §6"
+        )
+        assert "❌ pxx task failed (pxx exit 2)." in TUTORIAL, (
+            "TUTORIAL.md §6 quotes a pxx failure line that cmd_run no longer prints"
+        )
+
+    def test_the_exit_codes_shown_are_the_ones_dx_defines(self):
+        """§6 claimed exit 2 for a failing task, which is now the code reserved
+        for an Anchored refusal — the exact confusion 0.7.1 removed."""
+        from dx import cmd_run
+
+        assert f"Exit code `{cmd_run.EXIT_TASK_FAILED}`" in TUTORIAL, (
+            "TUTORIAL.md §6 no longer states the task-failure exit code dx uses"
+        )
+
+    def test_the_task_id_shown_exists_in_the_default_ledger(self):
+        """Cheap, hermetic, and enough on its own to have caught the break: the
+        task the tutorial tells you to merge must live in the ledger dx ships
+        with, not in someone's private one."""
+        from dx.config_loader import DEFAULT_LEDGER_REPO
+
+        expected = {
+            q.stem
+            for q in sorted((DEFAULT_LEDGER_REPO / "queue").glob("*.json"))
+            if q.name != "MERGE_LOCK.json"
+        } or {"T-0001"}   # ledger not cloned: fall back to the shipped task id
+
+        shown = re.findall(r"^dx merge (\S+)", TUTORIAL, re.MULTILINE)
+        assert shown, "TUTORIAL.md no longer shows a `dx merge` command"
+        for task_id in set(shown):
+            assert task_id in expected, (
+                f"TUTORIAL.md tells the reader to run `dx merge {task_id}`, but "
+                f"the ledger dx defaults to holds {sorted(expected)}. A reader "
+                f"following the tutorial gets 'queue file not found'."
+            )
+
+    @pytest.mark.skipif(
+        not REF_LEDGER.is_dir(),
+        reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
+    )
+    def test_the_green_merge_transcript_is_reproducible(self):
+        result = self._merge("T-0001")
+        assert result.returncode == 0, result.stderr
+        for line in result.stdout.strip().splitlines():
+            assert line.strip() in TUTORIAL, (
+                "the `dx merge T-0001` transcript in TUTORIAL.md no longer matches "
+                f"what that command prints. Missing:\n  {line}"
+            )
+
+    @pytest.mark.skipif(
+        not REF_LEDGER.is_dir(),
+        reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
+    )
+    def test_the_force_banner_transcript_is_reproducible(self):
+        result = self._merge("T-0001", "--force")
+        assert result.returncode == 0, result.stderr
+        combined = result.stdout + result.stderr
+        for line in combined.strip().splitlines():
+            assert line.strip() in TUTORIAL, (
+                "the `dx merge --force` transcript in TUTORIAL.md drifted. "
+                f"Missing:\n  {line}"
+            )
+
+
 class TestTestCountClaim:
     """The README cites a specific test count. That number is persuasive to a
     reviewer, which is exactly why it must not be allowed to drift — so it is

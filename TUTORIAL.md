@@ -81,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.8.0
+dx --version    # dx 0.8.1
 pytest          # all green
 ```
 
@@ -286,10 +286,13 @@ task actually succeeded:
 ```
 🚀 Running task T-LIVE-001 with role backend-engineer on http://t5810.lab:8007 (model: qwen3.8-27b)...
 [HOOKS_MISSING] run_shell in permission mode 'edit' requires a shell safeguard (fail-closed); none is configured. Choose one: [...] — 1 file already modified: hello.py [net: pxx-pre/...] (rounds=0 tokens=0 diff_lines=11)
-❌ pxx task failed.
+❌ pxx task failed (pxx exit 2).
 ```
 
-Exit code `2`, **but `hello.py` was written** — pxx says so in its own error line:
+Exit code `3` — `dx`'s code for "the task ran and failed", distinct from `2`,
+which means governance refused the role (§8). pxx's own exit code is reported in
+the message rather than returned, so a caller can always tell the two apart.
+**And `hello.py` was written** — pxx says so in its own error line:
 `1 file already modified: hello.py [...] diff_lines=11`. That is the fail-closed
 shell-verify gate firing *after* the edit landed, not instead of it.
 
@@ -354,42 +357,69 @@ The three checks:
 2. **Signature verify** — imports every key from `devswarm-ledger/docs/keys/*.asc` into a scratch keyring and runs `gpg --verify <sig> <msg>`.
 3. **Payload + separation** — checks that the signed message equals `task_id + current_head + role` exactly, and that the signer's name differs from the task's `author_human` recorded in the ledger.
 
-Test against a real prior approval:
+`setup_dependencies.sh` clones `devswarm-ledger-reference`, a public ledger whose
+three rows are synthetic and whose one approval is a real GPG signature. It exists
+so you can run every branch of this gate without an operational ledger of your own.
 
 ```bash
-dx merge T-0007
+dx merge T-0001
 ```
 
 Actual output on this box:
 
 ```
-✅ Ledger chain verifies. Head: 4916e8c6a7528a5d…
-✅ Signature verified. Signer: Chris Wetzel <chris@cwetzel.com>
-❌ Stale signature (RL-003). Signed head 79ad37877e9d4901… but current head is 4916e8c6a7528a5d…. Re-sign after re-verifying the chain.
+✅ Ledger chain verifies. Head: b8b8baca959ddfbe…
+✅ Signature verified. Signer: Rex Reviewer <reviewer@example.invalid>
+✅ Signed message binds task_id + current head + role.
+✅ Separation of duties: author 'Ada Author' ≠ signer 'Rex Reviewer'.
+✅ All RL-003 checks passed for T-0001.
+🔄 Merging T-0001... (stub — git merge + ledger append not wired yet)
 ```
 
-Exit code: `1`. This is the correct behavior — T-0007 was signed against an older ledger head, and the ledger has moved forward. RL-003 says stale signatures are invalid.
+Exit code: `0`. Four checks, each of which can fail on its own.
+
+**Now make it fail.** The signature binds to a specific ledger head, so appending
+any row invalidates it — that is the mechanism, not a bug. Append a row to
+`~/ai/devswarm-ledger-reference/ledger.jsonl` (the repo's README shows how) and
+re-run:
+
+```
+✅ Ledger chain verifies. Head: ed127b72ca5642a3…
+✅ Signature verified. Signer: Rex Reviewer <reviewer@example.invalid>
+❌ Stale signature (RL-003). Signed head b8b8baca959ddfbe… but current head is ed127b72ca5642a3…. Re-sign after re-verifying the chain.
+```
+
+Exit code: `1`. Note check 2 still passes — the signature is cryptographically
+valid. It is *stale*, and staleness is the whole reason an approval binds to a
+head hash: you approve this exact state of the world, not "this task, whenever".
+`tools/new_demo_approval.sh` in the reference ledger re-signs against the new head.
 
 Note the verdicts read in the order they were decided, even piped into `cat`. Through 0.2.0 they did not: passes went to stdout (block-buffered when not a tty) and failures to stderr (unbuffered), so a redirected transcript listed the failure *before* the checks that preceded it. A gate transcript is evidence, so every verdict is now flushed as it is reached, with a subprocess test pinning it.
 
 Bypass with `--force` (audit-visible on stderr):
 
 ```bash
-dx merge T-0007 --force
+dx merge T-0001 --force
 ```
 
 Output:
 
 ```
-⚠️  --force in effect for T-0007: bypassing the RL-003 signature check.
-🔄 Merging T-0007... (stub — wire to devswarm-ledger)
+⚠️  --force in effect for T-0001: bypassing the RL-003 signature check.
+🔄 Merging T-0001... (stub — wire to devswarm-ledger)
 ```
 
 Exit code: `0`. Pass `--verify-gui` as well and the banner says the GUI check was skipped too — `--force` bypasses every gate, and the message now names all of them.
 
 **What the gate rejects.** Beyond a stale head: a payload bound to a different task, a trailing newline in the `.msg` file, a signer whose name matches the ledger's `author_human`, and — as of 0.3.0 — a signature made by a **revoked or expired key**. That last one used to pass. `gpg --verify` exits 0 and emits `VALIDSIG` for a signature from a revoked key, so checking the return code was not sufficient; verification now requires `GOODSIG` and rejects `REVKEYSIG` / `EXPKEYSIG` / `KEYREVOKED` / `KEYEXPIRED` / `EXPSIG` / `SIGEXPIRED` by name.
 
-**Still not demonstrated live**: the fully-green happy path with a real signature. The gate logic has an all-green unit test (current head, valid signature, signer ≠ author, exit 0), but a real end-to-end green run needs a fresh GPG signature against the current ledger head — which per RL-010 must be produced interactively on a trusted terminal with a passphrase no agent ever holds.
+**What is still not demonstrated**: this gate running against a *live operational*
+ledger with a freshly-made RL-010 signature. The green run above is real — a real
+`gpg --verify` against a real key — but the ledger is a published reference whose
+rows attest to no work, and its demo key was generated by a script, which is
+precisely what RL-010 forbids for a real approval. A production signature must be
+produced interactively on a trusted terminal with a passphrase no agent ever
+holds. The gate is proven; the ceremony around it is not.
 
 ---
 
@@ -493,14 +523,26 @@ The lesson worth carrying out of 0.3.0: **a gate without a test is a claim, not 
 
 ---
 
-*Re-validated end to end on 2026-09-08 at dx `0.6.2`, from a Surface Pro 6 running
+*Re-validated end to end on 2026-09-08 at dx `0.8.1`, from a Surface Pro 6 running
 Ubuntu 24.04 in WSL2 against a vLLM endpoint (Qwen3.8-27B-FP8) on the LAN. Every
-transcript in §4–§8 was re-captured from that session, including a live `dx run`
-that generated working code on local hardware. The §6 transcript previously showed
-a failing run while §6 itself instructed you to set the environment variable that
-makes it succeed; that is corrected. The `dx roles list` block in §5 had column
-widths the command cannot produce and has been recaptured — `tests/test_docs_consistency.py`
-now re-runs that command and fails the build if the shown output drifts again.
-No fabrication. The only edit is the host-address substitution declared at the top.*
+transcript in §4–§8 was re-run and re-captured at this version.*
+
+*Two of them were wrong, and both were wrong because of changes made in the same
+day they document.* §7 told you to run `dx merge T-0007`, a task that exists only
+in a private operational ledger; once `0.7.0` repointed the default to the public
+reference ledger, every new reader got `queue file not found` from the section
+demonstrating the project's central gate. §6 quoted `❌ pxx task failed.` and an
+exit code of `2`, both superseded by `0.7.1` — which changed that code to `3`
+precisely so a failing task could not be mistaken for a governance refusal. A
+tutorial quoting the old line teaches the old contract.
+
+*Neither was caught by 337 passing tests, because nothing checked them. Both are
+now machine-checked: `TestMergeTranscriptFidelity` re-runs `dx merge` and requires
+the shown output, refuses a task id absent from the default ledger, and pins §6's
+failure line and exit code to what `cmd_run.py` actually emits. The `dx roles list`
+block in §5 and the version string were already pinned this way, which is why they
+did not drift.*
+
+*No fabrication. The only edit is the host-address substitution declared at the top.*
 
 *What this tutorial does **not** establish: that `dx run` writes evidence bundles (it does not), that `dx merge` performs a git merge or appends to the ledger (it does not — it verifies and stops), or that `dx verify-gui` has been run against a live desktop (it has not). The merge gate does now pass all-green against a real GPG signature, but in `tests/test_gpg_integration.py` against committed keys and a synthetic ledger — not against the live `devswarm-ledger` with a freshly-made RL-010 signature, which remains undemonstrated.*

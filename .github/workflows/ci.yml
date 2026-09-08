@@ -69,6 +69,11 @@ jobs:
       # matter, so they are asserted in that order and never merged into one run.
       - name: Clone the real role deck
         run: git clone --depth 1 https://github.com/cdnwetzel/sdlc-agent-roles.git "$HOME/ai/sdlc-agent-roles"
+      # The tutorial's merge transcripts are only checkable against a real
+      # ledger. Without this clone those guards skip, which is how §7 stayed
+      # broken through several releases.
+      - name: Clone the reference ledger
+        run: git clone --depth 1 https://github.com/cdnwetzel/devswarm-ledger-reference.git "$HOME/ai/devswarm-ledger-reference"
       - name: Full suite with the real deck — nothing may skip
         run: |
           pytest -q -rs 2>&1 | tee /tmp/cards.log

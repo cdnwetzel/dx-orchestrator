@@ -1,5 +1,10 @@
 # RELEASE_READINESS.md
 
+> **Historical record — this work is done.** Kept because it is the evidence
+> behind the 0.7.0–0.8.0 opening-up, not because anything here is outstanding.
+> All five repos are public and MIT as of 2026-09-08; `CHANGELOG.md` and
+> `checkpoint.md` are the current state.
+
 **Question asked:** identify every repo needed to reproduce our results, scan each,
 and cost out making them all public under MIT.
 
@@ -18,11 +23,12 @@ needs. One of the five is consumed from PyPI, not cloned.
 | 2 | `pxx` | code-generation engine | **public** | MIT | **PyPI** `pxx-orchestrator>=2.5.4` — no clone needed |
 | 3 | `psoperator` | desktop automation, GUI verification | **public** | MIT | `git clone` + `pip install -e .` |
 | 4 | **`sdlc-agent-roles`** | the 38 role cards `dx` is governed by | **public** ✅ | **MIT** ✅ | `git clone` |
-| 5 | `devswarm-ledger` | hash-chained ledger, GPG approvals | **private** | **none** | `gh repo clone` (blocked) |
+| 5 | **`devswarm-ledger-reference`** | ledger format, verifier, a signed reference trace | **public** ✅ | **MIT** ✅ | `git clone` |
 
-**Four of five are now public and MIT** — `sdlc-agent-roles` was published
-2026-09-08. Only the ledger remains, and it is a structural decision rather than
-a paperwork gap.
+**All five are public and MIT** as of 2026-09-08. The ledger was the one
+structural question, and it was answered by splitting: the *format* is published
+as `devswarm-ledger-reference`, the live operational ledger stays private. §3
+below is that argument, and it is the part still worth reading.
 
 **The licence question itself is easy.** `git log` shows a single author —
 `Chris Wetzel <chris@cwetzel.com>` — on every commit of both private repos

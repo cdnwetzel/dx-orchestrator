@@ -5,6 +5,48 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] — 2026-09-08
+
+### Fixed
+
+- **`TUTORIAL.md` §7 told readers to run a command that fails.** It showed
+  `dx merge T-0007` — a task that exists only in a private operational ledger.
+  Once `0.7.0` repointed `DEFAULT_LEDGER_REPO` to the public reference ledger,
+  every new reader got `queue file not found` from the section demonstrating the
+  project's central gate. §7 now uses `T-0001`, and shows the transcript that
+  release made possible: an **all-green merge**, four checks, exit 0.
+- **§6 quoted a superseded failure line and the wrong exit code.** It showed
+  `❌ pxx task failed.` and "exit code 2" — both changed by `0.7.1`, which moved
+  a failed task to `3` precisely so it could not be mistaken for the Anchored
+  refusal that owns `2`. A tutorial quoting the old line teaches the old
+  contract.
+- §7 claimed the fully-green happy path was "still not demonstrated live". It
+  is, now, against the reference ledger with a real `gpg --verify`. The boundary
+  was rewritten to say what is actually still missing: the RL-010 *ceremony* — a
+  signature made interactively, over a ledger whose rows attest to real work.
+
+### Added
+
+- `TestMergeTranscriptFidelity` — §7's transcripts are re-run and required to
+  match, and the task id shown must exist in the ledger `dx` defaults to. §6's
+  failure line and exit code are pinned to what `cmd_run.py` emits. Neither
+  section was checked before, which is why both broke silently under 337 green
+  tests.
+- CI clones `devswarm-ledger-reference` as well as the role deck, so those
+  guards run rather than skip.
+
+### Changed
+
+- `checkpoint.md` rewritten as a resume document again: the go-live block was
+  still headed `v0.6.2`, its evidence table cited a test count four releases old,
+  and four session narratives had accumulated below it. Detail belongs here in
+  `CHANGELOG.md`.
+- `RELEASE_READINESS.md` marked as a historical record and its repo table
+  corrected — it still told readers the ledger was private and blocked.
+- The README's first screen said `dx` routes to "whatever speaks vLLM or Ollama".
+  It speaks anything OpenAI-compatible; the same undersell was fixed lower down
+  in 0.8.0 and missed here.
+
 ## [0.8.0] — 2026-09-08
 
 ### Added
@@ -480,6 +522,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.8.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.0...v0.7.1

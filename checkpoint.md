@@ -2,34 +2,40 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.8.0
+**Version:** 0.8.1
 
 ## Where we are
 
 `dx-orchestrator` is public, MIT, and working end-to-end on this box
 (Ubuntu 24.04 WSL2, Python 3.12). 0.3.0 gave it a licence, a hermetic test suite
-and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
-`mypy --strict`, and documentation the suite refuses to let drift.
+and CI; 0.4.0 raised the floor for outside review; **0.7.0–0.8.0 made every
+dependency public and MIT**, so a stranger can reproduce the results without
+asking for access. Release detail is in `CHANGELOG.md` — this file is for
+resuming, not for history.
 
-**Verified working (re-checked at 0.4.0):**
+**Verified working (every row re-run at 0.8.1, 2026-09-08):**
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 351 passed |
+| `pytest` | 356 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.8.0` |
+| `dx --version` | `dx 0.8.1` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
 | invalid role card | `dx run` refuses to be governed by it |
 | `dx roles validate` | 38/38 pass |
-| `dx merge T-0007` | correctly rejects on stale head (RL-003), exit 1 |
+| `dx merge T-0001` | all-green against the reference ledger, exit 0 |
+| `dx merge` (head moved) | correctly rejects the stale signature (RL-003), exit 1 |
 | `dx run … --dry-run` | routes per manifest (endpoint + model + provider) |
-| Live `dx run` against the vLLM node | re-run 2026-09-08 at 0.6.1: generated working code, exit 0 |
+| Live `dx run` against the vLLM node | generated working code, exit 0; its own tests pass |
+| Live `dx run` via `openai-compatible` | exit 0 — dx wires to any OpenAI-shaped stack |
+| Live `dx run` with a vendor-style `.../v1` endpoint | exit 0 — the trailing `/v1` is corrected and announced |
+| Clean clone from GitHub | 356 tests, ruff, `mypy --strict` all green cold |
 
 **Lab topology is NOT recorded in this repo.** The live routing table is in
 `~/.config/dx/hardware_manifest.yml` on each driver box; the manifest seeded by
@@ -45,16 +51,16 @@ dx-orchestrator/
 ├── TUTORIAL.md                   — validated walkthrough
 ├── VISION.md                     — 7-pillar architecture, red lines, lessons
 ├── RESOURCES.md                  — footprint + fleet sizing requirements
-├── CHANGELOG.md                  — 0.1.0 → 0.4.0
+├── CHANGELOG.md                  — 0.1.0 → 0.8.0
 ├── SECURITY.md                   — trust boundaries + disclosure
 ├── CONTRIBUTING.md               — gates, fixture rules
-├── RELEASE_READINESS.md          — cross-repo MIT/public readiness scan
+├── RELEASE_READINESS.md          — cross-repo scan behind the 0.7–0.8 opening-up (historical)
 ├── checkpoint.md                 — this file
 ├── pyproject.toml                — metadata, deps, ruff + pytest config
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
 ├── scripts/setup_dependencies.sh — idempotent installer
 ├── src/dx/                       — 14 modules (see README)
-└── tests/                        — 327 tests, hermetic fixtures + real GPG keys
+└── tests/                        — 356 tests, hermetic fixtures + real GPG keys
 ```
 
 ## Resume here
@@ -102,7 +108,7 @@ uids with no comment field; revoked and expired keys passed the RL-003 gate; and
    fixed — it had been returning sentence fragments rather than whole
    prohibitions on every real card.
 
-## Go-live status — GO (2026-09-08, v0.6.2)
+## Go-live status — GO (2026-09-08, v0.8.1)
 
 Reviewed for public peer review and cleared, with scope stated.
 
@@ -110,13 +116,13 @@ Reviewed for public peer review and cleared, with scope stated.
 
 | | |
 | --- | --- |
-| Clean clone passes cold | ruff, `mypy --strict`, 327 tests, 91% coverage — verified from a fresh `git clone` |
+| Clean clone passes cold | ruff, `mypy --strict`, 356 tests, 91% coverage — verified from a fresh `git clone` of the public repo |
 | RL-003 gate | proved against real revoked and expired GPG keys, not captured transcripts |
-| Live run | `dx run` generated working code on lab hardware at 0.6.2, exit 0 |
+| Live run | `dx run` generated working code on lab hardware at 0.8.1, exit 0, and the generated tests pass |
 | Privacy | 0 lab addresses in the tree, now guarded tree-wide by `TestNoLabAddressesAnywhere`. **History is not clean:** commit `e066854` wrote the psoperator home range into `checkpoint.md` while documenting the fix for exactly that problem. Removed from the tree; unremovable from history without a force-push the ruleset now forbids. `psoperator` is the same shape. |
 | Legal | MIT, LICENSE ships inside the wheel |
 | Docs | version, env-override table, command table, tutorial transcripts and test count all machine-checked |
-| CI | 6 jobs, Python 3.11/3.12/3.13, GPG tests asserted to run rather than skip |
+| CI | 6 jobs, Python 3.11/3.12/3.13; GPG **and** real-card **and** merge-transcript tests asserted to run rather than skip |
 
 **Scope of the GO.** Ready for peer review of *the control plane and its gates*.
 Not ready to be described as a working end-to-end factory — two pipeline stages
@@ -128,53 +134,44 @@ stubbed").
 - `dx merge` verifies but does not merge or append to the ledger.
 - `dx run` does not write evidence bundles.
 - `dx verify-gui` has never run against a live desktop.
-- No all-green merge against the *live* ledger with a fresh RL-010 signature
-  (the gate does pass all-green against real keys in tests).
+- No all-green merge against a *live operational* ledger with a fresh RL-010
+  signature. The gate does pass all-green against the public reference ledger
+  with a real `gpg --verify` — but that ledger's rows attest to no work and its
+  demo key was made by a script, which RL-010 forbids for a real approval. The
+  gate is proven; the ceremony is not.
+- Reproducibility depends on the operator supplying an inference endpoint and a
+  pxx shell safeguard. Both are documented; neither ships.
 
 **What would flip this to NO-GO:** any of the above being *claimed* as working.
 The gates are honest as long as the stubs stay labelled.
 
-## Open-source readiness (scanned 2026-09-08)
+## What changed on 2026-09-08 (detail in `CHANGELOG.md`)
 
-Full findings in `RELEASE_READINESS.md`. Summary: reproducing our results takes
-**five** repos, not four — `dx` itself plus the four integrations. Three
-(`dx-orchestrator`, `pxx`, `psoperator`) are already public MIT; `pxx` resolves
-from PyPI at the pinned `2.5.4`, and public `psoperator` is confirmed sufficient
-for everything `dx` calls.
+The whole dependency set went public and MIT, and four defects surfaced doing it.
 
-Licensing was **not** the blocker: both repos had a single author, so MIT applied
-unilaterally — no CLA, no history scrubbing (both were clean of secrets,
-addresses and deleted files).
+**Every dependency is now public** — `sdlc-agent-roles` (the 38 cards; supersedes
+the archived `claude-sdlc-roles`) and `devswarm-ledger-reference` (format,
+verifier, RL-010 key standard, and a signed synthetic trace). The live
+operational ledger stays private by design: it is hash-chained, so it cannot be
+redacted without invalidating every signature, and publishing it would commit us
+to publishing all future operational state. `dx merge` needs only the format.
 
-Two things actually block a full public release:
+**Defects found, each by running the thing rather than reading it:**
 
-1. ~~**Which role deck is canonical**~~ — resolved 2026-09-08:
-   `sdlc-agent-roles` @ `release/v1.1.0`. Strict superset of `claude-sdlc-roles`
-   — same 38 cards at the identical path, and MIT-licensed already. Its `main`
-   was empty; `release/v1.1.0` was merged to `main` (`058dd88`) and
-   **`sdlc-agent-roles` is now PUBLIC under MIT** (2026-09-08), CI green
-   including the receipt gate. Its `plugin.json` licence key is deliberately
-   deferred — the receipt gate freezes the payload digest, so that field needs a
-   real v1.1.1 review round (`RUNBOOK.md` §2). `LICENSE` governs regardless.
+1. `dx run` returned pxx's exit code verbatim, so a failing task could forge
+   exit 2 — dx's code for "governance refused this role". Now `3`, guarded.
+2. The "no lab addresses" red line was enforced on `TUTORIAL.md` alone, so one
+   reached `checkpoint.md`. Now enforced across every tracked file.
+3. `TUTORIAL.md` §7 told readers to merge a task that exists only in a private
+   ledger; §6 quoted a failure line and exit code superseded the same day. Both
+   now machine-checked.
+4. `psoperator` published real RFC1918 lab addresses while its own `config.py`
+   claimed they were RFC-5737 placeholders. Fixed there; both repos now state
+   one policy.
 
-   **`dx` migrated to the new deck in 0.7.0** — 18 files, plus a re-captured
-   `TUTORIAL.md` transcript.
-2. **The ledger should not become a public write surface.** It is hash-chained,
-   so it cannot be sanitised without invalidating every signature, and its own
-   README argues against publication. Recommended: keep the live ledger private
-   and publish a *reference* ledger — schema, verifier, RL-010 key standard, and
-   a synthetic green trace. That is all `ledger_utils.py` ever needs.
-
-**Done 2026-09-08:** `sdlc-agent-roles` published (MIT, public);
-`claude-sdlc-roles` archived with a pointer to the successor; the reference
-ledger built at `~/ai/devswarm-ledger-reference` (13 files, `8c9785e`, cold-clone
-verified, **not yet pushed**) with all four RL-003 failure modes proven.
-
-That doc debt is now paid: `dx` 0.7.0 repointed both defaults, dropped `gh` from
-the install path entirely, replaced the README's "Before you clone" section, and
-re-captured the tutorial transcript. CI now clones the deck and forbids any
-skipped test. Remaining: step 12 (the `psoperator` address policy) and the
-deferred `plugin.json` licence key.
+**Branch protection** is active on all five public repos (`deletion` +
+`non_fast_forward` on the default branch), verified by a rejected force push.
+No PR requirement — the gap worth closing is history rewriting.
 
 ## Next real work
 
@@ -186,11 +183,12 @@ deferred `plugin.json` licence key.
    `VISION.md § Reference formats`: schema-per-family (`dx.role_task.v1`,
    `dx.gui_verification.v1`, `dx.merge_gate.v1`), bundle-as-directory with
    README + manifest.json + SHA256SUMS, mandatory `boundary` block.
-3. **A green happy-path merge trace against the live ledger.** As of 0.4.0 the
-   full gate passes all-green in tests against a *real* GPG signature
-   (`tests/test_gpg_integration.py`), so only the live-ledger demonstration
-   remains — it needs a fresh signature against the current head, produced
-   interactively per RL-010.
+3. **A green merge against a live *operational* ledger.** The gate now passes
+   all-green outside the test suite too — `dx merge T-0001` against the public
+   reference ledger, real `gpg --verify`, exit 0, and `TUTORIAL.md` §7 shows the
+   transcript. What is left is the ceremony, not the gate: a fresh RL-010
+   signature made interactively on a trusted terminal, against a ledger whose
+   rows attest to real work.
 4. **PSOperator process-separated mode on the Orin** — systemd/OpenRC units so
    observer/gatekeeper/executor start on boot.
 5. **Orchestration daemon** for `code-review-framework` R13 bounded retries.
@@ -205,53 +203,6 @@ deferred `plugin.json` licence key.
 - Don't put real lab addresses back into tracked files.
 - Don't add a gate without a test. Three fail-open bugs shipped in 0.2.0
   precisely because the gates had no tests.
-
-## Exit-code contract fixed (0.7.1)
-
-`dx run` returned pxx's exit code verbatim, and `2` is dx's code for "Anchored
-role refused". pxx exits 2 in the wild — a missing shell safeguard does it — so
-a caller could read exit 2 and conclude governance refused the run when the run
-was allowed and merely failed. A downstream failure is now `3`; pxx's real code
-moves into the message. `2` is unreachable from a subprocess and machine-checked
-to stay that way (`TestExitCodeContract`).
-
-Found by running a real end-to-end `dx run` after the 0.7.0 rename — not by
-reading the code. Worth remembering: the rename was fully green on 327 tests
-while this was live.
-
-## Fleet addressing policy (2026-09-08)
-
-Settled, and now uniform. `psoperator` published real RFC1918 lab addresses —
-the same private /24 this box routes to — while its own `config.py` claimed
-those addresses "are RFC-5737 documentation placeholders", true of its work
-fleet and false of its home fleet. Its home fleet now uses `192.0.2.0/24`
-(TEST-NET-1); the fail-closed addressing invariants were untouched in substance
-and all still fire by name.
-
-The "device-model hostnames and the home range are an approved exception"
-carve-out in its `CONTRIBUTING.md`, `greptile.json` and `.coderabbit.yaml` is
-gone rather than renumbered — the exception was the defect. Both repos now state
-the same rule, and `dx`'s `CONTRIBUTING.md` records it.
-
-**Honest limitation:** those addresses remain in `psoperator` commit `f895f0f`
-in the public history. Removing them needs a force-push, which the new ruleset
-correctly forbids and which is the wrong trade on a published repo. `dx`'s own
-"0 addresses in tree *or* history" claim still holds for `dx`; it does not hold
-for `psoperator`'s history, and the claim is now scoped to say so.
-
-## Branch protection (2026-09-08)
-
-All five public repos carry an active ruleset on their default branch —
-`deletion` + `non_fast_forward`, i.e. the branch cannot be deleted or
-force-pushed. Verified by attempting a real force push against
-`devswarm-ledger-reference`: rejected with "Cannot force-push to this branch",
-remote unchanged.
-
-Direct pushes to the default branch still work — no PR requirement, no required
-status checks. That is deliberate for a solo maintainer; the gap this closes is
-history rewriting, which is what an append-only hash chain actually needs.
-Rulesets are free on public repos, which is why this was unavailable while the
-ledger was private (`devswarm-ledger/README.md` flags it as unmitigated on Free).
 
 ## Sibling repos
 
