@@ -7,6 +7,7 @@ and a lie about what was verified.
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import os
@@ -14,7 +15,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from ._argtypes import SubParsers
 from .config_loader import get_config_path, get_gui_config
 
 
@@ -30,7 +33,7 @@ class GuiTarget:
     screenshot_cmd: str
 
 
-def _require(cfg: dict, key: str, env_var: str) -> str:
+def _require(cfg: dict[str, Any], key: str, env_var: str) -> str:
     value = os.environ.get(env_var) or cfg.get(key)
     if not value:
         raise GuiConfigError(
@@ -57,7 +60,7 @@ def gui_target(require_ssh: bool = False) -> GuiTarget:
     )
 
 
-def register_verify_subcommand(subparsers) -> None:
+def register_verify_subcommand(subparsers: SubParsers) -> None:
     parser = subparsers.add_parser(
         "verify-gui", help="Verify GUI state using a vision-language model"
     )
@@ -144,7 +147,7 @@ def verify_gui(expected: str) -> tuple[bool, str]:
     )
 
 
-def cmd_verify(args) -> None:
+def cmd_verify(args: argparse.Namespace) -> None:
     try:
         if args.screenshot:
             target = gui_target()

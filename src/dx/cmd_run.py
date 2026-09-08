@@ -1,9 +1,13 @@
+from __future__ import annotations
+
+import argparse
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from ._argtypes import SubParsers
 from .config_loader import get_roles_path, get_route_for_role
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
@@ -17,7 +21,7 @@ def _resolve_pxx() -> str | None:
         return str(venv_candidate)
     return shutil.which("pxx")
 
-def register_run_subcommand(subparsers) -> None:
+def register_run_subcommand(subparsers: SubParsers) -> None:
     parser = subparsers.add_parser(
         "run", help="Dispatch a task with role injection and hardware routing"
     )
@@ -59,7 +63,7 @@ def register_run_subcommand(subparsers) -> None:
     parser.set_defaults(func=cmd_run)
 
 
-def cmd_run(args) -> None:
+def cmd_run(args: argparse.Namespace) -> None:
     roles_path = get_roles_path()
     if not roles_path.exists():
         print(f"ERROR: role cards not found at {roles_path}", file=sys.stderr)

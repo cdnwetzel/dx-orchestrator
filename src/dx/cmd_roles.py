@@ -1,14 +1,18 @@
+from __future__ import annotations
+
+import argparse
 import json
 import sys
 from pathlib import Path
 
+from ._argtypes import SubParsers
 from .config_loader import get_roles_path
 from .role_models import FitLevel
 from .role_registry import get_registry, get_role, load_registry
 from .role_validate import count_by_fit, validate_registry
 
 
-def register_roles_subcommand(subparsers) -> None:
+def register_roles_subcommand(subparsers: SubParsers) -> None:
     roles = subparsers.add_parser("roles", help="Inspect and validate role cards")
     roles_sub = roles.add_subparsers(dest="roles_command", required=True)
 
@@ -29,11 +33,11 @@ def register_roles_subcommand(subparsers) -> None:
     val.set_defaults(func=cmd_roles_validate)
 
 
-def _cards_path(args) -> Path:
+def _cards_path(args: argparse.Namespace) -> Path:
     return Path(args.path).expanduser() if args.path else get_roles_path()
 
 
-def cmd_roles_list(args) -> None:
+def cmd_roles_list(args: argparse.Namespace) -> None:
     cards_path = _cards_path(args)
     if not cards_path.exists():
         print(f"ERROR: cards not found at {cards_path}", file=sys.stderr)
@@ -107,7 +111,7 @@ def cmd_roles_list(args) -> None:
         print(f"{c.slug:<{slug_w}}{c.fit.value:<{fit_w}}{c.seat:<{seat_w}}{anchored}")
 
 
-def cmd_roles_validate(args) -> None:
+def cmd_roles_validate(args: argparse.Namespace) -> None:
     cards_path = _cards_path(args)
     if not cards_path.exists():
         print(f"ERROR: cards not found at {cards_path}", file=sys.stderr)

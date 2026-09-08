@@ -1,8 +1,25 @@
+from __future__ import annotations
+
+import argparse
 import importlib
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
+
+import yaml
+
+from ._argtypes import SubParsers
+from .config_loader import (
+    get_config_path,
+    get_gui_config,
+    get_ledger_repo_path,
+    get_psoperator_repo,
+    get_roles_path,
+    load_config,
+)
 
 
 def _find_on_path(name: str) -> str | None:
@@ -13,7 +30,7 @@ def _find_on_path(name: str) -> str | None:
     return shutil.which(name)
 
 
-def register_doctor_subcommand(subparsers) -> None:
+def register_doctor_subcommand(subparsers: SubParsers) -> None:
     parser = subparsers.add_parser(
         "doctor", help="Self-test the dx environment"
     )
@@ -25,7 +42,7 @@ def register_doctor_subcommand(subparsers) -> None:
     parser.set_defaults(func=cmd_doctor)
 
 
-def _check_cmd(cmd: list, label: str) -> bool:
+def _check_cmd(cmd: list[str], label: str) -> bool:
     resolved = _find_on_path(cmd[0])
     if resolved is None:
         print(f"❌ {label}")
@@ -49,7 +66,7 @@ def _check_import(module: str, label: str) -> bool:
         return False
 
 
-def cmd_doctor(args) -> None:
+def cmd_doctor(args: argparse.Namespace) -> None:
     print("🔍 dx doctor — self-test\n")
     all_ok = True
 
@@ -80,16 +97,15 @@ def cmd_doctor(args) -> None:
         all_ok = False
 
     # 3b. PSOperator examples/run_agent.py script present
-    psop_agent = Path("~/ai/psoperator/examples/run_agent.py").expanduser()
+    psop_agent = get_psoperator_repo() / "examples" / "run_agent.py"
     if psop_agent.exists():
         print(f"✅ PSOperator run_agent script at {psop_agent}")
     else:
         print(f"❌ PSOperator run_agent script missing at {psop_agent}")
+        print("   hint: set PSOPERATOR_REPO or run scripts/setup_dependencies.sh")
         all_ok = False
 
     # 4. Role cards
-    from .config_loader import get_roles_path
-
     roles_path = get_roles_path()
     if roles_path.exists():
         count = len(list(roles_path.glob("*.md")))
@@ -100,8 +116,6 @@ def cmd_doctor(args) -> None:
         all_ok = False
 
     # 4b. devswarm-ledger clone (needed by dx merge)
-    from .config_loader import get_ledger_repo_path
-
     ledger_repo = get_ledger_repo_path()
     verify_chain = ledger_repo / "tools" / "verify_chain.py"
     if verify_chain.exists():
@@ -116,14 +130,10 @@ def cmd_doctor(args) -> None:
         # Not marking all_ok=False — same reason as above.
 
     # 5. Hardware manifest
-    from .config_loader import get_config_path
-
     cfg_path = get_config_path()
     if cfg_path.exists():
         print(f"✅ Hardware manifest at {cfg_path}")
         try:
-            import yaml
-
             with cfg_path.open() as f:
                 yaml.safe_load(f)
             print("   (YAML syntax OK)")
@@ -138,11 +148,6 @@ def cmd_doctor(args) -> None:
     #    in sync with routing config. We only test TCP reachability (a live
     #    vLLM will happily 404 on /, which shouldn't count as failure).
     if not args.no_network:
-        import socket
-        from urllib.parse import urlparse
-
-        from .config_loader import get_gui_config, load_config
-
         print("\n🌐 Network checks (non-critical):")
         try:
             cfg = load_config()

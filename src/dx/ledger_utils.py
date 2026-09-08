@@ -16,6 +16,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 class LedgerError(RuntimeError):
@@ -96,13 +97,14 @@ def get_ledger_head(ledger_repo: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_task_queue(task_id: str, ledger_repo: Path) -> dict:
+def get_task_queue(task_id: str, ledger_repo: Path) -> dict[str, Any]:
     """Read queue/<task_id>.json — the per-task state file."""
     path = ledger_repo / "queue" / f"{task_id}.json"
     if not path.exists():
         raise LedgerError(f"queue file not found: {path}")
     with path.open(encoding="utf-8") as f:
-        return json.load(f)
+        queue: dict[str, Any] = json.load(f)
+    return queue
 
 
 def get_task_author_human(task_id: str, ledger_repo: Path) -> str | None:
@@ -119,7 +121,8 @@ def get_task_author_human(task_id: str, ledger_repo: Path) -> str | None:
                 continue
             row = json.loads(line)
             if row.get("task_id") == task_id and row.get("author_human"):
-                return row["author_human"]
+                author: str = row["author_human"]
+                return author
     return None
 
 
@@ -128,7 +131,9 @@ def get_task_author_human(task_id: str, ledger_repo: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _gpg(*args: str, keyring: Path, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
+def _gpg(
+    *args: str, keyring: Path, input_bytes: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
     """Invoke gpg with a scratch keyring. Never uses the user's default keyring."""
     cmd = [
         "gpg",

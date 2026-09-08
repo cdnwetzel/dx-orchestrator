@@ -3,6 +3,8 @@
 Five of the six bugs found during the first install were parser bugs
 (checkpoint.md). This file pins each of those behaviors.
 """
+from pathlib import Path
+
 import pytest
 
 from dx.role_models import FitLevel
@@ -135,3 +137,107 @@ def test_to_prompt_context_includes_mandate_and_must_not(roles_dir):
 @pytest.mark.parametrize("name", ["widget-engineer", "oracle-sme", "rotating-reviewer"])
 def test_every_fixture_parses_without_error(roles_dir, name):
     assert parse_role_file(roles_dir / f"{name}.md").slug == name
+
+
+class TestBulletExtraction:
+    """`prohibited_patterns` is meant to be matched against agent behavior, so
+    each entry has to be a whole prohibition.
+    """
+
+    def test_wrapped_bullets_are_not_split_into_fragments(self, tmp_path):
+        """Regression: a naive per-line pattern turned one wrapped prohibition
+        into two entries, the second being a sentence tail like 'argue past it.'
+        """
+        card_file = tmp_path / "wrap-role.md"
+        card_file.write_text(
+            "# Wrap\n\n**Agent fit:** High · **9-person seat:** S1\n\n"
+            "## Mandate\n\nA mandate long enough for validation.\n\n"
+            "## Must not (separation of duties)\n\n"
+            "- **Override a failing gate.** Fix the code or change the gate on\n"
+            "  the record; never argue past it.\n"
+            "- **Approve your own deploy.**\n",
+            encoding="utf-8",
+        )
+        patterns = parse_role_file(card_file).prohibited_patterns
+        assert len(patterns) == 2, patterns
+        assert patterns[0] == (
+            "Override a failing gate. Fix the code or change the gate on "
+            "the record; never argue past it."
+        )
+        assert patterns[1] == "Approve your own deploy."
+
+    def test_emphasis_markers_are_removed_not_half_eaten(self, tmp_path):
+        """The old pattern consumed the opening ** and left the closing one."""
+        card_file = tmp_path / "emph-role.md"
+        card_file.write_text(
+            "# Emph\n\n## Must not (separation of duties)\n\n"
+            "- **Bold headline.** Trailing prose.\n",
+            encoding="utf-8",
+        )
+        pattern = parse_role_file(card_file).prohibited_patterns[0]
+        assert "*" not in pattern
+        assert pattern == "Bold headline. Trailing prose."
+
+    def test_blank_lines_between_bullets_are_ignored(self, tmp_path):
+        card_file = tmp_path / "blank-role.md"
+        card_file.write_text(
+            "# Blank\n\n## Must not (separation of duties)\n\n"
+            "- First prohibition.\n\n- Second prohibition.\n",
+            encoding="utf-8",
+        )
+        assert parse_role_file(card_file).prohibited_patterns == [
+            "First prohibition.",
+            "Second prohibition.",
+        ]
+
+    def test_empty_must_not_yields_no_patterns(self, tmp_path):
+        card_file = tmp_path / "none-role.md"
+        card_file.write_text("# None\n\n## Mandate\n\nNothing.\n", encoding="utf-8")
+        assert parse_role_file(card_file).prohibited_patterns == []
+
+    def test_each_pattern_is_a_complete_sentence(self, roles_dir):
+        """A fragment that does not end a sentence is the signature of the bug."""
+        for name in ("widget-engineer", "oracle-sme", "rotating-reviewer"):
+            for pattern in parse_role_file(roles_dir / f"{name}.md").prohibited_patterns:
+                assert pattern[0].isupper(), f"{name}: {pattern!r} does not start a sentence"
+                assert pattern.rstrip().endswith((".", "!", "?", "`")), (
+                    f"{name}: {pattern!r} looks like a fragment"
+                )
+
+
+REAL_CARDS = Path("~/ai/claude-sdlc-roles/skills/sdlc-role/roles").expanduser()
+
+
+@pytest.mark.skipif(
+    not REAL_CARDS.is_dir(),
+    reason="claude-sdlc-roles not cloned (private repo; skipped in CI)",
+)
+class TestAgainstRealCards:
+    """Opt-in checks against the real 38 cards when the private repo is present.
+
+    The hermetic fixtures prove the parser handles the format as documented;
+    these prove the documented format matches what actually ships.
+    """
+
+    def test_every_real_card_parses(self):
+        cards = sorted(REAL_CARDS.glob("*.md"))
+        assert len(cards) >= 30, f"expected the full deck, found {len(cards)}"
+        for path in cards:
+            card = parse_role_file(path)
+            assert card.slug == path.stem
+            assert card.mandate.strip(), f"{path.stem}: empty mandate"
+            assert card.must_not.strip(), f"{path.stem}: empty must_not"
+
+    def test_every_real_prohibition_is_whole(self):
+        """The bug this catches shipped for two releases against these cards."""
+        for path in sorted(REAL_CARDS.glob("*.md")):
+            for pattern in parse_role_file(path).prohibited_patterns:
+                assert "**" not in pattern, f"{path.stem}: stray emphasis in {pattern!r}"
+                assert pattern[0].isupper(), f"{path.stem}: fragment {pattern!r}"
+
+    def test_anchored_cards_all_carry_handoff_text(self):
+        """dx run prints this when it blocks; an empty one strands the operator."""
+        for path in sorted(REAL_CARDS.glob("*.md")):
+            card = parse_role_file(path)
+            if card.anchored:
+                assert card.handoff.strip(), f"{path.stem}: anchored with no handoff"

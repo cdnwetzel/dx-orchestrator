@@ -3,13 +3,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config_loader import get_psoperator_config
+from .config_loader import get_psoperator_config, get_psoperator_repo
 
-# Standard install location per scripts/setup_dependencies.sh
-PSOPERATOR_REPO = Path(
-    os.environ.get("PSOPERATOR_REPO", "~/ai/psoperator")
-).expanduser()
-RUN_AGENT_SCRIPT = PSOPERATOR_REPO / "examples" / "run_agent.py"
+
+def run_agent_script() -> Path:
+    """Absolute path to psoperator's examples/run_agent.py.
+
+    Resolved per call rather than at import time so PSOPERATOR_REPO and the
+    manifest are honoured by anything that sets them after import.
+    """
+    return get_psoperator_repo() / "examples" / "run_agent.py"
 
 
 class PSOperatorClient:
@@ -51,7 +54,7 @@ class PSOperatorClient:
             or cfg.get("audit_log_path", "psoperator_audit.jsonl")
         )
 
-    def _env(self) -> dict:
+    def _env(self) -> dict[str, str]:
         env = os.environ.copy()
         env.update(
             {
@@ -68,13 +71,14 @@ class PSOperatorClient:
     def launch_gui_task(
         self, task_description: str, real_input: bool = False, timeout: int = 300
     ) -> bool:
-        if not RUN_AGENT_SCRIPT.exists():
-            print(f"⚠️  run_agent.py not found at {RUN_AGENT_SCRIPT}.")
+        script = run_agent_script()
+        if not script.exists():
+            print(f"⚠️  run_agent.py not found at {script}.")
             print("     Set PSOPERATOR_REPO or clone psoperator to ~/ai/psoperator.")
             return False
 
         # Use sys.executable so we invoke the venv Python that has psoperator installed
-        cmd = [sys.executable, str(RUN_AGENT_SCRIPT), "--task", task_description]
+        cmd = [sys.executable, str(script), "--task", task_description]
         if real_input:
             cmd.append("--real-input")
         try:

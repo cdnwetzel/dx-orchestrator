@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -11,7 +12,11 @@ class RoleParseError(Exception):
 
 
 _SECTION_RE = re.compile(r"##\s*(.+?)\s*\n(.*?)(?=\n## |\Z)", re.DOTALL)
-_BULLET_RE = re.compile(r"^[\s\-*•]+\s*(.*?)$", re.MULTILINE)
+
+# One Markdown list item. Role cards wrap long prohibitions across several
+# lines, so a bullet is "a line that starts one" plus any indented continuation.
+_BULLET_START_RE = re.compile(r"^\s*[-*\u2022]\s+(.*)$")
+_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*")
 
 # Inline metadata line style used by claude-sdlc-roles:
 #   **Slug:** `slug` · **Phase:** X · **Agent fit:** Y · **9-person seat:** Z
@@ -19,12 +24,35 @@ _FIT_RE = re.compile(r"\*\*Agent fit:\*\*\s*([A-Za-z]+)", re.IGNORECASE)
 _SEAT_RE = re.compile(r"\*\*9-person seat:\*\*\s*([^\n·|]+)")
 
 
+def _extract_bullets(text: str) -> list[str]:
+    """Split a Markdown bullet list into one entry per item.
+
+    Treating every line as its own bullet — which a naive `^[\\s\\-*]+` pattern
+    does — split wrapped prohibitions into fragments. A real card's four-item
+    "Must not" section yielded six entries, two of which ("argue past it.") were
+    sentence tails rather than prohibitions, and the emphasis markers were half
+    eaten. `prohibited_patterns` exists to be matched against agent behavior, so
+    the items have to be whole.
+    """
+    items: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        match = _BULLET_START_RE.match(line)
+        if match:
+            items.append(match.group(1).strip())
+        elif items:
+            # An indented continuation of the bullet above it.
+            items[-1] = f"{items[-1]} {line.strip()}"
+    return [_EMPHASIS_RE.sub(r"\1", item).strip() for item in items if item.strip()]
+
+
 def _normalize_key(title: str) -> str:
     key = title.strip().lower().replace(" ", "_")
     return re.sub(r"[^a-z_]", "", key)
 
 
-def _match_section(sections: dict, *prefixes: str) -> str:
+def _match_section(sections: dict[str, str], *prefixes: str) -> str:
     """Return the first section whose normalized key equals or starts with a prefix."""
     for p in prefixes:
         if p in sections:
@@ -41,7 +69,7 @@ def parse_role_file(filepath: Path) -> RoleCard:
     slug = filepath.stem
 
     # Optional YAML frontmatter (not used by claude-sdlc-roles today, but supported)
-    frontmatter: dict = {}
+    frontmatter: dict[str, Any] = {}
     body = content
     if content.startswith("---"):
         parts = content.split("---", 2)
@@ -54,7 +82,7 @@ def parse_role_file(filepath: Path) -> RoleCard:
                 pass
             body = parts[2].strip()
 
-    sections: dict = {}
+    sections: dict[str, str] = {}
     for title, text in _SECTION_RE.findall(body):
         sections[_normalize_key(title)] = text.strip()
 
@@ -100,7 +128,5 @@ def parse_role_file(filepath: Path) -> RoleCard:
         failure_modes=_match_section(sections, "failure_modes", "failuremodes"),
         handoff=_match_section(sections, "handoff"),
         related=_match_section(sections, "related"),
-        prohibited_patterns=[
-            m.strip() for m in _BULLET_RE.findall(must_not) if m.strip()
-        ],
+        prohibited_patterns=_extract_bullets(must_not),
     )

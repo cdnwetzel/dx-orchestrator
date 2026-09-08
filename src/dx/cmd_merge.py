@@ -11,9 +11,11 @@ must appear in the order they were reached whether stdout is a tty or a pipe.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
+from ._argtypes import SubParsers
 from .cmd_verify import verify_gui
 from .config_loader import get_ledger_repo_path
 from .ledger_utils import (
@@ -45,7 +47,7 @@ def _fail(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
-def register_merge_subcommand(subparsers) -> None:
+def register_merge_subcommand(subparsers: SubParsers) -> None:
     parser = subparsers.add_parser(
         "merge",
         help="Merge gate: RL-003 signature check + optional GUI verification",
@@ -85,7 +87,7 @@ def _norm(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
-def cmd_merge(args) -> None:
+def cmd_merge(args: argparse.Namespace) -> None:
     if args.force:
         _warn(
             f"--force in effect for {args.task_id}: bypassing the RL-003 "

@@ -1,23 +1,26 @@
 # checkpoint.md
 
-**Last updated:** 2026-09-07
+**Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.3.0
+**Version:** 0.4.0
 
 ## Where we are
 
-`dx-orchestrator` is scaffolded, installed, tested, and working end-to-end on
-this box (Ubuntu 24.04 WSL2, Python 3.12). As of 0.3.0 it also has a licence, a
-hermetic test suite, and CI — it can now defend its own claims.
+`dx-orchestrator` is public, MIT, and working end-to-end on this box
+(Ubuntu 24.04 WSL2, Python 3.12). 0.3.0 gave it a licence, a hermetic test suite
+and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
+`mypy --strict`, and documentation the suite refuses to let drift.
 
-**Verified working (re-checked at 0.3.0):**
+**Verified working (re-checked at 0.4.0):**
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 146 passed |
+| `pytest` | 246 passed |
+| coverage | 91% (CI floor 88%) |
 | `ruff check .` | clean |
+| `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.3.0` |
+| `dx --version` | `dx 0.4.0` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | `dx roles validate` | 38/38 pass |
@@ -39,13 +42,15 @@ dx-orchestrator/
 ├── TUTORIAL.md                   — validated walkthrough
 ├── VISION.md                     — 7-pillar architecture, red lines, lessons
 ├── RESOURCES.md                  — footprint + fleet sizing requirements
-├── CHANGELOG.md                  — 0.1.0 → 0.3.0
+├── CHANGELOG.md                  — 0.1.0 → 0.4.0
+├── SECURITY.md                   — trust boundaries + disclosure
+├── CONTRIBUTING.md               — gates, fixture rules
 ├── checkpoint.md                 — this file
 ├── pyproject.toml                — metadata, deps, ruff + pytest config
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
 ├── scripts/setup_dependencies.sh — idempotent installer
 ├── src/dx/                       — 14 modules (see README)
-└── tests/                        — 146 tests, hermetic fixtures
+└── tests/                        — 246 tests, hermetic fixtures + real GPG keys
 ```
 
 ## Resume here
@@ -87,6 +92,12 @@ Three real defects surfaced while writing the tests, all fixed in 0.3.0 (see
 uids with no comment field; revoked and expired keys passed the RL-003 gate; and
 `cmd_verify.py` shipped a real host as a fallback default.
 
+7. ~~Peer-review hardening~~ — done in 0.4.0. Coverage 70% → 91%, `mypy --strict`
+   across the package, GPG gate proved against committed real keys (usable,
+   revoked, expired) rather than captured transcripts, and `prohibited_patterns`
+   fixed — it had been returning sentence fragments rather than whole
+   prohibitions on every real card.
+
 ## Next real work
 
 1. **Wire `TODO(ledger)` in `cmd_merge.py`** — the actual `git merge --no-ff`
@@ -97,9 +108,10 @@ uids with no comment field; revoked and expired keys passed the RL-003 gate; and
    `VISION.md § Reference formats`: schema-per-family (`dx.role_task.v1`,
    `dx.gui_verification.v1`, `dx.merge_gate.v1`), bundle-as-directory with
    README + manifest.json + SHA256SUMS, mandatory `boundary` block.
-3. **A green happy-path merge trace.** The gate logic has an all-green unit test,
-   but no real run has passed all three checks with a live GPG signature —
-   that needs a fresh signature against the current ledger head, produced
+3. **A green happy-path merge trace against the live ledger.** As of 0.4.0 the
+   full gate passes all-green in tests against a *real* GPG signature
+   (`tests/test_gpg_integration.py`), so only the live-ledger demonstration
+   remains — it needs a fresh signature against the current head, produced
    interactively per RL-010.
 4. **PSOperator process-separated mode on the Orin** — systemd/OpenRC units so
    observer/gatekeeper/executor start on boot.

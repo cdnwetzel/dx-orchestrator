@@ -96,6 +96,27 @@ def get_ledger_repo_path() -> Path:
     ).expanduser()
 
 
+DEFAULT_PSOPERATOR_REPO = Path("~/ai/psoperator").expanduser()
+
+
+def get_psoperator_repo() -> Path:
+    """Path to a local clone of cdnwetzel/psoperator.
+
+    Resolution order: PSOPERATOR_REPO env var, then `psoperator.repo` in the
+    manifest, then ~/ai/psoperator (where setup_dependencies.sh clones it).
+    """
+    env = os.environ.get("PSOPERATOR_REPO")
+    if env:
+        return Path(env).expanduser()
+    try:
+        configured = get_psoperator_config().get("repo")
+    except FileNotFoundError:
+        return DEFAULT_PSOPERATOR_REPO
+    if configured:
+        return Path(str(configured)).expanduser()
+    return DEFAULT_PSOPERATOR_REPO
+
+
 def get_roles_path() -> Path:
     """Directory holding the claude-sdlc-roles role cards.
 

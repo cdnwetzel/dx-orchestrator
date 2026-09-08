@@ -5,6 +5,67 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-09-08
+
+Peer-review hardening. The 0.3.0 release fixed three gates that were failing
+open; this one raises the floor so the next three are caught by machine rather
+than by reading. Coverage 70% → 91%, `mypy --strict` clean, and the RL-003
+signature gate is now proved against real GPG keys instead of captured text.
+
+### Added
+
+- **Real-key GPG integration tests** (`tests/test_gpg_integration.py`). Committed
+  public keys and detached signatures for a usable, a revoked and an expired
+  ed25519 key. The suite asserts what previously had only been reasoned about:
+  `gpg --verify` **exits 0 and emits `VALIDSIG` for signatures made by revoked
+  and expired keys**, so the pre-0.3.0 condition (`rc == 0` plus `VALIDSIG`)
+  cannot distinguish a usable key from a retired one. It also runs the complete
+  `dx merge` gate all-green against a real signature — the path that had never
+  been exercised end to end.
+- `tests/fixtures/gpg/regenerate.py` and a README explaining the fixtures, so
+  they are reproducible rather than opaque blobs.
+- **Documentation consistency tests** (`tests/test_docs_consistency.py`).
+  Versions must agree across `pyproject.toml`, `dx/__init__.py` and this file;
+  every environment override must be documented exactly as implemented, in both
+  directions; every subcommand must appear in the README table; and no routable
+  IP literal may appear in the package.
+- Tests for `cmd_doctor` (11% → 82%), `psoperator_client` (24% → 100%), the
+  `dx run --gui` pipeline, the VLM HTTP call, and the CLI entry point.
+- `SECURITY.md` — trust boundaries, the disclosure route, and an explicit list of
+  what `dx` does *not* protect against.
+- `CONTRIBUTING.md` — the gates, the fixture rules, and the one standing rule:
+  a gate without a test is a claim, not a gate.
+- `mypy --strict` across the package, and a CI job enforcing it.
+- CI now fails below 88% coverage, and fails if the GPG integration tests skip
+  rather than run.
+
+### Fixed
+
+- **`prohibited_patterns` returned fragments, not prohibitions.** Every line of
+  a Markdown bullet list was treated as its own item, so a wrapped prohibition
+  became two entries — a real card's four-item "Must not" section yielded six,
+  two of them sentence tails like `'argue past it.'` — while emphasis markers
+  were half-consumed, leaving stray `**`. Continuation lines are now folded into
+  their bullet and emphasis is stripped cleanly. This field exists to be matched
+  against agent behavior, so partial sentences in it were a governance defect.
+- **`cmd_doctor` hardcoded `~/ai/psoperator`** while `psoperator_client`
+  honoured `PSOPERATOR_REPO`, so the two could disagree about the same install.
+  Both now share `get_psoperator_repo()`, resolved per call rather than frozen
+  at import.
+- Six `PSOPERATOR_*` environment overrides were read but undocumented; the
+  README table now matches the implementation, and a test keeps it that way.
+- `pytest -q` produced no summary line, because `addopts` already supplied `-q`
+  and the two combined to `-qq`.
+
+### Changed
+
+- All `register_*_subcommand` and `cmd_*` functions carry real argparse types
+  via a shared `SubParsers` alias; `dict`/`list`/`CompletedProcess` annotations
+  are parameterised.
+- `cmd_doctor`'s six deferred function-local imports are hoisted to module
+  scope — there was no circular dependency justifying them.
+- `dev` extra now includes `pytest-cov`, `mypy` and the type stubs.
+
 ## [0.3.0] — 2026-09-07
 
 The repository-solidification release: a licence, a test suite, CI, and the
@@ -110,6 +171,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.4.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/cdnwetzel/dx-orchestrator/releases/tag/v0.1.0

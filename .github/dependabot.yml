@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Action versions rot silently until a runner deprecation turns into a
+  # failure. v4/v5 were already being force-run on Node 24 by the time anyone
+  # looked.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "deps"

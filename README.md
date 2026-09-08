@@ -93,6 +93,9 @@ returns 404 and every task fails with `MODEL_UNAVAILABLE`.
 | `DX_VLM_ENDPOINT` / `DX_VLM_MODEL` | GUI verification model endpoint and name |
 | `DX_GUI_SSH_HOST` | Host to capture screenshots from |
 | `PSOPERATOR_REPO` / `PSOPERATOR_SNAPSHOT_DIR` | PSOperator clone and snapshot locations |
+| `PSOPERATOR_OBSERVER_PORT` / `PSOPERATOR_GATEKEEPER_PORT` / `PSOPERATOR_EXECUTOR_PORT` | PSOperator service ports (manifest: `psoperator.*_port`) |
+| `PSOPERATOR_MODEL_ENDPOINT` / `PSOPERATOR_MODEL_NAME` | Model the GUI agent drives |
+| `PSOPERATOR_AUDIT_LOG_PATH` | Where PSOperator writes its audit log |
 
 There are no hardcoded remote hosts anywhere in the package. An unconfigured
 `gui_verification` section is an error, not a fallback to somebody else's box.
@@ -114,8 +117,10 @@ See `RESOURCES.md` for the full footprint and for fleet sizing requirements.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 146 tests
-ruff check .
+pytest                     # the full suite
+ruff check .              # lint + import order
+mypy src/dx --strict      # no untyped defs, no implicit Any
+pytest --cov=dx           # CI floor is 88%
 ```
 
 The test suite is hermetic — it runs against synthetic fixtures in
@@ -123,8 +128,14 @@ The test suite is hermetic — it runs against synthetic fixtures in
 network access. CI runs ruff plus pytest on Python 3.11, 3.12 and 3.13, builds
 the package, and checks that `LICENSE` ships inside the wheel.
 
-If you add a gate, add a test for it. Three fail-open defects shipped in 0.2.0
-precisely because the gates had none — see `CHANGELOG.md § 0.3.0 Security`.
+If you add a gate, add tests for the ways it can **wrongly pass** — not only
+the ways it correctly fails. Three fail-open defects shipped in 0.2.0 precisely
+because the gates had none, and all three looked fine on the happy path. See
+`CONTRIBUTING.md` and `CHANGELOG.md § 0.3.0 Security`.
+
+`tests/test_gpg_integration.py` runs the RL-003 signature gate against committed
+real GPG keys — usable, revoked and expired — and `tests/test_docs_consistency.py`
+fails the build if this README drifts from the implementation.
 
 ## Documentation
 
@@ -134,6 +145,8 @@ precisely because the gates had none — see `CHANGELOG.md § 0.3.0 Security`.
 | `VISION.md` | Seven-pillar architecture, red lines, lessons learned |
 | `RESOURCES.md` | Footprint, host tooling, fleet sizing |
 | `CHANGELOG.md` | Release history |
+| `SECURITY.md` | Trust boundaries, disclosure route, what dx does *not* protect |
+| `CONTRIBUTING.md` | Dev setup, the gates, fixture rules |
 | `checkpoint.md` | Current state and next work |
 
 ## Status

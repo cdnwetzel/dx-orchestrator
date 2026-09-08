@@ -128,6 +128,36 @@ a prompt" is necessary but not sufficient: **code that is never exercised agains
 its own failure modes is no more trustworthy than a prompt.** A gate is not
 delivered until the ways it can wrongly pass are tests.
 
+### Proving the premise, not just the parser (0.4.0)
+
+The 0.3.0 fix for revoked and expired signing keys was tested against *captured
+gpg transcripts*. That proved the parser handled the text correctly; it did not
+prove the text was ever produced. The claim underneath — that `gpg --verify`
+exits 0 for a signature from a revoked key — was reasoned about, not observed.
+
+It happened to be true. Generating a real key, revoking it, and re-verifying
+confirmed exit code 0 with `VALIDSIG` and `REVKEYSIG`, for expired keys too. But
+a gate whose justification rests on an unverified assumption about a dependency
+is one upstream change away from being wrong silently. The tests now run against
+committed real keys, and assert the permissive behavior directly, so a future
+GnuPG that tightens it will announce itself.
+
+The general form: **when a gate exists because a dependency is permissive, test
+the dependency's permissiveness, not only your handling of it.**
+
+### Documentation is a claim, so check it mechanically (0.4.0)
+
+Six environment overrides were implemented and undocumented; two were documented
+before they existed. Both are the same failure as an untested gate — an
+assertion nobody verifies. `tests/test_docs_consistency.py` now checks the
+mechanically checkable parts: versions agreeing across three files, the override
+table matching the implementation in both directions, every subcommand present
+in the command table, no routable address anywhere in the package.
+
+It is deliberately narrow. It cannot tell whether prose is *good*, only whether
+it is *false* in ways a machine can see. That turns out to cover most of the
+ways docs actually rot.
+
 ### Receipts must be readable in the order decisions were made (0.3.0)
 
 `dx merge` printed passes to stdout and failures to stderr. Off a tty, stdout
