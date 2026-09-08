@@ -39,7 +39,26 @@ if [ -d "${ROLES_DIR}/.git" ]; then
 else
     echo "📦 Cloning claude-sdlc-roles..."
     mkdir -p "$(dirname "${ROLES_DIR}")"
-    git clone https://github.com/cdnwetzel/claude-sdlc-roles.git "${ROLES_DIR}"
+    # Private repo — use gh CLI (falls back to https if gh is not installed)
+    if command -v gh >/dev/null 2>&1; then
+        gh repo clone cdnwetzel/claude-sdlc-roles "${ROLES_DIR}"
+    else
+        git clone https://github.com/cdnwetzel/claude-sdlc-roles.git "${ROLES_DIR}"
+    fi
+fi
+
+# --- 3b. devswarm-ledger (needed by dx merge for RL-003 signature checks) ---
+LEDGER_DIR="${HOME}/ai/devswarm-ledger"
+if [ -d "${LEDGER_DIR}/.git" ]; then
+    echo "✅ devswarm-ledger already cloned at ${LEDGER_DIR}"
+else
+    echo "📦 Cloning devswarm-ledger..."
+    mkdir -p "$(dirname "${LEDGER_DIR}")"
+    if command -v gh >/dev/null 2>&1; then
+        gh repo clone cdnwetzel/devswarm-ledger "${LEDGER_DIR}"
+    else
+        git clone https://github.com/cdnwetzel/devswarm-ledger.git "${LEDGER_DIR}"
+    fi
 fi
 
 # --- 4. Hardware manifest ---

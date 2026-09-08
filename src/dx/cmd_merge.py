@@ -1,16 +1,42 @@
+"""dx merge — pre-merge gate.
+
+Wires the three RL-003 signature validity checks from
+devswarm-ledger/SCHEMA.md § approvals/. The actual git merge and ledger
+append are still stubbed — those cross into devswarm-ledger territory and
+are intentionally deferred until Gate 1 unpauses.
+"""
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
 from .cmd_verify import verify_gui
+from .config_loader import get_ledger_repo_path
+from .ledger_utils import (
+    LedgerError,
+    canonical_approval_message,
+    get_ledger_head,
+    get_task_author_human,
+    get_task_queue,
+    verify_detached_signature,
+)
 
 
 def register_merge_subcommand(subparsers) -> None:
     parser = subparsers.add_parser(
-        "merge", help="Merge gate: separation of duties + optional GUI verification"
+        "merge",
+        help="Merge gate: RL-003 signature check + optional GUI verification",
     )
-    parser.add_argument("task_id", help="Task ID")
+    parser.add_argument("task_id", help="Task ID (e.g. T-0007)")
     parser.add_argument(
-        "--signature", "-s", help="Path to GPG detached signature (stubbed for now)"
+        "--signature", "-s",
+        help="Path to GPG detached signature (.asc). "
+        "Default: <ledger>/approvals/<task_id>.<role>.asc",
+    )
+    parser.add_argument(
+        "--message", "-M",
+        help="Path to the signed message file (.msg). "
+        "Default: <ledger>/approvals/<task_id>.<role>.msg",
     )
     parser.add_argument(
         "--verify-gui",
@@ -23,12 +49,18 @@ def register_merge_subcommand(subparsers) -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Bypass gates (audit-logged, use only for emergency rollback)",
+        help="Bypass gates (audit-visible, use only for emergency rollback)",
     )
     parser.set_defaults(func=cmd_merge)
 
 
+def _norm(name: str | None) -> str:
+    """Case- and whitespace-insensitive compare for author vs signer names."""
+    return (name or "").strip().lower()
+
+
 def cmd_merge(args) -> None:
+    # 1. Optional GUI verification
     if args.verify_gui and not args.force:
         print("📷 Running GUI verification...")
         expected = args.expected or "The GUI shows the correct result."
@@ -38,39 +70,106 @@ def cmd_merge(args) -> None:
             sys.exit(1)
         print(f"✅ GUI verification passed: {output}")
 
-    if args.signature:
-        sig_path = Path(args.signature)
-        if not sig_path.exists():
-            print(f"ERROR: signature file {sig_path} not found", file=sys.stderr)
-            sys.exit(1)
-        # TODO(gpg): verify per devswarm-ledger SCHEMA.md "approvals/" contract.
-        # The signature is GPG-detached over the canonical UTF-8 string:
-        #     task_id + ledger_head_hash + role      (exact concat, no separators)
-        # Valid iff:
-        #   1. Signer's key is registered in devswarm-ledger/docs/keys/<name>.asc
-        #      as the human accountable for `role`.
-        #   2. Signer != task's author_human (when separation-of-duties applies —
-        #      Partial or Anchored fit).
-        #   3. Signed head hash equals the CURRENT head of ledger.jsonl
-        #      (stale-head signatures rejected per RL-003).
-        # Reference impl: devswarm-ledger/tools/verify_chain.py.
-        # Real signed examples: approvals/T-0002.code_review.{msg,asc} etc.
-        print(f"✅ Signature file present: {sig_path} (GPG verification pending)")
-
     if args.force:
-        print("⚠️  --force in effect: bypassing gates.")
-    else:
-        print(f"✅ Pre-merge checks passed for {args.task_id}.")
+        print(
+            "⚠️  --force in effect: bypassing signature check.",
+            file=sys.stderr,
+        )
+        print(f"🔄 Merging {args.task_id}... (stub — wire to devswarm-ledger)")
+        sys.exit(0)
 
-    # TODO(ledger): append rows to devswarm-ledger/ledger.jsonl per SCHEMA.md.
-    # Sequence for a successful merge:
-    #   1. SIGNED row (if not already appended by the signer)
-    #   2. MERGED row after git merge --no-ff succeeds
-    # Row canonical form:
-    #     json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    # Fields: ts (ISO 8601 UTC), task_id, author_seat, author_human, reviewer_seat,
-    #         action, sha (merge commit), evidence (redacted per RL-011), prev_hash.
-    # prev_hash MUST equal sha256(canonical_form(previous row including its own
-    # prev_hash)). MERGE_LOCK.json in queue/ serializes concurrent merges.
-    print(f"🔄 Merging {args.task_id}... (stub — wire to devswarm-ledger)")
+    # 2. Ledger-based signature check (RL-003)
+    try:
+        ledger_repo = get_ledger_repo_path()
+        if not ledger_repo.exists():
+            print(
+                f"ERROR: devswarm-ledger not found at {ledger_repo}. "
+                "Clone it or set DX_LEDGER_REPO.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        queue = get_task_queue(args.task_id, ledger_repo)
+        role = queue.get("approve_role")
+        if not role:
+            raise LedgerError(
+                f"queue file for {args.task_id} has no 'approve_role' field"
+            )
+
+        # Resolve signature + message paths (default to ledger conventions)
+        sig_path = (
+            Path(args.signature).expanduser()
+            if args.signature
+            else ledger_repo / "approvals" / f"{args.task_id}.{role}.asc"
+        )
+        msg_path = (
+            Path(args.message).expanduser()
+            if args.message
+            else ledger_repo / "approvals" / f"{args.task_id}.{role}.msg"
+        )
+
+        # (0) Verify the ledger chain itself and get the current head hash
+        current_head = get_ledger_head(ledger_repo)
+        print(f"✅ Ledger chain verifies. Head: {current_head[:16]}…")
+
+        # (1) Signature verifies against a key registered in docs/keys/
+        signer = verify_detached_signature(sig_path, msg_path, ledger_repo)
+        print(f"✅ Signature verified. Signer: {signer.name} <{signer.email or 'no-email'}>")
+
+        # (2) Signed message payload must be exactly `task_id + head + role`
+        expected_msg = canonical_approval_message(args.task_id, current_head, role)
+        actual_msg = msg_path.read_text(encoding="utf-8")
+        if actual_msg != expected_msg:
+            # Distinguish stale head (RL-003) from tampered payload
+            if actual_msg.startswith(args.task_id) and actual_msg.endswith(role):
+                signed_head = actual_msg[len(args.task_id):-len(role)]
+                if signed_head != current_head:
+                    print(
+                        f"❌ Stale signature (RL-003). Signed head "
+                        f"{signed_head[:16]}… but current head is "
+                        f"{current_head[:16]}…. Re-sign after re-verifying the "
+                        f"chain.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            print(
+                "❌ Signed message payload does not match "
+                f"'{args.task_id} + head + {role}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print("✅ Signed message binds task_id + current head + role.")
+
+        # (3) Separation of duties: signer != task's author_human
+        author_human = get_task_author_human(args.task_id, ledger_repo)
+        if author_human and _norm(author_human) == _norm(signer.name):
+            print(
+                f"❌ Separation-of-duties violation: author '{author_human}' "
+                f"and signer '{signer.name}' are the same person.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not author_human:
+            print(
+                f"⚠️  No author_human found in ledger for {args.task_id} — "
+                "cannot enforce signer != author. Proceeding.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"✅ Separation of duties: author '{author_human}' ≠ signer '{signer.name}'.")
+
+    except LedgerError as exc:
+        print(f"❌ Pre-merge check failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n✅ All RL-003 checks passed for {args.task_id}.")
+
+    # TODO(ledger): actually perform `git merge --no-ff` under MERGE_LOCK.json
+    # and append SIGNED (if not already there) + MERGED action rows to
+    # devswarm-ledger/ledger.jsonl per SCHEMA.md canonical form. This is a
+    # write into the shared ledger repo and is deliberately deferred until
+    # Gate 1 unpauses.
+    print(
+        f"🔄 Merging {args.task_id}... (stub — git merge + ledger append not wired yet)"
+    )
     sys.exit(0)

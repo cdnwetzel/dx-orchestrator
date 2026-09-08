@@ -65,3 +65,17 @@ def get_gui_config() -> Dict[str, Any]:
 
 def get_psoperator_config() -> Dict[str, Any]:
     return load_config().get("psoperator", {}) or {}
+
+
+DEFAULT_LEDGER_REPO = Path("~/ai/devswarm-ledger").expanduser()
+
+
+def get_ledger_repo_path() -> Path:
+    """Path to a local clone of cdnwetzel/devswarm-ledger.
+
+    Override with DX_LEDGER_REPO. Falls back to ~/ai/devswarm-ledger,
+    which is where scripts/setup_dependencies.sh clones it.
+    """
+    return Path(
+        os.environ.get("DX_LEDGER_REPO", str(DEFAULT_LEDGER_REPO))
+    ).expanduser()

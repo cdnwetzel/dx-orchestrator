@@ -91,6 +91,22 @@ def cmd_doctor(args) -> None:
         print(f"❌ Role cards missing at {roles_path}")
         all_ok = False
 
+    # 4b. devswarm-ledger clone (needed by dx merge)
+    from .config_loader import get_ledger_repo_path
+
+    ledger_repo = get_ledger_repo_path()
+    verify_chain = ledger_repo / "tools" / "verify_chain.py"
+    if verify_chain.exists():
+        print(f"✅ devswarm-ledger at {ledger_repo}")
+    else:
+        print(f"⚠️  devswarm-ledger not found at {ledger_repo} (needed for dx merge)")
+        # Not marking as failure — dx run and dx roles still work without it.
+
+    # 4c. gpg binary (needed by dx merge)
+    if not _check_cmd(["gpg", "--version"], "gpg installed"):
+        print("   hint: apt install gnupg (needed for dx merge signature check)")
+        # Not marking all_ok=False — same reason as above.
+
     # 5. Hardware manifest
     cfg_path = Path("~/.config/dx/hardware_manifest.yml").expanduser()
     if cfg_path.exists():
