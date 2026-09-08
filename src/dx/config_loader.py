@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
@@ -33,6 +34,10 @@ class RoleRoute:
     endpoint: str
     model: str | None = None
     provider: str | None = None  # "ollama" | "vllm" | "openai" | "openai-compatible"
+    #: The manifest's value, when it differed from ``endpoint`` after
+    #: normalisation. Non-None means dx corrected the operator's URL and the
+    #: caller is expected to say so out loud.
+    endpoint_raw: str | None = None
 
 
 DEFAULT_CONFIG_PATH = Path("~/.config/dx/hardware_manifest.yml").expanduser()
@@ -73,6 +78,46 @@ def load_config(force: bool = False) -> dict[str, Any]:
     return _config
 
 
+def normalize_endpoint(endpoint: str) -> tuple[str, bool]:
+    """Strip trailing ``/v1`` path segments. Returns ``(endpoint, changed)``.
+
+    pxx appends its own suffix per provider — ``/api/tags`` for ollama,
+    ``/v1/models`` for everything OpenAI-shaped — so a base URL that already
+    ends in ``/v1`` is probed as ``/v1/v1/models``, 404s, and every task fails
+    with MODEL_UNAVAILABLE. Documenting that footgun in four places did not stop
+    people walking into it, because hosted OpenAI-compatible services publish
+    their URL *with* the ``/v1`` (OpenRouter, LiteLLM, Together). Pasting the
+    vendor's own string is the common case, not a careless mistake.
+
+    There is no configuration in which a trailing ``/v1`` is correct here, so
+    correcting it is safe. It is never silent: ``RoleRoute.endpoint_raw``
+    carries the original so the caller can announce the change.
+
+    Parsed rather than string-suffixed. ``http://v1`` ends with the characters
+    ``/v1`` while its path is empty and its *host* is ``v1``; a naive
+    ``endswith`` strip turns it into ``http:/``.
+    """
+    parts = urlsplit(endpoint)
+    if not parts.scheme or not parts.netloc:
+        # Not a URL we understand (no scheme, or a bare host). Leave it alone —
+        # endpoint_warnings() already flags a missing scheme.
+        return endpoint, False
+
+    segments = [s for s in parts.path.split("/") if s]
+    changed = False
+    while segments and segments[-1].lower() == "v1":
+        segments.pop()
+        changed = True
+    if not changed:
+        return endpoint, False
+
+    new_path = "/" + "/".join(segments) if segments else ""
+    return (
+        urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment)),
+        True,
+    )
+
+
 def get_model_endpoint_for_role(role_slug: str) -> str:
     return get_route_for_role(role_slug).endpoint
 
@@ -88,10 +133,13 @@ def get_route_for_role(role_slug: str) -> RoleRoute:
     default_provider = default_cfg.get("provider")
 
     role_cfg = _as_mapping(roles.get(role_slug), f"roles.{role_slug}", path)
+    configured = str(role_cfg.get("endpoint") or default_ep)
+    endpoint, corrected = normalize_endpoint(configured)
     return RoleRoute(
-        endpoint=role_cfg.get("endpoint") or default_ep,
+        endpoint=endpoint,
         model=role_cfg.get("model") or default_model,
         provider=role_cfg.get("provider") or default_provider,
+        endpoint_raw=configured if corrected else None,
     )
 
 
@@ -115,9 +163,10 @@ def endpoint_warnings(cfg: dict[str, Any] | None = None) -> list[str]:
         endpoint = str(entry.get("endpoint") or "")
         if endpoint.rstrip("/").endswith("/v1"):
             warnings.append(
-                f"roles.{slug}.endpoint ends with /v1 ({endpoint}). pxx appends "
-                f"its own suffix, so this is probed as /v1/v1/models and 404s. "
-                f"Strip the /v1."
+                f"roles.{slug}.endpoint ends with /v1 ({endpoint}). dx strips "
+                f"it at run time — pxx appends its own suffix, so this would be "
+                f"probed as /v1/v1/models and 404 — but fix the manifest so the "
+                f"file says what actually runs."
             )
         if endpoint and not endpoint.startswith(("http://", "https://")):
             warnings.append(

@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 337 tests,
+The test suite is the part built to be evaluated from outside: 351 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -99,7 +99,7 @@ you do; that is the intended signal.
 roles:
   backend-engineer:
     endpoint: "http://vllm-host.example:8000"   # NO trailing /v1 — see below
-    provider: "vllm"                            # ollama | vllm | openai
+    provider: "vllm"                            # see the provider table below
     model: "your-model-name"
   default:
     endpoint: "http://localhost:11434"
@@ -111,9 +111,36 @@ gui_verification:
   ssh_host: "user@vlm-host.example"
 ```
 
-**`endpoint` must not end in `/v1`.** `pxx` appends its own suffix per provider
-(`/api/tags` for ollama, `/v1/models` for vllm and openai). A doubled `/v1`
-returns 404 and every task fails with `MODEL_UNAVAILABLE`.
+### Providers — any OpenAI-compatible stack works
+
+| `provider` | Use it for |
+| --- | --- |
+| `ollama` | Ollama |
+| `vllm` | vLLM |
+| `openai` | OpenAI, or an endpoint that mimics it exactly |
+| `openai-compatible` | **anything else OpenAI-shaped** — llama.cpp server, LM Studio, TGI, LiteLLM, a router or proxy, a hosted API |
+
+`dx` does not validate this field; it passes it to `pxx`, which treats an
+unrecognised value as `openai-compatible` rather than failing. So wiring `dx` to
+your own inference stack is a manifest edit, not a code change. Routing is
+per-role, so different roles can sit on different backends.
+
+Endpoints needing a key: export `PXX_API_KEY` — `dx` passes the environment
+through to `pxx` untouched.
+
+**A trailing `/v1` is stripped automatically.** `pxx` appends its own suffix per
+provider (`/api/tags` for ollama, `/v1/models` for everything OpenAI-shaped), so
+a base URL ending in `/v1` would be probed as `/v1/v1/models`, return 404, and
+fail every task with `MODEL_UNAVAILABLE`. This matters most for hosted services,
+which publish their base URL *with* the `/v1` — pasting the vendor's own string
+is the common case, not a mistake. `dx` corrects it at run time and says so:
+
+```
+ℹ️  endpoint https://api.example/v1 → https://api.example (pxx appends its own /v1 …)
+```
+
+The correction is never silent, and `dx doctor` still flags the manifest so the
+file ends up saying what actually runs.
 
 ### Environment overrides
 

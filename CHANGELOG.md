@@ -5,6 +5,42 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-09-08
+
+### Added
+
+- **`openai-compatible` is documented, with a provider table.** `pxx` has always
+  accepted it — and treats an unrecognised provider as OpenAI-compatible rather
+  than failing — but `dx`'s README listed only `ollama | vllm | openai`. Anyone
+  running llama.cpp, LM Studio, TGI, LiteLLM or a hosted API read that list and
+  concluded `dx` was lab-specific. It is not: wiring it to another inference
+  stack is a manifest edit, not a code change, and routing is per-role so
+  different roles can sit on different backends. Verified end-to-end against a
+  generic `openai-compatible` route.
+- The README now says `PXX_API_KEY` reaches `pxx` (`dx` passes the environment
+  through untouched), so authenticated endpoints need no `dx` change.
+
+### Changed
+
+- **A trailing `/v1` on an endpoint is now corrected instead of merely warned
+  about.** `pxx` appends its own suffix, so `.../v1` was probed as
+  `/v1/v1/models`, 404'd, and failed every task with `MODEL_UNAVAILABLE`. It was
+  documented in four places — tutorial, troubleshooting row, manifest comment,
+  doctor warning — and documenting a footgun four times had not removed it,
+  because hosted OpenAI-compatible services publish their base URL *with* the
+  `/v1`. Pasting the vendor's own string is the common case, not carelessness.
+
+  `normalize_endpoint()` strips trailing `/v1` segments and `dx run` announces
+  the change on stderr; `RoleRoute.endpoint_raw` carries the original so the
+  correction is never silent. `dx doctor` still flags the manifest so the file
+  ends up saying what actually runs.
+
+  Parsed, not string-suffixed: `http://v1` ends with the characters `/v1` while
+  its path is empty and its *host* is `v1`, and a naive `endswith` strip turns
+  it into `http:/` — a broken endpoint from the function meant to unbreak them.
+  There is a test for exactly that, and the whole set was checked by reverting
+  to the naive implementation and watching four cases fail.
+
 ## [0.7.2] — 2026-09-08
 
 ### Fixed
@@ -444,6 +480,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.8.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.2...v0.7.0

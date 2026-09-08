@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from dx import config_loader
 from dx.config_loader import (
     DEFAULT_ROLES_PATH,
     get_config_path,
@@ -113,3 +114,90 @@ class TestRolesPathResolution:
     def test_tilde_is_expanded(self, monkeypatch):
         monkeypatch.setenv("DX_ROLES_PATH", "~/some/roles")
         assert "~" not in str(get_roles_path())
+
+
+class TestEndpointNormalisation:
+    """A trailing `/v1` in the manifest is always wrong — pxx appends its own
+    suffix — so dx corrects it rather than 404ing. The correction is announced,
+    never silent.
+
+    This is the project's most-documented footgun (a tutorial section, a
+    troubleshooting row, a manifest comment, a doctor warning) and documenting
+    it four times did not stop it, because hosted OpenAI-compatible services
+    publish their base URL *with* the `/v1`.
+    """
+
+    @pytest.mark.parametrize(
+        "given,expected",
+        [
+            ("http://h:8000/v1", "http://h:8000"),
+            ("http://h:8000/v1/", "http://h:8000"),
+            ("https://openrouter.ai/api/v1", "https://openrouter.ai/api"),
+            ("http://h/v1/v1", "http://h"),          # doubled, both go
+            ("https://x.example/api/v1?k=v", "https://x.example/api?k=v"),
+            ("http://h:8000/V1", "http://h:8000"),   # case-insensitive
+        ],
+    )
+    def test_trailing_v1_is_stripped(self, given, expected):
+        normalised, changed = config_loader.normalize_endpoint(given)
+        assert (normalised, changed) == (expected, True)
+
+    @pytest.mark.parametrize(
+        "given",
+        [
+            "http://h:8000",
+            "http://h:11434",
+            "http://h/v1/models",     # /v1 is not the last segment
+            "https://h/api",
+            "not-a-url/v1",           # no scheme: endpoint_warnings' job, not ours
+        ],
+    )
+    def test_everything_else_is_untouched(self, given):
+        assert config_loader.normalize_endpoint(given) == (given, False)
+
+    def test_a_host_named_v1_is_not_mangled(self):
+        """The trap a string-suffix implementation falls into.
+
+        "http://v1" ends with the characters "/v1" while its path is empty and
+        its *host* is "v1". Stripping by suffix yields "http:/" — a silently
+        broken endpoint, from a function whose whole job is to unbreak them.
+        """
+        assert config_loader.normalize_endpoint("http://v1") == ("http://v1", False)
+        assert config_loader.normalize_endpoint("http://v1:8000") == (
+            "http://v1:8000",
+            False,
+        )
+        assert config_loader.normalize_endpoint("http://v1/v1") == ("http://v1", True)
+
+    def test_the_route_records_what_it_corrected(self, tmp_path, monkeypatch):
+        manifest = tmp_path / "m.yml"
+        manifest.write_text(
+            "roles:\n"
+            "  backend-engineer:\n"
+            '    endpoint: "http://box.invalid:8000/v1"\n'
+            '    provider: "openai-compatible"\n'
+            "  default:\n"
+            '    endpoint: "http://box.invalid:11434"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DX_CONFIG", str(manifest))
+        config_loader.load_config(force=True)
+        route = config_loader.get_route_for_role("backend-engineer")
+        assert route.endpoint == "http://box.invalid:8000"
+        assert route.endpoint_raw == "http://box.invalid:8000/v1"
+
+    def test_an_untouched_endpoint_reports_no_correction(self, tmp_path, monkeypatch):
+        """endpoint_raw must stay None when nothing changed, or every run
+        announces a correction it did not make."""
+        manifest = tmp_path / "m.yml"
+        manifest.write_text(
+            "roles:\n"
+            "  backend-engineer:\n"
+            '    endpoint: "http://box.invalid:8000"\n'
+            "  default:\n"
+            '    endpoint: "http://box.invalid:11434"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DX_CONFIG", str(manifest))
+        config_loader.load_config(force=True)
+        assert config_loader.get_route_for_role("backend-engineer").endpoint_raw is None

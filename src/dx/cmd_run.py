@@ -177,6 +177,16 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     try:
         route = get_route_for_role(args.required_role)
+        if route.endpoint_raw is not None:
+            # Corrected, never silent: dx changed what the operator wrote.
+            print(
+                f"ℹ️  endpoint {route.endpoint_raw} → {route.endpoint} "
+                f"(pxx appends its own /v1; the manifest's trailing /v1 would "
+                f"be probed as /v1/v1/models and 404). Fix it in the manifest "
+                f"to silence this.",
+                file=sys.stderr,
+                flush=True,
+            )
     except FileNotFoundError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
@@ -207,6 +217,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  required_role: {args.required_role}")
         print(f"  fit:           {card.fit.value}")
         print(f"  PXX_BASE_URL:  {route.endpoint}")
+        if route.endpoint_raw is not None:
+            print(f"                 (corrected from {route.endpoint_raw})")
         print(f"  PXX_MODEL:     {route.model or '(unset, pxx default)'}")
         print(f"  PXX_PROVIDER:  {route.provider or '(unset, pxx default: ollama)'}")
         print(f"  pxx:           {pxx_bin}")

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.7.2
+**Version:** 0.8.0
 
 ## Where we are
 
@@ -15,13 +15,13 @@ and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 337 passed |
+| `pytest` | 351 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.7.2` |
+| `dx --version` | `dx 0.8.0` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
