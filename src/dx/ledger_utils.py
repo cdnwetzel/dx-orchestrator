@@ -16,7 +16,6 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 class LedgerError(RuntimeError):
@@ -26,16 +25,32 @@ class LedgerError(RuntimeError):
 @dataclass(frozen=True)
 class SignerIdentity:
     fingerprint: str
-    uid: str  # full GPG user-ID string, e.g. "Chris Wetzel (…) <chris@cwetzel.com>"
+    uid: str  # full GPG user-ID string, e.g. "A Name (comment) <a@example.invalid>"
 
     @property
-    def email(self) -> Optional[str]:
+    def email(self) -> str | None:
         m = re.search(r"<([^>]+)>", self.uid)
         return m.group(1) if m else None
 
     @property
     def name(self) -> str:
-        return self.uid.split("(")[0].strip() or self.uid
+        """The bare name from the GPG uid, with comment and email removed.
+
+        A uid may take any of these forms::
+
+            Chris Wetzel <chris@example.invalid>
+            Chris Wetzel (dx signing key) <chris@example.invalid>
+            Chris Wetzel
+
+        cmd_merge compares this against the ledger's ``author_human`` to enforce
+        separation of duties, so every form must reduce to the same bare name.
+        Stripping only the ``(comment)`` left the ``<email>`` attached whenever a
+        key had no comment field — the comparison could then never match and the
+        separation-of-duties check failed open.
+        """
+        uid = re.sub(r"\([^)]*\)", " ", self.uid)  # drop the comment field
+        uid = re.sub(r"<[^>]*>", " ", uid)  # drop the email field
+        return " ".join(uid.split()) or self.uid
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +105,7 @@ def get_task_queue(task_id: str, ledger_repo: Path) -> dict:
         return json.load(f)
 
 
-def get_task_author_human(task_id: str, ledger_repo: Path) -> Optional[str]:
+def get_task_author_human(task_id: str, ledger_repo: Path) -> str | None:
     """Scan ledger.jsonl for the earliest row for this task and return
     the `author_human` field. Used for separation-of-duties (signer ≠ author).
     """
@@ -139,7 +154,7 @@ def _import_registered_keys(ledger_repo: Path, keyring: Path) -> None:
 
 
 # gpg --fingerprint prints lines like:
-#   uid           [ unknown] Chris Wetzel (…) <chris@cwetzel.com>
+#   uid           [ unknown] A Name (comment) <a@example.invalid>
 # Skip the leading "uid" label AND any bracketed trust marker like "[ unknown]".
 _UID_LINE_RE = re.compile(
     rb"^uid\s+(?:\[[^\]]*\]\s*)?(.+)$", re.MULTILINE
@@ -158,6 +173,49 @@ def _lookup_identity(fingerprint: str, keyring: Path) -> SignerIdentity:
     return SignerIdentity(fingerprint=fingerprint.replace(" ", ""), uid=uid)
 
 
+# GnuPG emits exactly ONE of GOODSIG / EXPSIG / EXPKEYSIG / REVKEYSIG for a
+# cryptographically-valid signature, and returns exit code 0 for all four.
+# VALIDSIG is emitted for all four as well. So neither the return code nor
+# VALIDSIG alone is a sufficient gate: a signature made by a revoked or expired
+# approval key would clear it. RL-003 requires the key be currently valid, so we
+# reject the three degraded outcomes explicitly and require GOODSIG.
+_REJECT_STATUS = {
+    "REVKEYSIG": "the signing key has been revoked",
+    "KEYREVOKED": "the signing key has been revoked",
+    "EXPKEYSIG": "the signing key has expired",
+    "KEYEXPIRED": "the signing key has expired",
+    "EXPSIG": "the signature itself has expired",
+    "SIGEXPIRED": "the signature itself has expired",
+}
+
+
+def classify_gpg_status(status: str, returncode: int) -> str:
+    """Map gpg --status-fd output to a fingerprint, or raise LedgerError.
+
+    Split out from verify_detached_signature so the accept/reject policy is
+    unit-testable without generating real keys.
+    """
+    for code, reason in _REJECT_STATUS.items():
+        if re.search(rf"\[GNUPG:\] {code}\b", status):
+            raise LedgerError(
+                f"signature rejected (RL-003): {reason} [{code}]. "
+                "Re-sign with a currently-valid key registered in docs/keys/."
+            )
+
+    if returncode != 0 or "[GNUPG:] GOODSIG" not in status:
+        raise LedgerError(
+            "signature invalid or signer not in devswarm-ledger/docs/keys/:\n"
+            + status.strip()
+        )
+
+    m = re.search(r"\[GNUPG:\] VALIDSIG ([0-9A-F]{40})", status)
+    if not m:
+        raise LedgerError(
+            "gpg reported GOODSIG but no VALIDSIG fingerprint:\n" + status.strip()
+        )
+    return m.group(1)
+
+
 def verify_detached_signature(
     signature_path: Path,
     message_path: Path,
@@ -165,7 +223,8 @@ def verify_detached_signature(
 ) -> SignerIdentity:
     """Verify a detached GPG signature using only keys registered in
     devswarm-ledger/docs/keys/. Returns the signer's identity on success;
-    raises LedgerError on any failure (bad signature, unknown signer, missing key).
+    raises LedgerError on any failure (bad signature, unknown signer, missing
+    key, or a key that is expired or revoked).
     """
     if not signature_path.exists():
         raise LedgerError(f"signature file not found: {signature_path}")
@@ -182,15 +241,11 @@ def verify_detached_signature(
             keyring=keyring,
         )
         status = result.stdout.decode("utf-8", errors="replace")
+        if not status.strip():
+            status = result.stderr.decode("utf-8", errors="replace")
 
-        # Look for the machine-readable GOODSIG line in --status-fd output
-        m = re.search(r"\[GNUPG:\] VALIDSIG ([0-9A-F]{40})", status)
-        if not m or result.returncode != 0:
-            raise LedgerError(
-                "signature invalid or signer not in devswarm-ledger/docs/keys/:\n"
-                + (status.strip() or result.stderr.decode(errors="replace").strip())
-            )
-        return _lookup_identity(m.group(1), keyring)
+        fingerprint = classify_gpg_status(status, result.returncode)
+        return _lookup_identity(fingerprint, keyring)
 
 
 # ---------------------------------------------------------------------------

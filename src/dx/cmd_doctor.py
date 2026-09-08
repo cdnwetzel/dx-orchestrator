@@ -54,8 +54,13 @@ def cmd_doctor(args) -> None:
     all_ok = True
 
     # 1. Python version
+    #
+    # ruff flags this as unreachable given requires-python >= 3.11, but doctor
+    # is exactly the command someone runs from a source checkout with the wrong
+    # interpreter (`python3.9 -m dx.cli doctor`), where the package metadata was
+    # never consulted. Reporting the version is the check, so keep the branch.
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
-    if sys.version_info >= (3, 11):
+    if sys.version_info >= (3, 11):  # noqa: UP036
         print(f"✅ Python {py_ver} (>= 3.11)")
     else:
         print(f"❌ Python {py_ver} (need >= 3.11)")
@@ -83,12 +88,15 @@ def cmd_doctor(args) -> None:
         all_ok = False
 
     # 4. Role cards
-    roles_path = Path("~/ai/claude-sdlc-roles/skills/sdlc-role/roles").expanduser()
+    from .config_loader import get_roles_path
+
+    roles_path = get_roles_path()
     if roles_path.exists():
         count = len(list(roles_path.glob("*.md")))
         print(f"✅ Role cards found ({count} files at {roles_path})")
     else:
         print(f"❌ Role cards missing at {roles_path}")
+        print("   hint: set DX_ROLES_PATH or run scripts/setup_dependencies.sh")
         all_ok = False
 
     # 4b. devswarm-ledger clone (needed by dx merge)
@@ -108,7 +116,9 @@ def cmd_doctor(args) -> None:
         # Not marking all_ok=False — same reason as above.
 
     # 5. Hardware manifest
-    cfg_path = Path("~/.config/dx/hardware_manifest.yml").expanduser()
+    from .config_loader import get_config_path
+
+    cfg_path = get_config_path()
     if cfg_path.exists():
         print(f"✅ Hardware manifest at {cfg_path}")
         try:
@@ -157,7 +167,7 @@ def cmd_doctor(args) -> None:
                 try:
                     with socket.create_connection((host, port), timeout=2):
                         print(f"✅ {label} → {key} reachable")
-                except (socket.error, OSError):
+                except OSError:
                     print(f"⚠️  {label} → {key} not reachable")
         except Exception as exc:
             print(f"⚠️  could not derive probes from manifest: {exc}")

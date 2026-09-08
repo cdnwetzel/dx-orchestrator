@@ -2,7 +2,13 @@
 
 *~30 minutes from a clean box to a real code-generation task on your own hardware.*
 
-Everything below was captured live from a Surface Pro 6 running Ubuntu 24.04 in WSL2, dispatching to a T5810 vLLM endpoint on the LAN. Any command output shown is real. Any place where dx is not yet doing what you might expect, this document says "not yet" instead of pretending.
+Everything below was captured live from a Surface Pro 6 running Ubuntu 24.04 in WSL2, dispatching to a vLLM endpoint on the LAN. Any command output shown is real. Any place where dx is not yet doing what you might expect, this document says "not yet" instead of pretending.
+
+> **One declared edit.** Host addresses and usernames in these transcripts have been
+> replaced with stable placeholder names — `t5810.lab`, `asrock.lab`, `orin.lab`,
+> `macmini.lab`, `operator@…` — so this document does not publish a private network
+> topology. The substitution is consistent throughout. Nothing else in any transcript
+> has been altered: no output was reworded, reordered, or invented.
 
 ---
 
@@ -24,6 +30,10 @@ What dx does **not** do today, honestly:
 - No evidence bundle generation (`dx run` does not yet write receipts).
 - No actual git-merge or ledger-append (the merge gate verifies but doesn't commit).
 - No GUI end-to-end run has been exercised (`dx verify-gui` code path works but hasn't been demonstrated on this box).
+
+Every mechanical gate described below has a regression test (`pytest`, 146 of them,
+hermetic — no private repos, no keyring, no network). That matters here: writing
+those tests surfaced three gates that were failing *open*, all fixed in 0.3.0.
 
 ---
 
@@ -55,7 +65,7 @@ cd dx-orchestrator
 virtualenv -p python3 .venv || python3 -m venv .venv
 source .venv/bin/activate
 
-pip install -e .
+pip install -e ".[dev]"      # drop [dev] if you don't want pytest + ruff
 ./scripts/setup_dependencies.sh
 ```
 
@@ -65,15 +75,22 @@ The setup script is idempotent and preflight-checks that a venv is active and `g
 - Clone `~/ai/psoperator` and `pip install -e .` it
 - Clone `~/ai/claude-sdlc-roles` (private — needs `gh`)
 - Clone `~/ai/devswarm-ledger` (private — needs `gh`)
-- Seed `~/.config/dx/hardware_manifest.yml` with a template that matches the observed live topology
+- Seed `~/.config/dx/hardware_manifest.yml` with a **placeholder** routing table
 
 If a step fails, it exits non-zero with a specific error and you can re-run after fixing.
+
+Verify the install before configuring anything:
+
+```bash
+dx --version    # dx 0.3.0
+pytest          # 146 passed
+```
 
 ---
 
 ## 3. Configure the hardware manifest
 
-Edit `~/.config/dx/hardware_manifest.yml` to match your lab. Here is the shape that actually works (this is what commit `9a424f5` ships as the seed):
+The seeded manifest contains placeholder hosts and `REPLACE-WITH-YOUR-MODEL` models — `dx doctor` will flag every one as unreachable until you edit it. Here is a filled-in example in the shape that actually works:
 
 ```yaml
 # Endpoints MUST NOT include a trailing /v1.
@@ -95,7 +112,7 @@ roles:
     model: "q36-moe:latest"
 
   security-architect:
-    endpoint: "http://t5810.lab:8007"     # DGX substitute — .100 offline
+    endpoint: "http://t5810.lab:8007"     # DGX substitute — dgx.lab offline
     provider: "vllm"
     model: "qwen3.8-27b"
 
@@ -109,6 +126,8 @@ gui_verification:
   ssh_host: "operator@orin.lab"
   screenshot_cmd: "import -window root -"
 ```
+
+If your role cards live somewhere other than `~/ai/claude-sdlc-roles/skills/sdlc-role/roles`, either add a top-level `roles_path:` key to this file or set `DX_ROLES_PATH`.
 
 **Why the `/v1` warning is non-negotiable.** In an earlier iteration the manifest had `endpoint: "http://t5810.lab:8007/v1"` and every `dx run` failed with `[MODEL_UNAVAILABLE] http://t5810.lab:8007/v1 returned HTTP 404`. Root cause: `pxx/router.py` constructs probe URLs as `{base}/v1/models`, so the `/v1` doubles. Fix is to strip it. Documented in commit `9a424f5` and captured here so nobody else has to rediscover it.
 
@@ -319,14 +338,14 @@ dx merge T-0007
 Actual output on this box:
 
 ```
-❌ Stale signature (RL-003). Signed head 79ad37877e9d4901… but current head is 4916e8c6a7528a5d…. Re-sign after re-verifying the chain.
 ✅ Ledger chain verifies. Head: 4916e8c6a7528a5d…
 ✅ Signature verified. Signer: Chris Wetzel <chris@cwetzel.com>
+❌ Stale signature (RL-003). Signed head 79ad37877e9d4901… but current head is 4916e8c6a7528a5d…. Re-sign after re-verifying the chain.
 ```
 
 Exit code: `1`. This is the correct behavior — T-0007 was signed against an older ledger head, and the ledger has moved forward. RL-003 says stale signatures are invalid.
 
-The `❌` line prints before the `✅` lines because they go to stderr vs stdout with different buffering — in a real terminal they interleave correctly.
+Note the verdicts read in the order they were decided, even piped into `cat`. Through 0.2.0 they did not: passes went to stdout (block-buffered when not a tty) and failures to stderr (unbuffered), so a redirected transcript listed the failure *before* the checks that preceded it. A gate transcript is evidence, so every verdict is now flushed as it is reached, with a subprocess test pinning it.
 
 Bypass with `--force` (audit-visible on stderr):
 
@@ -337,13 +356,15 @@ dx merge T-0007 --force
 Output:
 
 ```
-⚠️  --force in effect: bypassing signature check.
+⚠️  --force in effect for T-0007: bypassing the RL-003 signature check.
 🔄 Merging T-0007... (stub — wire to devswarm-ledger)
 ```
 
-Exit code: `0`.
+Exit code: `0`. Pass `--verify-gui` as well and the banner says the GUI check was skipped too — `--force` bypasses every gate, and the message now names all of them.
 
-**Not yet tested**: the fully-green happy path (fresh signature against current head, signer ≠ author, all three checks pass, merge proceeds). That requires a fresh GPG signature made against the current ledger head, which per RL-010 must be produced interactively on a trusted terminal with a passphrase never held by any agent. The stale-head negative case exercises every code path except the final "all-good, proceed" branch.
+**What the gate rejects.** Beyond a stale head: a payload bound to a different task, a trailing newline in the `.msg` file, a signer whose name matches the ledger's `author_human`, and — as of 0.3.0 — a signature made by a **revoked or expired key**. That last one used to pass. `gpg --verify` exits 0 and emits `VALIDSIG` for a signature from a revoked key, so checking the return code was not sufficient; verification now requires `GOODSIG` and rejects `REVKEYSIG` / `EXPKEYSIG` / `KEYREVOKED` / `KEYEXPIRED` / `EXPSIG` / `SIGEXPIRED` by name.
+
+**Still not demonstrated live**: the fully-green happy path with a real signature. The gate logic has an all-green unit test (current head, valid signature, signer ≠ author, exit 0), but a real end-to-end green run needs a fresh GPG signature against the current ledger head — which per RL-010 must be produced interactively on a trusted terminal with a passphrase no agent ever holds.
 
 ---
 
@@ -370,16 +391,35 @@ Output:
 
 Exit: `2`. This is deliberate — the seven anchored roles (`domain-sme`, `engineering-manager`, `uat-coordinator`, `incident-commander`, `customer-success`, `compliance-privacy`, `legal-contracts`) refuse autonomous execution.
 
+`--force` steps past it, and says so on stderr:
+
+```
+⚠️  --force in effect: running Anchored role 'domain-sme' (seat: Borrowed) autonomously, past a separation-of-duties invariant.
+DRY RUN
+  task_id:       T-BLOCK
+  ...
+```
+
+Through 0.2.0 the flag was documented as "audit-visible" and printed nothing at all. A bypass that leaves no record is not audit-visible.
+
 ---
 
 ## 9. What's stubbed (be honest with yourself)
 
-Working today:
+Working today, each with regression tests:
 - ✅ Role parsing + validation + injection into the pxx prompt
 - ✅ Hardware routing (endpoint + model + provider per role)
-- ✅ Anchored hard-block in `dx run`
-- ✅ Three-part RL-003 signature verification in `dx merge`
-- ✅ GUI verification code path (`dx verify-gui`) — the code is real, the SSH screenshot + Qwen VL call work
+- ✅ Anchored hard-block in `dx run`, with an audit-visible `--force`
+- ✅ Three-part RL-003 signature verification in `dx merge`, rejecting revoked and expired keys
+- ✅ GUI verification code path (`dx verify-gui`) — the code is real, the SSH screenshot + VLM call work
+
+Fixed in 0.3.0 because a test caught it, not because anyone noticed in use:
+- 🐛 Separation of duties failed **open** whenever the signer's GPG uid had no
+  `(comment)` field — the name kept its `<email>`, so it could never equal the
+  ledger's `author_human`. An author could have approved their own task.
+- 🐛 Revoked and expired signing keys cleared the RL-003 gate.
+- 🐛 `dx verify-gui` had a real host and SSH username baked in as fallbacks, so an
+  unconfigured install would silently SSH to somebody else's machine.
 
 Deliberately deferred until DevSwarmX Gate 1 unpauses:
 - ⏸ `dx run` writing evidence bundles (design captured in `VISION.md § Reference formats`, pattern: schema-per-family like camelid, `dx.role_task.v1`)
@@ -387,8 +427,8 @@ Deliberately deferred until DevSwarmX Gate 1 unpauses:
 - ⏸ pxx review-independence config (`PXX_REVIEW_MODEL`) — currently author and reviewer use the same endpoint, which pxx correctly warns about
 
 Not yet exercised end-to-end:
-- 🟡 `dx verify-gui` against a real GUI on the Orin (code path works, hasn't been demonstrated)
-- 🟡 `dx merge` green happy path (requires a fresh RL-010 signature)
+- 🟡 `dx verify-gui` against a real GUI (code path works and is unit-tested, but has not been demonstrated against a live desktop)
+- 🟡 `dx merge` green happy path with a **real** signature (unit-tested green; needs a fresh RL-010 signature to demonstrate)
 
 ---
 
@@ -403,24 +443,32 @@ Not yet exercised end-to-end:
 | `[MODEL_UNAVAILABLE]` on vLLM but Ollama works | `provider` field missing → defaults to `ollama` → probes `/api/tags` which vLLM lacks | add `provider: "vllm"` in the manifest |
 | `[HOOKS_MISSING] run_shell in permission mode 'edit' requires a shell safeguard` | pxx post-edit shell verify, fail-closed | `export PXX_ALLOW_UNGATED_SHELL=1` OR configure a PreToolUse hook |
 | `dx merge` says "Stale signature (RL-003)" | ledger head advanced after the signature was made | expected behavior; re-sign against current head |
-| `dx doctor` red ⚠️ on network probe | manifest IP/port unreachable from this host | verify with `curl -s http://<host>:<port>/v1/models` or ping |
+| `dx doctor` red ⚠️ on network probe | manifest host/port unreachable — expected until you replace the placeholder seed | verify with `curl -s http://<host>:<port>/v1/models` or ping |
+| `ERROR: role cards not found at …` | role cards are not where dx looked | set `DX_ROLES_PATH`, or add `roles_path:` to the manifest |
+| `gui_verification.vlm_endpoint is not set …` | GUI verification is unconfigured | fill in `gui_verification:` — there is deliberately no default host |
+| `signature rejected (RL-003): the signing key has been revoked` | approval made with a retired key | re-sign with a currently-valid key registered in `docs/keys/` |
 
 ---
 
 ## 11. What you actually have
 
 - A working control plane (`dx`) on your driver box
-- Real code generated by your own GPU (Qwen3.8-27B-FP8 on T5810), no cloud call
+- Real code generated by your own GPU (Qwen3.8-27B-FP8), no cloud call
 - Three RL-003 signature checks that mechanically enforce separation of duties
-- A honest snapshot of what's stubbed and why
+- 146 tests that hold those gates closed, runnable with no lab and no keyring
+- An honest snapshot of what's stubbed and why
 
 What you don't yet have (by design, not accident):
 - Automatic evidence bundles per run
 - Actual git merges under MERGE_LOCK
 - A green happy-path merge trace
 
-Both of those unlock when DevSwarmX Gate 1 finishes its baseline runs. Until then, you have a factory that fails safely and can defend every claim it makes.
+Those unlock when DevSwarmX Gate 1 finishes its baseline runs. Until then, you have a factory that fails safely and can defend every claim it makes.
+
+The lesson worth carrying out of 0.3.0: **a gate without a test is a claim, not a gate.** Three of these gates were failing open in a release that had been hand-verified and written up as working. Writing the tests is what found them.
 
 ---
 
-*This tutorial was validated live on 2026-09-07 against a T5810 vLLM endpoint (`t5810.lab:8007`, Qwen3.8-27B-FP8) from a Surface Pro 6 running Ubuntu 24.04 in WSL2. dx commit at time of validation: `9a424f5`. Every command output shown was captured from that session — no fabrication.*
+*Validated live on 2026-09-07 against a vLLM endpoint (Qwen3.8-27B-FP8) from a Surface Pro 6 running Ubuntu 24.04 in WSL2. The §6 live-run transcript was captured at dx `9a424f5`; the §4, §7 and §8 transcripts were re-captured at 0.3.0 after the output-ordering and `--force` fixes. Every command output shown was captured from a real session — no fabrication. The only edit is the host-address substitution declared at the top.*
+
+*What this tutorial does **not** establish: that `dx run` writes evidence bundles (it does not), that `dx merge` performs a git merge or appends to the ledger (it does not), that the merge gate has passed all-green against a real GPG signature (only against a stubbed one, in tests), or that `dx verify-gui` has been run against a live desktop (it has not).*

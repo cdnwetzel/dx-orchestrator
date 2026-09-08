@@ -2,13 +2,10 @@ import json
 import sys
 from pathlib import Path
 
+from .config_loader import get_roles_path
 from .role_models import FitLevel
 from .role_registry import get_registry, get_role, load_registry
 from .role_validate import count_by_fit, validate_registry
-
-DEFAULT_ROLES_PATH = Path(
-    "~/ai/claude-sdlc-roles/skills/sdlc-role/roles"
-).expanduser()
 
 
 def register_roles_subcommand(subparsers) -> None:
@@ -33,7 +30,7 @@ def register_roles_subcommand(subparsers) -> None:
 
 
 def _cards_path(args) -> Path:
-    return Path(args.path).expanduser() if args.path else DEFAULT_ROLES_PATH
+    return Path(args.path).expanduser() if args.path else get_roles_path()
 
 
 def cmd_roles_list(args) -> None:

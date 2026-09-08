@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
 
 
 class FitLevel(Enum):
@@ -24,7 +23,7 @@ class RoleCard:
     failure_modes: str = ""
     handoff: str = ""
     related: str = ""
-    prohibited_patterns: List[str] = field(default_factory=list)
+    prohibited_patterns: list[str] = field(default_factory=list)
 
     def to_prompt_context(self) -> str:
         return (

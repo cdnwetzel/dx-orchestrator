@@ -12,7 +12,7 @@ Generation scales with compute and money. Verification scales only with accounta
 
 | Pillar | Component | Role |
 | --- | --- | --- |
-| 1. Compute fabric | DGX mesh + T5810 (A4500s) + asrock (RTX 5060 Ti) + M4 Studio/Mini + Orin Nano | Raw inference and memory |
+| 1. Compute fabric | A mixed local GPU fleet — heavy vLLM nodes, faster Ollama nodes, an edge VLM box | Raw inference and memory |
 | 2. Execution hands | `pxx` (code) + `PSOperator` (GUI) | Autonomous actuators — edit files, click, type |
 | 3. Constitutional governance | `claude-sdlc-roles` (38 role cards) | Separation of duties, Anchored/Partial/High fit |
 | 4. SDLC process & audit | `code-review-framework` (R1–R15) | Findings lifecycle, multi-agent orchestration |
@@ -37,8 +37,8 @@ RL-011 (evidence redacted at capture time) is enforced at merge time, optionally
 
 ## Phased rollout
 
-- **Phase 1 (now)** — control plane on a low-power driver (2011 Mac Mini / Surface Pro 6 WSL2). Software-only. All inference routed to lab. No KVM required — SSH screenshot fallback for GUI verification.
-- **Phase 2** — move driver to XPS 9510 (i7-11800H, RTX 3050 Ti 4 GB) for faster CLI response and optional local 3B model for prototyping.
+- **Phase 1 (now)** — control plane on a low-power driver (a 2011 Mac Mini or a Surface Pro 6 under WSL2 both suffice). Software-only. All inference routed to the fleet. No KVM required — SSH screenshot fallback for GUI verification.
+- **Phase 2** — move the driver to a faster laptop for quicker CLI response and an optional local 3B model for prototyping.
 - **Phase 3** — Openterface Mini-KVM lands. Add framebuffer hash to `dx merge` as a second GUI gate alongside the Qwen VL semantic check.
 - **Phase 4** — Team mode: second GPG key registered in the ledger. `dx merge` enforces Author ≠ Signer at the Git level.
 
@@ -98,13 +98,68 @@ repos. `dx` must **conform** to them, not compete with them.
   `issued_at`, `expires_at ≤ 60s`, fresh 256-bit `nonce`, frame hash, element
   inventory) and replay-protection primitives.
 
+## Lessons learned
+
+Recorded as they land, so the architecture keeps paying for itself.
+
+### A gate without a test is a claim, not a gate (0.3.0)
+
+`dx` 0.2.0 shipped with the RL-003 merge gate hand-verified and written up as
+working. It was demonstrated on the negative path — a stale signature, correctly
+rejected — and that was taken as evidence the gate worked. Writing the test suite
+found three gates failing **open**:
+
+1. **Separation of duties never fired.** The signer's name was extracted from the
+   GPG uid by stripping a `(comment)` field. A uid with no comment kept its
+   `<email>`, so the comparison against the ledger's `author_human` could never
+   match — and an author could have approved their own task. The key actually in
+   use has no comment field.
+2. **Revoked and expired keys passed.** `gpg --verify` exits 0 and emits
+   `VALIDSIG` for a signature made by a revoked or expired key; the check gated
+   on the return code.
+3. **`dx verify-gui` shipped a hardcoded host.** An unconfigured install would
+   silently SSH to a specific machine and report on *its* screen.
+
+All three are invisible on the happy path and invisible on the negative path that
+was demonstrated. Only enumerating the failure modes in code found them.
+
+The consequence for RL-007 is sharper than first stated. "Every gate is code, not
+a prompt" is necessary but not sufficient: **code that is never exercised against
+its own failure modes is no more trustworthy than a prompt.** A gate is not
+delivered until the ways it can wrongly pass are tests.
+
+### Receipts must be readable in the order decisions were made (0.3.0)
+
+`dx merge` printed passes to stdout and failures to stderr. Off a tty, stdout
+block-buffers, so a piped transcript listed the failure before the checks that
+preceded it. A human reading it in a terminal saw the right thing; a log file
+did not. Evidence that only reads correctly interactively is not evidence — flush
+at every verdict.
+
+### Publishing forces the topology question early
+
+Making the repo public required removing a real lab topology from the installer,
+from code defaults, and from the tutorial. The right home for it was already
+there: `~/.config/dx/hardware_manifest.yml`, per-box and untracked. Code that
+carries a working default host is code that will eventually talk to the wrong
+machine. There are now no remote host defaults anywhere in the package.
+
 ## Known gaps (to design and build)
 
-- **`dx run` role injection** — spec drafted, needs wiring into `pxx` subprocess env.
-- **`dx merge` GPG verification** — stub only; `gpg_utils.py` needs to actually verify detached signatures against the ledger head.
-- **PSOperator process-separated mode on Orin** — need a systemd/OpenRC unit so observer/gatekeeper/executor start on boot.
-- **Orchestration daemon** (`code-review-framework` R13 bounded retries) — not yet implemented as a service.
-- **Baseline harness** — `dx baseline-run` for the A/B/C sovereign wave comparison (T5810 vs DGX vs asrock).
+- ~~`dx run` role injection~~ — done; mandate and must-not are injected into the
+  `pxx` prompt and the route is passed via `PXX_BASE_URL`/`PXX_MODEL`/`PXX_PROVIDER`.
+- ~~`dx merge` GPG verification~~ — done; three RL-003 checks against the ledger,
+  rejecting stale heads, mismatched payloads, same-person approvals, and revoked
+  or expired keys.
+- **`dx merge` ledger write** — still a stub. Needs `git merge --no-ff` under
+  `MERGE_LOCK.json` plus `SIGNED`/`MERGED` rows in SCHEMA.md canonical form.
+- **Evidence bundles from `dx run`** — the format is settled (see below); nothing
+  is written yet.
+- **PSOperator process-separated mode on Orin** — need a systemd/OpenRC unit so
+  observer/gatekeeper/executor start on boot.
+- **Orchestration daemon** (`code-review-framework` R13 bounded retries) — not yet
+  implemented as a service.
+- **Baseline harness** — `dx baseline-run` for the A/B/C sovereign wave comparison.
 - **KVM framebuffer verifier** — waiting on hardware.
 
 ## What NOT to build
@@ -113,3 +168,5 @@ repos. `dx` must **conform** to them, not compete with them.
 - No LLM-driven gates. Every gate is regex, YAML, or GPG — never a prompt.
 - No central dispatcher. Concurrency lives in Git merge conflicts.
 - No archive/backup folders in the project footprint. Housekeeping is a first-class concern.
+- No real network topology in tracked files. It belongs in the per-box manifest.
+- No new gate without tests for the ways it can wrongly pass.

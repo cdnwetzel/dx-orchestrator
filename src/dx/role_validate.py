@@ -1,6 +1,5 @@
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 from .role_models import FitLevel, RoleCard
 from .role_registry import get_registry, load_registry
@@ -11,9 +10,9 @@ from .role_registry import get_registry, load_registry
 _SEAT_RE = re.compile(r"^\S.*\S$|^\S$")
 
 
-def validate_card(card: RoleCard) -> Tuple[bool, List[str]]:
+def validate_card(card: RoleCard) -> tuple[bool, list[str]]:
     """Run structural checks on a single card. Returns (ok, errors)."""
-    errors: List[str] = []
+    errors: list[str] = []
 
     if card.fit == FitLevel.ANCHORED and not card.anchored:
         errors.append("fit=Anchored but anchored flag is False")
@@ -38,13 +37,13 @@ def validate_card(card: RoleCard) -> Tuple[bool, List[str]]:
     return (len(errors) == 0, errors)
 
 
-def validate_registry(cards_path: Path) -> Tuple[bool, List[Tuple[str, List[str]]]]:
+def validate_registry(cards_path: Path) -> tuple[bool, list[tuple[str, list[str]]]]:
     """Validate every card. Returns (all_ok, [(slug, errors), ...])."""
     load_registry(cards_path, force=True)
     registry = get_registry() or {}
 
     all_ok = True
-    failures: List[Tuple[str, List[str]]] = []
+    failures: list[tuple[str, list[str]]] = []
 
     if len(registry) == 0:
         return (False, [("REGISTRY", [f"no role cards found under {cards_path}"])])
@@ -58,7 +57,7 @@ def validate_registry(cards_path: Path) -> Tuple[bool, List[Tuple[str, List[str]
     return (all_ok, failures)
 
 
-def count_by_fit(registry: Dict[str, RoleCard]) -> Dict[str, int]:
+def count_by_fit(registry: dict[str, RoleCard]) -> dict[str, int]:
     counts = {fit.value: 0 for fit in FitLevel}
     for card in registry.values():
         counts[card.fit.value] += 1

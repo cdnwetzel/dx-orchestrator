@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config_loader import get_route_for_role
+from .config_loader import get_roles_path, get_route_for_role
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
 from .role_registry import get_role, load_registry
@@ -16,11 +16,6 @@ def _resolve_pxx() -> str | None:
     if venv_candidate.exists():
         return str(venv_candidate)
     return shutil.which("pxx")
-
-DEFAULT_ROLES_PATH = Path(
-    "~/ai/claude-sdlc-roles/skills/sdlc-role/roles"
-).expanduser()
-
 
 def register_run_subcommand(subparsers) -> None:
     parser = subparsers.add_parser(
@@ -65,11 +60,13 @@ def register_run_subcommand(subparsers) -> None:
 
 
 def cmd_run(args) -> None:
-    if not DEFAULT_ROLES_PATH.exists():
-        print(f"ERROR: role cards not found at {DEFAULT_ROLES_PATH}", file=sys.stderr)
+    roles_path = get_roles_path()
+    if not roles_path.exists():
+        print(f"ERROR: role cards not found at {roles_path}", file=sys.stderr)
+        print("Set DX_ROLES_PATH or run scripts/setup_dependencies.sh", file=sys.stderr)
         sys.exit(1)
 
-    load_registry(DEFAULT_ROLES_PATH)
+    load_registry(roles_path)
     card = get_role(args.required_role)
     if not card:
         print(f"ERROR: role '{args.required_role}' not found.", file=sys.stderr)
@@ -78,6 +75,17 @@ def cmd_run(args) -> None:
 
     # Anchored roles require a named accountable human. dx run refuses to
     # execute autonomously; --force is the audit-visible escape hatch.
+    if card.fit == FitLevel.ANCHORED and args.force:
+        # --force claims to be audit-visible, so it has to actually say
+        # something. Matches the banner dx merge --force prints.
+        print(
+            f"⚠️  --force in effect: running Anchored role '{card.slug}' "
+            f"(seat: {card.seat}) autonomously, past a separation-of-duties "
+            f"invariant.",
+            file=sys.stderr,
+            flush=True,
+        )
+
     if card.fit == FitLevel.ANCHORED and not args.force:
         print(
             f"🔒 Role '{card.slug}' is Anchored (seat: {card.seat}).",

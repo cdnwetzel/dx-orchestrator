@@ -29,3 +29,9 @@ env/
 archive/
 backup/
 *.bak
+
+# Local operational notes — real lab topology stays out of the repo.
+# The live routing table belongs in ~/.config/dx/hardware_manifest.yml.
+LOCAL_NOTES.md
+*.local.md
+*.local.yml

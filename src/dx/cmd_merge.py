@@ -4,6 +4,10 @@ Wires the three RL-003 signature validity checks from
 devswarm-ledger/SCHEMA.md § approvals/. The actual git merge and ledger
 append are still stubbed — those cross into devswarm-ledger territory and
 are intentionally deferred until Gate 1 unpauses.
+
+Output discipline: every gate verdict is flushed as it is decided. A merge
+gate's transcript is evidence, and evidence gets piped into logs — verdicts
+must appear in the order they were reached whether stdout is a tty or a pipe.
 """
 from __future__ import annotations
 
@@ -20,6 +24,25 @@ from .ledger_utils import (
     get_task_queue,
     verify_detached_signature,
 )
+
+
+def _ok(msg: str) -> None:
+    print(f"✅ {msg}", flush=True)
+
+
+def _info(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def _warn(msg: str) -> None:
+    sys.stdout.flush()
+    print(f"⚠️  {msg}", file=sys.stderr, flush=True)
+
+
+def _fail(msg: str, code: int = 1) -> None:
+    sys.stdout.flush()
+    print(f"❌ {msg}", file=sys.stderr, flush=True)
+    sys.exit(code)
 
 
 def register_merge_subcommand(subparsers) -> None:
@@ -49,7 +72,10 @@ def register_merge_subcommand(subparsers) -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Bypass gates (audit-visible, use only for emergency rollback)",
+        help=(
+            "Bypass ALL merge gates — the RL-003 signature check AND GUI "
+            "verification. Audit-visible; use only for emergency rollback."
+        ),
     )
     parser.set_defaults(func=cmd_merge)
 
@@ -60,34 +86,32 @@ def _norm(name: str | None) -> str:
 
 
 def cmd_merge(args) -> None:
+    if args.force:
+        _warn(
+            f"--force in effect for {args.task_id}: bypassing the RL-003 "
+            "signature check"
+            + (" AND GUI verification." if args.verify_gui else ".")
+        )
+        _info(f"🔄 Merging {args.task_id}... (stub — wire to devswarm-ledger)")
+        sys.exit(0)
+
     # 1. Optional GUI verification
-    if args.verify_gui and not args.force:
-        print("📷 Running GUI verification...")
+    if args.verify_gui:
+        _info("📷 Running GUI verification...")
         expected = args.expected or "The GUI shows the correct result."
         passed, output = verify_gui(expected)
         if not passed:
-            print(f"❌ GUI verification failed: {output}", file=sys.stderr)
-            sys.exit(1)
-        print(f"✅ GUI verification passed: {output}")
-
-    if args.force:
-        print(
-            "⚠️  --force in effect: bypassing signature check.",
-            file=sys.stderr,
-        )
-        print(f"🔄 Merging {args.task_id}... (stub — wire to devswarm-ledger)")
-        sys.exit(0)
+            _fail(f"GUI verification failed: {output}")
+        _ok(f"GUI verification passed: {output}")
 
     # 2. Ledger-based signature check (RL-003)
     try:
         ledger_repo = get_ledger_repo_path()
         if not ledger_repo.exists():
-            print(
-                f"ERROR: devswarm-ledger not found at {ledger_repo}. "
-                "Clone it or set DX_LEDGER_REPO.",
-                file=sys.stderr,
+            _fail(
+                f"devswarm-ledger not found at {ledger_repo}. "
+                "Clone it or set DX_LEDGER_REPO."
             )
-            sys.exit(1)
 
         queue = get_task_queue(args.task_id, ledger_repo)
         role = queue.get("approve_role")
@@ -110,11 +134,11 @@ def cmd_merge(args) -> None:
 
         # (0) Verify the ledger chain itself and get the current head hash
         current_head = get_ledger_head(ledger_repo)
-        print(f"✅ Ledger chain verifies. Head: {current_head[:16]}…")
+        _ok(f"Ledger chain verifies. Head: {current_head[:16]}…")
 
-        # (1) Signature verifies against a key registered in docs/keys/
+        # (1) Signature verifies against a currently-valid key in docs/keys/
         signer = verify_detached_signature(sig_path, msg_path, ledger_repo)
-        print(f"✅ Signature verified. Signer: {signer.name} <{signer.email or 'no-email'}>")
+        _ok(f"Signature verified. Signer: {signer.name} <{signer.email or 'no-email'}>")
 
         # (2) Signed message payload must be exactly `task_id + head + role`
         expected_msg = canonical_approval_message(args.task_id, current_head, role)
@@ -124,52 +148,47 @@ def cmd_merge(args) -> None:
             if actual_msg.startswith(args.task_id) and actual_msg.endswith(role):
                 signed_head = actual_msg[len(args.task_id):-len(role)]
                 if signed_head != current_head:
-                    print(
-                        f"❌ Stale signature (RL-003). Signed head "
+                    _fail(
+                        f"Stale signature (RL-003). Signed head "
                         f"{signed_head[:16]}… but current head is "
                         f"{current_head[:16]}…. Re-sign after re-verifying the "
-                        f"chain.",
-                        file=sys.stderr,
+                        f"chain."
                     )
-                    sys.exit(1)
-            print(
-                "❌ Signed message payload does not match "
-                f"'{args.task_id} + head + {role}'",
-                file=sys.stderr,
+            _fail(
+                "Signed message payload does not match "
+                f"'{args.task_id} + head + {role}'"
             )
-            sys.exit(1)
-        print("✅ Signed message binds task_id + current head + role.")
+        _ok("Signed message binds task_id + current head + role.")
 
         # (3) Separation of duties: signer != task's author_human
         author_human = get_task_author_human(args.task_id, ledger_repo)
         if author_human and _norm(author_human) == _norm(signer.name):
-            print(
-                f"❌ Separation-of-duties violation: author '{author_human}' "
-                f"and signer '{signer.name}' are the same person.",
-                file=sys.stderr,
+            _fail(
+                f"Separation-of-duties violation: author '{author_human}' "
+                f"and signer '{signer.name}' are the same person."
             )
-            sys.exit(1)
         if not author_human:
-            print(
-                f"⚠️  No author_human found in ledger for {args.task_id} — "
-                "cannot enforce signer != author. Proceeding.",
-                file=sys.stderr,
+            _warn(
+                f"No author_human found in ledger for {args.task_id} — "
+                "cannot enforce signer != author. Proceeding."
             )
         else:
-            print(f"✅ Separation of duties: author '{author_human}' ≠ signer '{signer.name}'.")
+            _ok(
+                f"Separation of duties: author '{author_human}' ≠ "
+                f"signer '{signer.name}'."
+            )
 
     except LedgerError as exc:
-        print(f"❌ Pre-merge check failed: {exc}", file=sys.stderr)
-        sys.exit(1)
+        _fail(f"Pre-merge check failed: {exc}")
 
-    print(f"\n✅ All RL-003 checks passed for {args.task_id}.")
+    _ok(f"All RL-003 checks passed for {args.task_id}.")
 
     # TODO(ledger): actually perform `git merge --no-ff` under MERGE_LOCK.json
     # and append SIGNED (if not already there) + MERGED action rows to
     # devswarm-ledger/ledger.jsonl per SCHEMA.md canonical form. This is a
     # write into the shared ledger repo and is deliberately deferred until
     # Gate 1 unpauses.
-    print(
+    _info(
         f"🔄 Merging {args.task_id}... (stub — git merge + ledger append not wired yet)"
     )
     sys.exit(0)

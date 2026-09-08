@@ -1,25 +1,42 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dx-orchestrator"
-version = "0.2.0"
+version = "0.3.0"
 description = "Sovereign orchestration layer for AI coding agents and GUI automation"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Chris Wetzel" }]
+keywords = ["orchestration", "llm", "governance", "sdlc", "sovereign-ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "pxx-orchestrator>=2.5.4",
     "pyyaml>=6.0",
     "requests>=2.31",
 ]
 
+[project.urls]
+Homepage = "https://github.com/cdnwetzel/dx-orchestrator"
+Source = "https://github.com/cdnwetzel/dx-orchestrator"
+Changelog = "https://github.com/cdnwetzel/dx-orchestrator/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 opencv = ["opencv-python-headless"]
 ocr = ["pytesseract"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 dx = "dx.cli:main"
@@ -29,3 +46,16 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

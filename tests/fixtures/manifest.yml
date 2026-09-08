@@ -1,0 +1,28 @@
+# Synthetic hardware manifest for tests. No real hosts.
+roles_path: "IGNORED_BY_TESTS"
+
+roles:
+  widget-engineer:
+    endpoint: "http://vllm.invalid:8007"
+    provider: "vllm"
+    model: "test-27b"
+  rotating-reviewer:
+    endpoint: "http://ollama.invalid:11434"
+    provider: "ollama"
+    model: "test-14b"
+  partial-route:
+    endpoint: "http://partial.invalid:9000"
+  default:
+    endpoint: "http://default.invalid:11434"
+    provider: "ollama"
+    model: "default-model"
+
+gui_verification:
+  vlm_endpoint: "http://vlm.invalid:11434/api/generate"
+  vlm_model: "test-vl:3b"
+  ssh_host: "tester@vlm.invalid"
+  screenshot_cmd: "import -window root -"
+
+psoperator:
+  observer_port: 9764
+  model_name: "test-operator"

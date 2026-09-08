@@ -101,30 +101,40 @@ if [ -f "${CONFIG_FILE}" ]; then
 else
     echo "📝 Creating default hardware_manifest.yml..."
     cat > "${CONFIG_FILE}" <<'YAML'
-# dx hardware routing manifest — edit to match your lab.
+# dx hardware routing manifest.
 #
-# IMPORTANT: `endpoint` MUST NOT include a trailing /v1. pxx appends the
-# right suffix per `provider`:
-#   ollama   → {endpoint}/api/tags
-#   vllm     → {endpoint}/v1/models
-#   openai   → {endpoint}/v1/models
+# ─────────────────────────────────────────────────────────────────────────────
+# THESE ARE PLACEHOLDERS. Replace every host below with your own endpoints
+# before running a real task. `dx doctor` will report each one unreachable
+# until you do — that is the intended signal, not a bug.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `endpoint` MUST NOT include a trailing /v1. pxx appends the right suffix
+# per `provider`:
+#   ollama   -> {endpoint}/api/tags
+#   vllm     -> {endpoint}/v1/models
+#   openai   -> {endpoint}/v1/models
 # If you double the /v1, probes 404 and every task fails with MODEL_UNAVAILABLE.
+#
+# Optional top-level key:
+#   roles_path: "/path/to/claude-sdlc-roles/skills/sdlc-role/roles"
+# Overridden in turn by the DX_ROLES_PATH environment variable.
 
 roles:
   backend-engineer:
-    endpoint: "http://t5810.lab:8007"         # T5810 vLLM (Qwen3.8-27B-FP8)
+    endpoint: "http://vllm-host.example:8000"     # a vLLM box for bulk generation
     provider: "vllm"
-    model: "qwen3.8-27b"
-    description: "Bulk generation, ~33 tok/s"
+    model: "REPLACE-WITH-YOUR-MODEL"
+    description: "Bulk code generation"
   frontend-engineer:
-    endpoint: "http://asrock.lab:11434"        # asrock Ollama (RTX 5060 Ti)
+    endpoint: "http://ollama-host.example:11434"  # a smaller/faster Ollama box
     provider: "ollama"
-    model: "q36-moe:latest"
+    model: "REPLACE-WITH-YOUR-MODEL"
     description: "Fast UI/GUI generation"
   security-architect:
-    endpoint: "http://t5810.lab:8007"         # (DGX substitute — .100 offline)
+    endpoint: "http://vllm-host.example:8000"     # heaviest reasoning node
     provider: "vllm"
-    model: "qwen3.8-27b"
+    model: "REPLACE-WITH-YOUR-MODEL"
     description: "Heavy reasoning / certification"
   default:
     endpoint: "http://localhost:11434"
@@ -132,20 +142,20 @@ roles:
     description: "Local Ollama fallback"
 
 gui_verification:
-  vlm_endpoint: "http://orin.lab:11434/api/generate"   # Orin Nano Ollama
+  vlm_endpoint: "http://vlm-host.example:11434/api/generate"
   vlm_model: "qwen2.5vl:3b"
-  ssh_host: "operator@orin.lab"
-  screenshot_cmd: "import -window root -"                # ImageMagick
+  ssh_host: "user@vlm-host.example"
+  screenshot_cmd: "import -window root -"          # ImageMagick
 
 psoperator:
   observer_port: 8764
   gatekeeper_port: 8765
   executor_port: 8766
-  model_endpoint: "http://asrock.lab:11434"
-  model_name: "q36-moe:latest"
+  model_endpoint: "http://ollama-host.example:11434"
+  model_name: "REPLACE-WITH-YOUR-MODEL"
   audit_log_path: "psoperator_audit.jsonl"
 YAML
-    echo "⚠️  Edit ${CONFIG_FILE} to match your actual lab IPs."
+    echo "⚠️  Edit ${CONFIG_FILE} — every host in it is a placeholder."
 fi
 
 echo ""

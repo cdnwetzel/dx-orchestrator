@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 from .config_loader import get_psoperator_config
 
@@ -17,7 +16,9 @@ class PSOperatorClient:
     """Thin wrapper around the PSOperator CLI and run_agent example.
 
     Assumes PSOperator is installed (pip install -e ~/ai/psoperator) so that
-    `python -m examples.run_agent` is importable and `psoperator` is on PATH.
+    `psoperator` is on PATH and the package imports. run_agent is invoked by
+    absolute path, not `python -m examples.run_agent` — psoperator's examples/
+    directory is not a package, so the module form does not resolve.
     """
 
     def __init__(self) -> None:
@@ -83,7 +84,7 @@ class PSOperatorClient:
             print("⚠️  PSOperator task timed out.")
             return False
 
-    def verify_audit_log(self, path: Optional[str] = None) -> bool:
+    def verify_audit_log(self, path: str | None = None) -> bool:
         target = path or self.audit_log_path
         try:
             result = subprocess.run(
