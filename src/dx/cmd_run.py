@@ -12,6 +12,7 @@ from .config_loader import get_roles_path, get_route_for_role
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
 from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
+from .role_validate import validate_card
 
 
 def _resolve_pxx() -> str | None:
@@ -125,6 +126,33 @@ def cmd_run(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # A card that fails structural validation cannot govern a run. Without this
+    # dx would inject an empty MANDATE and an empty MUST NOT into the prompt and
+    # report success — the governance text meant to constrain the agent silently
+    # blank, while `dx roles validate` said the card was invalid all along.
+    card_ok, card_errors = validate_card(card)
+    if not card_ok:
+        if not args.force:
+            print(
+                f"ERROR: role card '{card.slug}' fails validation and cannot "
+                f"govern a task:",
+                file=sys.stderr,
+            )
+            for error in card_errors:
+                print(f"  - {error}", file=sys.stderr)
+            print("Run: dx roles validate", file=sys.stderr)
+            print(
+                "To proceed anyway (audit-visible), re-run with --force.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f"⚠️  --force in effect: running under invalid role card "
+            f"'{card.slug}' ({'; '.join(card_errors)}).",
+            file=sys.stderr,
+            flush=True,
+        )
 
     enhanced_prompt = (
         f"[ROLE: {card.slug} (Fit: {card.fit.value}, Seat: {card.seat})]\n"

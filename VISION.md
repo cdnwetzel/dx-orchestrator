@@ -128,6 +128,23 @@ a prompt" is necessary but not sufficient: **code that is never exercised agains
 its own failure modes is no more trustworthy than a prompt.** A gate is not
 delivered until the ways it can wrongly pass are tests.
 
+### Two components disagreeing is a fail-open (0.6.0)
+
+`dx roles validate` rejected a card with an empty mandate. `dx run` accepted the
+same card and injected an empty MANDATE and an empty MUST NOT into the prompt.
+`dx roles validate` failed on an empty roles directory. `dx doctor` called that
+same install healthy.
+
+Neither command was wrong in isolation — each did what its own code said. The
+defect lived in the gap between them, and in both cases the *permissive* side is
+the one that runs the task. A validator nobody consults before acting is
+documentation.
+
+So: **where two components can form an opinion about whether something is
+usable, they must share the code that forms it, and the acting one must ask.**
+Every check dx performs should be reachable from the command that depends on it,
+not merely available in a command an operator might run first.
+
 ### The registry is part of the gate (0.5.0)
 
 Every fail-open found so far was in a *check*. This one was in the data the

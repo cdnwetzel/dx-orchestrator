@@ -5,6 +5,32 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-09-08
+
+Two more fail-opens, both found by feeding odd input to commands rather than
+reading them. Both are the same shape: two parts of dx disagreeing about
+whether an install is usable, with the permissive one winning.
+
+### Security
+
+- **`dx run` executed under a role card that fails validation.** A card with a
+  too-short mandate and no "Must not" section was accepted, and dx injected an
+  empty `MANDATE` and an empty `MUST NOT` into the prompt and reported success.
+  The governance text that is supposed to constrain the agent was silently
+  blank — while `dx roles validate` had been calling that same card invalid all
+  along. `dx run` now validates the card before using it and refuses, listing
+  the specific failures; `--force` bypasses and says so on stderr.
+- **`dx doctor` reported a healthy install with zero role cards.** No
+  constitution at all passed the self-test, while `dx roles validate` correctly
+  failed on the same directory.
+
+### Changed
+
+- **`dx run` now exits 1 for a role card that fails structural validation**,
+  where it previously proceeded. A behavior change for anyone running against
+  hand-edited or partial cards.
+- `dx doctor` fails when the role-card directory is empty.
+
 ## [0.5.1] — 2026-09-08
 
 ### Fixed
@@ -277,6 +303,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.6.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.0...v0.4.1

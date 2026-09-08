@@ -130,6 +130,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 print(f"   - {filename}: {reason}")
             print("   hint: dx roles validate")
             all_ok = False
+        elif count == 0:
+            # An install with no constitution is not a working install, and
+            # dx roles validate already treats this as a failure.
+            print(f"❌ No role cards at {roles_path}")
+            print("   hint: set DX_ROLES_PATH or run scripts/setup_dependencies.sh")
+            all_ok = False
         else:
             print(f"✅ Role cards parse cleanly ({count} files at {roles_path})")
     else:

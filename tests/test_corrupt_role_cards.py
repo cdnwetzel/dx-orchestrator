@@ -152,3 +152,95 @@ class TestRun:
             self._run("T-1", "--required_role", "anchored-role", "-m", "x", "--dry-run")
         assert exc.value.code == 2
         assert "Anchored" in capsys.readouterr().err
+
+
+INVALID_CARD = "# Bare\n\n**Agent fit:** High · **9-person seat:** S1\n\n## Mandate\n\nShort.\n"
+
+
+class TestInvalidCardsCannotGovern:
+    """A card that fails `dx roles validate` must not govern a run.
+
+    Without this, dx injected an empty MANDATE and an empty MUST NOT into the
+    prompt and reported success — the governance text meant to constrain the
+    agent silently blank, while `dx roles validate` had been calling the card
+    invalid all along. Two commands disagreeing about whether a card is usable
+    is the same fail-open in a different place.
+    """
+
+    @pytest.fixture
+    def invalid_deck(self, monkeypatch, tmp_path):
+        (tmp_path / "bare-role.md").write_text(INVALID_CARD, encoding="utf-8")
+        (tmp_path / "fine-role.md").write_text(GOOD_CARD, encoding="utf-8")
+        monkeypatch.setenv("DX_ROLES_PATH", str(tmp_path))
+        monkeypatch.setattr("dx.cmd_run._resolve_pxx", lambda: "/fake/pxx")
+        return tmp_path
+
+    def _run(self, *argv):
+        args = build_parser().parse_args(["run", *argv])
+        args.func(args)
+
+    def test_run_refuses_an_invalid_card(self, invalid_deck, capsys):
+        with pytest.raises(SystemExit) as exc:
+            self._run("T-1", "--required_role", "bare-role", "-m", "x", "--dry-run")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "fails validation" in err
+        assert "dx roles validate" in err
+
+    def test_the_refusal_lists_the_specific_problems(self, invalid_deck, capsys):
+        with pytest.raises(SystemExit):
+            self._run("T-1", "--required_role", "bare-role", "-m", "x", "--dry-run")
+        err = capsys.readouterr().err
+        assert "mandate" in err
+        assert "must_not" in err
+
+    def test_it_never_reaches_the_prompt(self, invalid_deck, capsys):
+        """The failure must happen before any prompt is built."""
+        with pytest.raises(SystemExit):
+            self._run("T-1", "--required_role", "bare-role", "-m", "x", "--dry-run")
+        assert "DRY RUN" not in capsys.readouterr().out
+
+    def test_force_bypasses_but_announces(self, invalid_deck, capsys):
+        self._run("T-1", "--required_role", "bare-role", "-m", "x", "--dry-run", "--force")
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+        assert "--force in effect" in captured.err
+        assert "invalid role card" in captured.err
+
+    def test_a_valid_card_is_unaffected(self, invalid_deck, capsys):
+        self._run("T-1", "--required_role", "fine-role", "-m", "x", "--dry-run")
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+        assert "fails validation" not in captured.err
+
+    def test_the_two_commands_agree(self, invalid_deck):
+        """Whatever dx roles validate rejects, dx run must also reject."""
+        from dx.role_parser import parse_role_file
+        from dx.role_validate import validate_card
+
+        for name, expect_ok in (("fine-role", True), ("bare-role", False)):
+            card = parse_role_file(invalid_deck / f"{name}.md")
+            assert validate_card(card)[0] is expect_ok
+
+
+class TestEmptyDeck:
+    def test_doctor_fails_with_no_role_cards(self, monkeypatch, tmp_path, capsys):
+        """Regression: doctor reported a healthy install with zero cards, while
+        dx roles validate correctly failed on the same directory."""
+        monkeypatch.setenv("DX_ROLES_PATH", str(tmp_path))
+        monkeypatch.setattr("dx.cmd_doctor._find_on_path", lambda name: f"/fake/{name}")
+        monkeypatch.setattr("dx.cmd_doctor._check_import", lambda m, label: True)
+        monkeypatch.setattr(
+            "dx.cmd_doctor.subprocess.run", lambda *a, **k: type("R", (), {"returncode": 0})()
+        )
+        args = build_parser().parse_args(["doctor", "--no-network"])
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        out = capsys.readouterr().out
+        assert exc.value.code == 1, out
+        assert "No role cards" in out
+
+    def test_validate_also_fails(self, tmp_path):
+        all_ok, failures = validate_registry(tmp_path)
+        assert not all_ok
+        assert failures[0][0] == "REGISTRY"
