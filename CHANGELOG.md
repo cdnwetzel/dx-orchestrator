@@ -5,6 +5,41 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-09-08
+
+Go-live pass. Every claim in `TUTORIAL.md` was re-run against the real lab and
+checked against actual output rather than assumed.
+
+### Fixed
+
+- **`dx run`'s status line printed after the output of the command it
+  announces.** `print()` buffers when stdout is not a tty, while pxx writes
+  straight to the inherited descriptor, so a piped or redirected run transcript
+  read out of order. Same defect fixed in `dx merge` in 0.3.0; a run transcript
+  is evidence too. All of `cmd_run`'s status output is now flushed.
+- **`TUTORIAL.md` §6 contradicted its own instructions.** It told the reader to
+  `export PXX_ALLOW_UNGATED_SHELL=1`, then showed a transcript captured without
+  it — a failing run, exit 2. A reader following the steps literally gets a
+  *successful* run with different output. The success path is now the primary
+  transcript, with the `[HOOKS_MISSING]` failure kept as the documented
+  what-if-you-skipped-it case.
+- **`TUTORIAL.md` §5 showed output the command cannot produce.** The
+  `dx roles list --fit High` block had column widths from before the
+  hardcoded-width fix; widths are computed from the filtered data, so that
+  command has never printed that table. Recaptured from a real run.
+- The tutorial's `dx --version` comment still said 0.3.0, and its closing
+  boundary paragraph still said the merge gate had only ever passed all-green
+  against a *stubbed* signature — untrue since 0.4.0 added real-key coverage.
+
+### Added
+
+- `TestTutorialFidelity` in `tests/test_docs_consistency.py`. It re-runs
+  `dx roles list --fit High` and fails the build if the shown transcript drifts,
+  checks the version comment against the package, and asserts the address
+  substitution stays declared and the boundary paragraph stays present. The
+  tutorial's worth rests on "every output was captured from a real session", and
+  that claim had already decayed once without anyone noticing.
+
 ## [0.6.0] — 2026-09-08
 
 Two more fail-opens, both found by feeding odd input to commands rather than
@@ -303,6 +338,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.6.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.1...v0.5.0

@@ -13,6 +13,7 @@ overridable months before it was.
 from __future__ import annotations
 
 import re
+import sys
 import tomllib
 from pathlib import Path
 
@@ -179,3 +180,62 @@ class TestClaimsAreQualified:
 )
 def test_documented_files_exist(doc):
     assert (ROOT / doc).is_file(), f"{doc} is referenced by the docs index but missing"
+
+
+TUTORIAL = (ROOT / "TUTORIAL.md").read_text(encoding="utf-8")
+REAL_CARDS = Path("~/ai/claude-sdlc-roles/skills/sdlc-role/roles").expanduser()
+
+
+class TestTutorialFidelity:
+    """TUTORIAL.md stakes its worth on one claim: every output shown was
+    captured from a real session. That claim decays silently.
+
+    It had already: the `dx roles list --fit High` block showed column widths
+    that command cannot produce (widths are sized from the filtered data), so it
+    predated the hardcoded-width fix and had never been recaptured. A promise of
+    fidelity that nothing checks is just a promise.
+    """
+
+    def test_the_version_shown_matches_the_package(self):
+        assert f"dx --version    # dx {dx.__version__}" in TUTORIAL, (
+            "the `dx --version` comment in TUTORIAL.md §2 is stale"
+        )
+
+    def test_it_declares_its_one_edit(self):
+        """Host addresses are substituted; that substitution must stay declared,
+        because an undeclared edit would cost more than the addresses did."""
+        assert "One declared edit" in TUTORIAL
+        assert "no output was reworded, reordered, or invented" in TUTORIAL
+
+    def test_no_real_addresses_leaked_back_in(self):
+        assert not re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", TUTORIAL), (
+            "a raw IP address is in TUTORIAL.md; use the .lab placeholders"
+        )
+
+    def test_it_still_states_what_it_does_not_establish(self):
+        """The closing boundary paragraph is the honesty contract."""
+        assert "does **not** establish" in TUTORIAL
+
+    @pytest.mark.skipif(
+        not REAL_CARDS.is_dir(),
+        reason="claude-sdlc-roles not cloned (private repo; skipped in CI)",
+    )
+    def test_the_roles_list_transcript_is_reproducible(self):
+        """Run the command the tutorial shows and require the shown output."""
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-m", "dx.cli", "roles", "list", "--fit", "High"],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(Path.home()),
+                "PYTHONPATH": str(ROOT / "src"),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.rstrip("\n") in TUTORIAL, (
+            "the `dx roles list --fit High` transcript in TUTORIAL.md no longer "
+            "matches what that command prints:\n" + result.stdout
+        )

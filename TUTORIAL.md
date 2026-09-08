@@ -83,7 +83,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.3.0
+dx --version    # dx 0.6.1
 pytest          # all green
 ```
 
@@ -176,22 +176,23 @@ The network probes are TCP-connect only (`socket.create_connection`), so a live 
 dx roles list --fit High
 ```
 
-Actual output (truncated):
+Actual output — all 11 High-fit cards (column widths are sized from the data,
+so a filtered list is narrower than an unfiltered one):
 
 ```
-Slug                  Fit       Seat          Anchored
---------------------------------------------------------
-backend-engineer      High      S4
-code-reviewer         High      All engineers (rotating)
-data-engineer         High      S5
-finops                High      S2 + S7
-frontend-engineer     High      S6
-mobile-engineer       High      S6
-performance-engineer  High      S4 + S8
-platform-engineer     High      S7
-product-analyst       High      S1
-sdet                  High      S8
-technical-writer      High      S6 / S7 / S9 split
+Slug                  Fit   Seat                      Anchored
+----------------------------------------------------------------
+backend-engineer      High  S4                        
+code-reviewer         High  All engineers (rotating)  
+data-engineer         High  S5                        
+finops                High  S2 + S7                   
+frontend-engineer     High  S6                        
+mobile-engineer       High  S6                        
+performance-engineer  High  S4 + S8                   
+platform-engineer     High  S7                        
+product-analyst       High  S1                        
+sdet                  High  S8                        
+technical-writer      High  S6 / S7 / S9 split        
 ```
 
 Fit distribution across all 38 cards:
@@ -266,7 +267,23 @@ dx run T-LIVE-001 --required_role backend-engineer --scope . --no-commit \
     --message "Write a Python file called hello.py with a function greet(name) that returns 'Hello, ' + name. Include a main() that prints greet('World') when run directly."
 ```
 
-Actual output on this box:
+Actual output, with `PXX_ALLOW_UNGATED_SHELL=1` exported as instructed above:
+
+```
+🚀 Running task T-LIVE-001 with role backend-engineer on http://t5810.lab:8007 (model: qwen3.8-27b)...
+[COMPLETED] Created `/tmp/dx-live-test/hello.py` with:
+
+- `greet(name)` — returns `'Hello, ' + name`
+- `main()` — prints `greet('World')`, invoked via the `if __name__ == '__main__':` guard
+
+Verified by running it: outputs `Hello, World` (exit 0). [net: pxx-pre/20260908T043102Z] (rounds=3 tokens=6243 diff_lines=10)
+✅ Task T-LIVE-001 completed.
+```
+
+Exit code: `0`.
+
+**If you skipped the export**, you get this instead — worth recognising, because the
+task actually succeeded:
 
 ```
 🚀 Running task T-LIVE-001 with role backend-engineer on http://t5810.lab:8007 (model: qwen3.8-27b)...
@@ -274,7 +291,9 @@ Actual output on this box:
 ❌ pxx task failed.
 ```
 
-Exit code from dx: `2`. **But `hello.py` was written**, and pxx says so in its own error line: `1 file already modified: hello.py [...] diff_lines=11`. This is the fail-closed shell-verify gate firing after the successful edit. If you `export PXX_ALLOW_UNGATED_SHELL=1` before running, pxx exits 0.
+Exit code `2`, **but `hello.py` was written** — pxx says so in its own error line:
+`1 file already modified: hello.py [...] diff_lines=11`. That is the fail-closed
+shell-verify gate firing *after* the edit landed, not instead of it.
 
 Verify the file:
 
@@ -282,11 +301,10 @@ Verify the file:
 cat hello.py
 ```
 
-Actual generated output (from T5810 Qwen3.8-27B-FP8):
+Actual generated output (Qwen3.8-27B-FP8):
 
 ```python
 def greet(name):
-    """Return a greeting for the given name."""
     return 'Hello, ' + name
 
 
@@ -297,6 +315,12 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+Yours will not match byte for byte. This is a language model, not a template
+engine — the same prompt on the same endpoint produced a version with a
+docstring on an earlier run and this one without. What should be stable is the
+*shape*: a `greet` that concatenates, a `main` behind an `if __name__` guard,
+and a file that runs.
 
 Run it:
 
@@ -472,6 +496,14 @@ The lesson worth carrying out of 0.3.0: **a gate without a test is a claim, not 
 
 ---
 
-*Validated live on 2026-09-07 against a vLLM endpoint (Qwen3.8-27B-FP8) from a Surface Pro 6 running Ubuntu 24.04 in WSL2. The §6 live-run transcript was captured at dx `c5cd52d`; the §4, §7 and §8 transcripts were re-captured at 0.3.0 after the output-ordering and `--force` fixes. Every command output shown was captured from a real session — no fabrication. The only edit is the host-address substitution declared at the top.*
+*Re-validated end to end on 2026-09-08 at dx `0.6.1`, from a Surface Pro 6 running
+Ubuntu 24.04 in WSL2 against a vLLM endpoint (Qwen3.8-27B-FP8) on the LAN. Every
+transcript in §4–§8 was re-captured from that session, including a live `dx run`
+that generated working code on local hardware. The §6 transcript previously showed
+a failing run while §6 itself instructed you to set the environment variable that
+makes it succeed; that is corrected. The `dx roles list` block in §5 had column
+widths the command cannot produce and has been recaptured — `tests/test_docs_consistency.py`
+now re-runs that command and fails the build if the shown output drifts again.
+No fabrication. The only edit is the host-address substitution declared at the top.*
 
-*What this tutorial does **not** establish: that `dx run` writes evidence bundles (it does not), that `dx merge` performs a git merge or appends to the ledger (it does not), that the merge gate has passed all-green against a real GPG signature (only against a stubbed one, in tests), or that `dx verify-gui` has been run against a live desktop (it has not).*
+*What this tutorial does **not** establish: that `dx run` writes evidence bundles (it does not), that `dx merge` performs a git merge or appends to the ledger (it does not — it verifies and stops), or that `dx verify-gui` has been run against a live desktop (it has not). The merge gate does now pass all-green against a real GPG signature, but in `tests/test_gpg_integration.py` against committed keys and a synthetic ledger — not against the live `devswarm-ledger` with a freshly-made RL-010 signature, which remains undemonstrated.*

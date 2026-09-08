@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.6.0
+**Version:** 0.6.1
 
 ## Where we are
 
@@ -15,13 +15,13 @@ and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 321 passed |
+| `pytest` | 326 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.6.0` |
+| `dx --version` | `dx 0.6.1` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
@@ -29,7 +29,7 @@ and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
 | `dx roles validate` | 38/38 pass |
 | `dx merge T-0007` | correctly rejects on stale head (RL-003), exit 1 |
 | `dx run … --dry-run` | routes per manifest (endpoint + model + provider) |
-| Live `dx run` against the vLLM node | generated working code, no cloud call |
+| Live `dx run` against the vLLM node | re-run 2026-09-08 at 0.6.1: generated working code, exit 0 |
 
 **Lab topology is NOT recorded in this repo.** The live routing table is in
 `~/.config/dx/hardware_manifest.yml` on each driver box; the manifest seeded by
@@ -53,7 +53,7 @@ dx-orchestrator/
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
 ├── scripts/setup_dependencies.sh — idempotent installer
 ├── src/dx/                       — 14 modules (see README)
-└── tests/                        — 321 tests, hermetic fixtures + real GPG keys
+└── tests/                        — 326 tests, hermetic fixtures + real GPG keys
 ```
 
 ## Resume here

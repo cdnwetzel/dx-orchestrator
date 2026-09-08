@@ -199,9 +199,14 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  command:       {pxx_bin} edit --scope {args.scope} [--commit] <prompt>")
         return
 
+    # Flushed before handing stdout to the subprocess. pxx writes straight to
+    # the inherited fd, so an unflushed status line here surfaces *after* the
+    # output of the command it announces — the same defect fixed in dx merge in
+    # 0.3.0. A run transcript is evidence too.
     print(
         f"🚀 Running task {args.task_id} with role {args.required_role} "
-        f"on {route.endpoint} (model: {route.model or 'default'})..."
+        f"on {route.endpoint} (model: {route.model or 'default'})...",
+        flush=True,
     )
     # unbounded: this is the model doing the work. A large refactor on a slow
     # local endpoint legitimately runs for minutes, and cutting it off at an
@@ -209,11 +214,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     result = subprocess.run(cmd, env=env)
 
     if result.returncode != 0:
-        print("❌ pxx task failed.", file=sys.stderr)
+        print("❌ pxx task failed.", file=sys.stderr, flush=True)
         sys.exit(result.returncode)
 
     if args.gui:
-        print("🖥️  Launching GUI via PSOperator...")
+        print("🖥️  Launching GUI via PSOperator...", flush=True)
         client = PSOperatorClient()
         if not client.observer_health():
             print(
@@ -224,12 +229,12 @@ def cmd_run(args: argparse.Namespace) -> None:
             task_description=args.message, real_input=args.real_input
         )
         if not success:
-            print("❌ GUI task failed.", file=sys.stderr)
+            print("❌ GUI task failed.", file=sys.stderr, flush=True)
             sys.exit(1)
-        print("✅ GUI task completed.")
+        print("✅ GUI task completed.", flush=True)
         if client.verify_audit_log():
             print("✅ PSOperator audit log verified.")
         else:
             print("⚠️  Audit log verification failed — check manually.")
 
-    print(f"✅ Task {args.task_id} completed.")
+    print(f"✅ Task {args.task_id} completed.", flush=True)
