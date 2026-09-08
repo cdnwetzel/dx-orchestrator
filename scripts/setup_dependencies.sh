@@ -13,6 +13,36 @@ set -euo pipefail
 
 echo "🔧 Setting up dx-orchestrator dependencies..."
 
+# Preflight: PEP 668 blocks `pip install` outside a venv on Ubuntu 24.04+.
+# Require the caller to have a venv active (VIRTUAL_ENV set) so the pip
+# calls below land somewhere writable.
+if [ -z "${VIRTUAL_ENV:-}" ]; then
+    echo "❌ No virtualenv active." >&2
+    echo "   Create one and activate it before running this script:" >&2
+    echo "     virtualenv -p python3 .venv    # or: python3 -m venv .venv" >&2
+    echo "     source .venv/bin/activate" >&2
+    echo "     ./scripts/setup_dependencies.sh" >&2
+    exit 1
+fi
+echo "✅ virtualenv active: ${VIRTUAL_ENV}"
+
+# Preflight: two of the three clones are private repos. If gh is installed,
+# it must be logged in. If gh isn't installed, git clone will fall through
+# to https and fail on the private ones — surface that clearly upfront.
+if command -v gh >/dev/null 2>&1; then
+    if ! gh auth status >/dev/null 2>&1; then
+        echo "❌ gh is installed but not authenticated." >&2
+        echo "   Run: gh auth login" >&2
+        echo "   (needed to clone the private claude-sdlc-roles and devswarm-ledger repos)" >&2
+        exit 1
+    fi
+    echo "✅ gh authenticated as $(gh api user --jq .login)"
+else
+    echo "⚠️  gh CLI not installed. Private-repo clones will fail." >&2
+    echo "   Install: https://cli.github.com/  then run: gh auth login" >&2
+    echo "   (public pxx install will still succeed)" >&2
+fi
+
 # --- 1. pxx ---
 if command -v pxx >/dev/null 2>&1; then
     echo "✅ pxx already installed ($(pxx --version 2>&1 | head -n1))"
