@@ -4,8 +4,11 @@
 # Installs:
 #   1. pxx-orchestrator (from PyPI)
 #   2. psoperator (git clone + pip install -e .)
-#   3. claude-sdlc-roles (git clone)
-#   4. Default hardware_manifest.yml in ~/.config/dx/
+#   3. sdlc-agent-roles (git clone)
+#   4. devswarm-ledger-reference (git clone)
+#   5. Default hardware_manifest.yml in ~/.config/dx/
+#
+# Every clone is a public repository — no GitHub credentials are needed.
 #
 # Safe to re-run — every step checks for prior state before acting.
 
@@ -26,23 +29,6 @@ if [ -z "${VIRTUAL_ENV:-}" ]; then
 fi
 echo "✅ virtualenv active: ${VIRTUAL_ENV}"
 
-# Preflight: two of the three clones are private repos. If gh is installed,
-# it must be logged in. If gh isn't installed, git clone will fall through
-# to https and fail on the private ones — surface that clearly upfront.
-if command -v gh >/dev/null 2>&1; then
-    if ! gh auth status >/dev/null 2>&1; then
-        echo "❌ gh is installed but not authenticated." >&2
-        echo "   Run: gh auth login" >&2
-        echo "   (needed to clone the private claude-sdlc-roles and devswarm-ledger repos)" >&2
-        exit 1
-    fi
-    echo "✅ gh authenticated as $(gh api user --jq .login)"
-else
-    echo "⚠️  gh CLI not installed. Private-repo clones will fail." >&2
-    echo "   Install: https://cli.github.com/  then run: gh auth login" >&2
-    echo "   (public pxx install will still succeed)" >&2
-fi
-
 # --- 1. pxx ---
 if command -v pxx >/dev/null 2>&1; then
     echo "✅ pxx already installed ($(pxx --version 2>&1 | head -n1))"
@@ -62,33 +48,26 @@ else
     (cd "${PSOP_DIR}" && pip install -e .)
 fi
 
-# --- 3. claude-sdlc-roles ---
-ROLES_DIR="${HOME}/ai/claude-sdlc-roles"
+# --- 3. sdlc-agent-roles ---
+ROLES_DIR="${HOME}/ai/sdlc-agent-roles"
 if [ -d "${ROLES_DIR}/.git" ]; then
-    echo "✅ claude-sdlc-roles already cloned at ${ROLES_DIR}"
+    echo "✅ sdlc-agent-roles already cloned at ${ROLES_DIR}"
 else
-    echo "📦 Cloning claude-sdlc-roles..."
+    echo "📦 Cloning sdlc-agent-roles..."
     mkdir -p "$(dirname "${ROLES_DIR}")"
-    # Private repo — use gh CLI (falls back to https if gh is not installed)
-    if command -v gh >/dev/null 2>&1; then
-        gh repo clone cdnwetzel/claude-sdlc-roles "${ROLES_DIR}"
-    else
-        git clone https://github.com/cdnwetzel/claude-sdlc-roles.git "${ROLES_DIR}"
-    fi
+    git clone https://github.com/cdnwetzel/sdlc-agent-roles.git "${ROLES_DIR}"
 fi
 
-# --- 3b. devswarm-ledger (needed by dx merge for RL-003 signature checks) ---
-LEDGER_DIR="${HOME}/ai/devswarm-ledger"
+# --- 3b. devswarm-ledger-reference (needed by dx merge for RL-003 checks) ---
+# The public reference ledger: synthetic rows, a real signature, every gate
+# exercisable. Point DX_LEDGER_REPO at your own ledger to gate real merges.
+LEDGER_DIR="${HOME}/ai/devswarm-ledger-reference"
 if [ -d "${LEDGER_DIR}/.git" ]; then
-    echo "✅ devswarm-ledger already cloned at ${LEDGER_DIR}"
+    echo "✅ devswarm-ledger-reference already cloned at ${LEDGER_DIR}"
 else
-    echo "📦 Cloning devswarm-ledger..."
+    echo "📦 Cloning devswarm-ledger-reference..."
     mkdir -p "$(dirname "${LEDGER_DIR}")"
-    if command -v gh >/dev/null 2>&1; then
-        gh repo clone cdnwetzel/devswarm-ledger "${LEDGER_DIR}"
-    else
-        git clone https://github.com/cdnwetzel/devswarm-ledger.git "${LEDGER_DIR}"
-    fi
+    git clone https://github.com/cdnwetzel/devswarm-ledger-reference.git "${LEDGER_DIR}"
 fi
 
 # --- 4. Hardware manifest ---
@@ -117,7 +96,7 @@ else
 # If you double the /v1, probes 404 and every task fails with MODEL_UNAVAILABLE.
 #
 # Optional top-level key:
-#   roles_path: "/path/to/claude-sdlc-roles/skills/sdlc-role/roles"
+#   roles_path: "/path/to/sdlc-agent-roles/skills/sdlc-role/roles"
 # Overridden in turn by the DX_ROLES_PATH environment variable.
 
 roles:

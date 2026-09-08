@@ -57,12 +57,22 @@ jobs:
       # signature gate rejects revoked and expired keys.
       - name: gpg must be available
         run: gpg --version
-      # The suite is otherwise hermetic: synthetic fixtures, no private sibling
-      # repos (claude-sdlc-roles, devswarm-ledger), no network.
+      # The suite is otherwise hermetic: synthetic fixtures, no sibling clones
+      # (sdlc-agent-roles, devswarm-ledger-reference), no network.
       - name: Test
         run: pytest --cov=dx --cov-report=term --cov-fail-under=88
       - name: Integration tests must not have been skipped
         run: pytest tests/test_gpg_integration.py -q -rs 2>&1 | tee /tmp/gpg.log; ! grep -q SKIPPED /tmp/gpg.log
+      # The suite above proves the hermetic claim: it passed with nothing but
+      # this repository. Now clone the real deck and prove the parser handles
+      # the actual 38 cards, not only the synthetic fixtures. Both properties
+      # matter, so they are asserted in that order and never merged into one run.
+      - name: Clone the real role deck
+        run: git clone --depth 1 https://github.com/cdnwetzel/sdlc-agent-roles.git "$HOME/ai/sdlc-agent-roles"
+      - name: Full suite with the real deck — nothing may skip
+        run: |
+          pytest -q -rs 2>&1 | tee /tmp/cards.log
+          ! grep -q SKIPPED /tmp/cards.log
       - name: CLI smoke test
         run: |
           dx --version

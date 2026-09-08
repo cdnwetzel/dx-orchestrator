@@ -18,7 +18,7 @@ _SECTION_RE = re.compile(r"##\s*(.+?)\s*\n(.*?)(?=\n## |\Z)", re.DOTALL)
 _BULLET_START_RE = re.compile(r"^\s*[-*\u2022]\s+(.*)$")
 _EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*")
 
-# Inline metadata line style used by claude-sdlc-roles:
+# Inline metadata line style used by sdlc-agent-roles:
 #   **Slug:** `slug` · **Phase:** X · **Agent fit:** Y · **9-person seat:** Z
 _FIT_RE = re.compile(r"\*\*Agent fit:\*\*\s*([A-Za-z]+)", re.IGNORECASE)
 _SEAT_RE = re.compile(r"\*\*9-person seat:\*\*\s*([^\n·|]+)")
@@ -68,7 +68,7 @@ def parse_role_file(filepath: Path) -> RoleCard:
     content = filepath.read_text(encoding="utf-8")
     slug = filepath.stem
 
-    # Optional YAML frontmatter (not used by claude-sdlc-roles today, but supported)
+    # Optional YAML frontmatter (not used by sdlc-agent-roles today, but supported)
     frontmatter: dict[str, Any] = {}
     body = content
     if content.startswith("---"):

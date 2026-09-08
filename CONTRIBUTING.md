@@ -10,7 +10,7 @@ pytest
 ```
 
 The test suite is hermetic. It needs no lab hardware, no GPG keyring, no network
-and none of the private sibling repos — if a change makes that untrue, the change
+and none of the sibling clones — if a change makes that untrue, the change
 is wrong. `gpg` on `PATH` unlocks the integration tests; without it they skip.
 
 ## The gates
@@ -52,7 +52,7 @@ Two corollaries, both learned the hard way:
 ## Test conventions
 
 - **Fixtures are synthetic.** Role cards in `tests/fixtures/roles/` mirror the
-  structure of the private `claude-sdlc-roles` cards with invented prose. Never
+  structure of the `sdlc-agent-roles` cards with invented prose. Never
   vendor real card text into this repo.
 - **No real hosts anywhere.** Test endpoints use `.invalid` (RFC 6761 guarantees
   it never resolves). A hardcoded routable address in the package fails
@@ -60,7 +60,7 @@ Two corollaries, both learned the hard way:
 - **No wall-clock dependencies.** The GPG fixtures are committed rather than
   generated because the generated version was flaky on a host whose clock
   stepped backwards. See `tests/fixtures/gpg/README.md`.
-- **Guard anything needing a private clone** with `pytest.mark.skipif`, as
+- **Guard anything needing a sibling clone** with `pytest.mark.skipif`, as
   `TestAgainstRealCards` does.
 - Name the behavior, not the function: `test_revoked_key_is_rejected`, not
   `test_verify_2`.

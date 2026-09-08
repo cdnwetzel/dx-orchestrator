@@ -16,6 +16,6 @@ A gate without a test is a claim, not a gate. Three gates in 0.2.0 were failing
 
 - [ ] `ruff check .`
 - [ ] `mypy src/dx --strict`
-- [ ] `pytest` — suite still hermetic (no lab, no keyring, no network, no private repos)
+- [ ] `pytest` — suite still hermetic (no lab, no keyring, no network, no sibling clones)
 - [ ] `CHANGELOG.md` updated if user-visible
 - [ ] No real hostnames, addresses or usernames added to tracked files

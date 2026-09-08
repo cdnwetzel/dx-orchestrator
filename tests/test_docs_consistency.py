@@ -129,7 +129,12 @@ class TestClaimsAreQualified:
     being true, the sentence has to change with it."""
 
     def test_hermetic_claim_holds(self):
-        """No test may depend on a private sibling repo without a skip guard.
+        """No test may require a sibling clone without a skip guard.
+
+        The sibling repos are public now, so this is no longer about privacy —
+        it is about the README's claim that `pytest` runs with nothing but this
+        repository. A test that hard-requires a clone breaks that claim whether
+        or not the clone is reachable.
 
         Keyed on the actual clone paths rather than the repo names, so a test
         that merely asserts on an error message mentioning devswarm-ledger is
@@ -144,7 +149,7 @@ class TestClaimsAreQualified:
             text = path.read_text()
             if dependency.search(text):
                 assert "skipif" in text, (
-                    f"{path.name} depends on a private clone without a skip guard"
+                    f"{path.name} requires a sibling clone without a skip guard"
                 )
 
     def test_the_hermetic_guard_actually_fires(self):
@@ -183,7 +188,7 @@ def test_documented_files_exist(doc):
 
 
 TUTORIAL = (ROOT / "TUTORIAL.md").read_text(encoding="utf-8")
-REAL_CARDS = Path("~/ai/claude-sdlc-roles/skills/sdlc-role/roles").expanduser()
+REAL_CARDS = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 
 
 class TestTutorialFidelity:
@@ -218,7 +223,7 @@ class TestTutorialFidelity:
 
     @pytest.mark.skipif(
         not REAL_CARDS.is_dir(),
-        reason="claude-sdlc-roles not cloned (private repo; skipped in CI)",
+        reason="sdlc-agent-roles not cloned; CI clones it, so this should run there",
     )
     def test_the_roles_list_transcript_is_reproducible(self):
         """Run the command the tutorial shows and require the shown output."""
@@ -256,10 +261,20 @@ class TestTestCountClaim:
         return int(match.group(1).replace(",", ""))
 
     def test_the_readme_count_matches_the_suite(self, request):
+        # A narrowed invocation collects a subset, so the count claim is only
+        # meaningful on a full run. Keyed on the *invocation* rather than a
+        # threshold on the collected count: the old `< 50` guard let a two-file
+        # run through at 51 collected and asserted 327 == 51. A magic number
+        # that happens to sit just below a plausible invocation is not a guard.
+        opts = request.config.option
+        narrowed = bool(
+            getattr(opts, "keyword", "")
+            or getattr(opts, "markexpr", "")
+            or request.config.args != ["tests"]   # pyproject testpaths
+        )
+        if narrowed:
+            pytest.skip("narrowed invocation — the count claim needs a full run")
         collected = len(request.session.items)
-        # `pytest -k` / single-file runs collect a subset; only assert on a full run.
-        if collected < 50:
-            pytest.skip("partial collection — only meaningful on a full run")
         claimed = self._claimed()
         assert claimed == collected, (
             f"README claims {claimed} tests, the suite collects {collected}"

@@ -2,7 +2,7 @@
 
 Every test that touches dx configuration points DX_CONFIG / DX_ROLES_PATH at
 the synthetic fixtures in this directory, so the suite never depends on the
-private sibling repos or on a developer's ~/.config.
+sibling clones or on a developer's ~/.config.
 """
 import json
 from pathlib import Path
@@ -53,10 +53,11 @@ def manifest_path() -> Path:
 # ---------------------------------------------------------------------------
 # A stand-in for a devswarm-ledger clone.
 #
-# Real chain verification, GPG keys and signed approvals live in the private
-# cdnwetzel/devswarm-ledger repo. This fixture reproduces only the shape dx
-# reads — tools/verify_chain.py, ledger.jsonl, queue/, approvals/ — so the
-# merge-gate logic is testable in CI without that repo or a keyring.
+# Real chain verification, GPG keys and signed approvals live in a ledger repo —
+# cdnwetzel/devswarm-ledger-reference publicly, or a private operational one.
+# This fixture reproduces only the shape dx reads — tools/verify_chain.py,
+# ledger.jsonl, queue/, approvals/ — so the merge-gate logic is testable in CI
+# without any clone or a keyring.
 # ---------------------------------------------------------------------------
 
 LEDGER_HEAD = "b" * 64

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.6.2
+**Version:** 0.7.0
 
 ## Where we are
 
@@ -48,6 +48,7 @@ dx-orchestrator/
 ├── CHANGELOG.md                  — 0.1.0 → 0.4.0
 ├── SECURITY.md                   — trust boundaries + disclosure
 ├── CONTRIBUTING.md               — gates, fixture rules
+├── RELEASE_READINESS.md          — cross-repo MIT/public readiness scan
 ├── checkpoint.md                 — this file
 ├── pyproject.toml                — metadata, deps, ruff + pytest config
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
@@ -75,8 +76,8 @@ pip install -e ".[dev]"
 $EDITOR ~/.config/dx/hardware_manifest.yml   # every host in it is a placeholder
 ```
 
-Private clones (`claude-sdlc-roles`, `devswarm-ledger`) need `gh auth login`
-first — the installer preflights this.
+Every clone the installer fetches is a public repository — no `gh` and no
+GitHub credentials are needed.
 
 ## Done since 0.2.0
 
@@ -129,11 +130,51 @@ stubbed").
 - `dx verify-gui` has never run against a live desktop.
 - No all-green merge against the *live* ledger with a fresh RL-010 signature
   (the gate does pass all-green against real keys in tests).
-- Two of four integrations are private repos — now flagged in the README's first
-  screen rather than at line 108.
 
 **What would flip this to NO-GO:** any of the above being *claimed* as working.
 The gates are honest as long as the stubs stay labelled.
+
+## Open-source readiness (scanned 2026-09-08)
+
+Full findings in `RELEASE_READINESS.md`. Summary: reproducing our results takes
+**five** repos, not four — `dx` itself plus the four integrations. Three
+(`dx-orchestrator`, `pxx`, `psoperator`) are already public MIT; `pxx` resolves
+from PyPI at the pinned `2.5.4`, and public `psoperator` is confirmed sufficient
+for everything `dx` calls.
+
+Licensing was **not** the blocker: both repos had a single author, so MIT applied
+unilaterally — no CLA, no history scrubbing (both were clean of secrets,
+addresses and deleted files).
+
+Two things actually block a full public release:
+
+1. ~~**Which role deck is canonical**~~ — resolved 2026-09-08:
+   `sdlc-agent-roles` @ `release/v1.1.0`. Strict superset of `claude-sdlc-roles`
+   — same 38 cards at the identical path, and MIT-licensed already. Its `main`
+   was empty; `release/v1.1.0` was merged to `main` (`058dd88`) and
+   **`sdlc-agent-roles` is now PUBLIC under MIT** (2026-09-08), CI green
+   including the receipt gate. Its `plugin.json` licence key is deliberately
+   deferred — the receipt gate freezes the payload digest, so that field needs a
+   real v1.1.1 review round (`RUNBOOK.md` §2). `LICENSE` governs regardless.
+
+   **`dx` migrated to the new deck in 0.7.0** — 18 files, plus a re-captured
+   `TUTORIAL.md` transcript.
+2. **The ledger should not become a public write surface.** It is hash-chained,
+   so it cannot be sanitised without invalidating every signature, and its own
+   README argues against publication. Recommended: keep the live ledger private
+   and publish a *reference* ledger — schema, verifier, RL-010 key standard, and
+   a synthetic green trace. That is all `ledger_utils.py` ever needs.
+
+**Done 2026-09-08:** `sdlc-agent-roles` published (MIT, public);
+`claude-sdlc-roles` archived with a pointer to the successor; the reference
+ledger built at `~/ai/devswarm-ledger-reference` (13 files, `8c9785e`, cold-clone
+verified, **not yet pushed**) with all four RL-003 failure modes proven.
+
+That doc debt is now paid: `dx` 0.7.0 repointed both defaults, dropped `gh` from
+the install path entirely, replaced the README's "Before you clone" section, and
+re-captured the tutorial transcript. CI now clones the deck and forbids any
+skipped test. Remaining: step 12 (the `psoperator` address policy) and the
+deferred `plugin.json` licence key.
 
 ## Next real work
 
@@ -169,6 +210,8 @@ The gates are honest as long as the stubs stay labelled.
 
 - pxx (PyPI `pxx-orchestrator>=2.5.4`) — https://github.com/cdnwetzel/pxx
 - PSOperator — https://github.com/cdnwetzel/psoperator
-- claude-sdlc-roles (private) — https://github.com/cdnwetzel/claude-sdlc-roles
-- devswarm-ledger (private) — https://github.com/cdnwetzel/devswarm-ledger
+- sdlc-agent-roles (public, MIT) — https://github.com/cdnwetzel/sdlc-agent-roles
+- devswarm-ledger-reference (public, MIT) — https://github.com/cdnwetzel/devswarm-ledger-reference
+- claude-sdlc-roles (private, **archived** — superseded by sdlc-agent-roles)
+- devswarm-ledger (private — the live operational ledger; stays private)
 - camelid (evidence-bundle reference) — https://github.com/cdnwetzel/camelid

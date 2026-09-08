@@ -5,6 +5,45 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-09-08
+
+### Changed
+
+- **Every dependency is now a public, MIT-licensed repository.** The role deck
+  moved to `sdlc-agent-roles` (public, MIT — the superset that replaced the
+  archived `claude-sdlc-roles`), and `dx merge` now defaults to
+  `devswarm-ledger-reference`, a public reference ledger carrying synthetic rows
+  and one real GPG signature. The live operational ledger stays private and is
+  reached by setting `DX_LEDGER_REPO`.
+
+  Defaults changed accordingly, which is breaking for anyone relying on them:
+
+  | | Was | Now |
+  | --- | --- | --- |
+  | `DEFAULT_ROLES_PATH` | `~/ai/claude-sdlc-roles/skills/sdlc-role/roles` | `~/ai/sdlc-agent-roles/skills/sdlc-role/roles` |
+  | `DEFAULT_LEDGER_REPO` | `~/ai/devswarm-ledger` | `~/ai/devswarm-ledger-reference` |
+
+  Both remain overridable by `DX_ROLES_PATH` and `DX_LEDGER_REPO`.
+
+### Removed
+
+- **The `gh auth login` requirement.** `setup_dependencies.sh` no longer
+  preflights the GitHub CLI or branches its clones through `gh repo clone` —
+  nothing it fetches is private any more. `gh` is no longer a prerequisite
+  anywhere in the install path.
+- **The README's "Before you clone" section**, added one release ago in 0.6.2 to
+  warn visitors that two integrations were private repos. Its reason to exist is
+  gone. In its place, a "Reproducing this" section naming all five repos and how
+  each is obtained.
+
+### Fixed
+
+- The hermetic-guard test's rationale said "private sibling repo". The repos are
+  public now, so the rule was restated around what it actually protects: the
+  README's claim that `pytest` runs with nothing but this repository. The rule
+  itself is unchanged — a test that hard-requires a clone still needs a skip
+  guard.
+
 ## [0.6.2] — 2026-09-08
 
 ### Added
@@ -351,6 +390,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.7.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.5.1...v0.6.0

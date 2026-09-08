@@ -15,7 +15,7 @@ and opens short-lived TCP connections. It runs no model and holds no state.
 | RAM | ~100 MB resident | Peak is the role registry (38 cards ≈ 400 KB of text) |
 | Disk — source | ~200 KB | 21 tracked files |
 | Disk — venv | ~130 MB | Dominated by `pxx-orchestrator` and its deps |
-| Disk — sibling clones | ~30 MB | `psoperator`, `claude-sdlc-roles`, `devswarm-ledger` |
+| Disk — sibling clones | ~30 MB | `psoperator`, `sdlc-agent-roles`, `devswarm-ledger-reference` |
 | Python | 3.11+ | 3.13 tested in CI |
 | Network | Outbound TCP to each configured endpoint | No inbound ports |
 | GPU | **None** | By design — Phase 1 runs on a 2011 Mac Mini or a Surface Pro 6 |
@@ -31,7 +31,6 @@ only slow command is `dx run`, and all of that time is remote inference.
 | `python3` ≥ 3.11 | Runtime floor | `dx doctor` |
 | `virtualenv` or `python3-venv` | Ubuntu 24.04+ refuses bare `pip install` (PEP 668) | — |
 | `git` | Clones, and `pxx` writes `pxx-pre/` safety tags | — |
-| `gh`, authenticated | Two dependency repos are private | `setup_dependencies.sh` preflight |
 | `gpg` | RL-003 signature verification in `dx merge` | `dx doctor` |
 | `ssh` | Screenshot capture for `dx verify-gui` | — |
 | ImageMagick (`import`) **on the GUI host** | Default screenshot command | — |

@@ -22,7 +22,7 @@ you → dx CLI → role card (governance) → hardware manifest (routing) → px
 
 `dx` is a thin control plane. It does three things on top of raw `pxx`:
 
-- **Governance** — every task must be run under a named role card (one of 38, shipped in `claude-sdlc-roles`). The card's *Mandate* and *Must not* sections are injected into the agent prompt.
+- **Governance** — every task must be run under a named role card (one of 38, shipped in `sdlc-agent-roles`). The card's *Mandate* and *Must not* sections are injected into the agent prompt.
 - **Hardware routing** — a manifest maps each role to an inference endpoint and model, so heavy roles hit the T5810 vLLM and light ones hit an Ollama box.
 - **Merge gate** — `dx merge` verifies a GPG-signed approval against `devswarm-ledger/SCHEMA.md` before allowing a merge. Currently enforces the RL-003 signature contract; **does not yet** perform the actual git merge or ledger append (deliberately stubbed until Gate 1 unpauses).
 
@@ -32,7 +32,7 @@ What dx does **not** do today, honestly:
 - No GUI end-to-end run has been exercised (`dx verify-gui` code path works but hasn't been demonstrated on this box).
 
 Every mechanical gate described below has a regression test. The suite is
-hermetic — no private repos, no keyring, no network — so you can run it before
+hermetic — no sibling clones, no keyring, no network — so you can run it before
 you have configured anything. That matters here: writing
 those tests surfaced three gates that were failing *open*, all fixed in 0.3.0.
 
@@ -45,11 +45,9 @@ those tests surfaced three gates that were failing *open*, all fixed in 0.3.0.
 | Python 3.11+ | dx + pxx floor | `python3 --version` |
 | `virtualenv` or `python3-venv` | Ubuntu 24.04 refuses bare `pip install` (PEP 668) | `virtualenv --version` |
 | `git` | clones + pxx safety-net tags | `git --version` |
-| `gh` (GitHub CLI, authenticated) | two of the three dependency repos are private | `gh auth status` |
 | `gpg` | verifies the merge gate | `gpg --version` |
 | A reachable inference endpoint | e.g. T5810 vLLM `t5810.lab:8007` | `curl -s http://t5810.lab:8007/v1/models \| head -c 200` |
 
-If `gh auth status` says logged out: `gh auth login` first. If any private-repo clones fail with `could not read Username for 'https://github.com'`, that's the reason.
 
 ---
 
@@ -74,8 +72,8 @@ The setup script is idempotent and preflight-checks that a venv is active and `g
 
 - Install `pxx-orchestrator>=2.5.4` from PyPI
 - Clone `~/ai/psoperator` and `pip install -e .` it
-- Clone `~/ai/claude-sdlc-roles` (private — needs `gh`)
-- Clone `~/ai/devswarm-ledger` (private — needs `gh`)
+- Clone `~/ai/sdlc-agent-roles`
+- Clone `~/ai/devswarm-ledger-reference`
 - Seed `~/.config/dx/hardware_manifest.yml` with a **placeholder** routing table
 
 If a step fails, it exits non-zero with a specific error and you can re-run after fixing.
@@ -83,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.6.2
+dx --version    # dx 0.7.0
 pytest          # all green
 ```
 
@@ -128,7 +126,7 @@ gui_verification:
   screenshot_cmd: "import -window root -"
 ```
 
-If your role cards live somewhere other than `~/ai/claude-sdlc-roles/skills/sdlc-role/roles`, either add a top-level `roles_path:` key to this file or set `DX_ROLES_PATH`.
+If your role cards live somewhere other than `~/ai/sdlc-agent-roles/skills/sdlc-role/roles`, either add a top-level `roles_path:` key to this file or set `DX_ROLES_PATH`.
 
 **Why the `/v1` warning is non-negotiable.** In an earlier iteration the manifest had `endpoint: "http://t5810.lab:8007/v1"` and every `dx run` failed with `[MODEL_UNAVAILABLE] http://t5810.lab:8007/v1 returned HTTP 404`. Root cause: `pxx/router.py` constructs probe URLs as `{base}/v1/models`, so the `/v1` doubles. Fix is to strip it. Documented in commit `c5cd52d` and captured here so nobody else has to rediscover it.
 
@@ -149,8 +147,8 @@ Actual observed output on this box:
 ✅ pxx installed (/home/cwe/ai/dx-orchestrator/.venv/bin/pxx)
 ✅ PSOperator importable
 ✅ PSOperator run_agent script at /home/cwe/ai/psoperator/examples/run_agent.py
-✅ Role cards parse cleanly (38 files at /home/cwe/ai/claude-sdlc-roles/skills/sdlc-role/roles)
-✅ devswarm-ledger at /home/cwe/ai/devswarm-ledger
+✅ Role cards parse cleanly (38 files at /home/cwe/ai/sdlc-agent-roles/skills/sdlc-role/roles)
+✅ devswarm-ledger at /home/cwe/ai/devswarm-ledger-reference
 ✅ gpg installed (/usr/bin/gpg)
 ✅ Hardware manifest at /home/cwe/.config/dx/hardware_manifest.yml
    (parses, and every section has the expected shape)
@@ -464,7 +462,6 @@ Not yet exercised end-to-end:
 | Symptom | Cause | Fix |
 |---|---|---|
 | `error: externally-managed-environment` on `pip install` | Ubuntu 24.04+ PEP 668 refuses bare pip | activate a venv first (see §2) |
-| `could not read Username for 'https://github.com'` during setup | private-repo clone with no gh auth | `gh auth login` then re-run |
 | `dx: command not found` | venv not activated in this shell | `source .venv/bin/activate` or run `.venv/bin/dx` directly |
 | `[MODEL_UNAVAILABLE] ... /v1 returned HTTP 404` | manifest endpoint has trailing `/v1` | strip it — pxx appends its own `/v1/models` (see §3) |
 | `[MODEL_UNAVAILABLE]` on vLLM but Ollama works | `provider` field missing → defaults to `ollama` → probes `/api/tags` which vLLM lacks | add `provider: "vllm"` in the manifest |

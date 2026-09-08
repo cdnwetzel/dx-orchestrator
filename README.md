@@ -9,8 +9,8 @@ A sovereign, role-based orchestration layer for AI-driven software factories.
 `dx` integrates:
 - **pxx** — code generation engine (PyPI: `pxx-orchestrator>=2.5.4`)
 - **PSOperator** — desktop automation and GUI verification
-- **claude-sdlc-roles** — 38 governance role cards with separation-of-duties invariants
-- **devswarm-ledger** — hash-chained Git ledger and GPG approval records
+- **sdlc-agent-roles** — 38 governance role cards with separation-of-duties invariants
+- **devswarm-ledger-reference** — hash-chained ledger format and GPG approval records
 - **Your inference hardware** — whatever speaks vLLM or Ollama on your LAN
 
 The design goal is `output = min(generation, verification)` — verification is the
@@ -18,26 +18,30 @@ binding constraint, and it stays with a named accountable human. Everything
 mechanical (role parsing, gate enforcement, hardware routing) runs LLM-free.
 **Every gate in `dx` is code, not a prompt.**
 
-## Before you clone
+## Reproducing this
 
-Two of the four integrations — `claude-sdlc-roles` (the 38 role cards) and
-`devswarm-ledger` (the hash-chained ledger and GPG approvals) — are **private
-repositories**. That is worth knowing in the first thirty seconds rather than at
-the first 404.
+Every dependency is public and MIT. Five repositories, one of which you install
+from PyPI rather than clone:
 
-What that means in practice:
-
-|  | Without the private repos | With them |
+| Repo | What it provides | How you get it |
 | --- | --- | --- |
-| Read the code and the design | ✅ | ✅ |
-| Run the full test suite | ✅ — it is hermetic by construction | ✅ |
-| `dx --version`, `dx roles list --path <your own cards>` | ✅ | ✅ |
-| `dx doctor` all-green | ❌ — it will correctly report the missing clones | ✅ |
-| `dx run`, `dx merge` against the real ledger | ❌ | ✅ |
+| this one | control plane, all gates | `git clone` |
+| [`pxx`](https://github.com/cdnwetzel/pxx) | code-generation engine | PyPI: `pxx-orchestrator>=2.5.4` |
+| [`psoperator`](https://github.com/cdnwetzel/psoperator) | desktop automation, GUI verification | `git clone` |
+| [`sdlc-agent-roles`](https://github.com/cdnwetzel/sdlc-agent-roles) | the 38 role cards `dx` is governed by | `git clone` |
+| [`devswarm-ledger-reference`](https://github.com/cdnwetzel/devswarm-ledger-reference) | ledger format, verifier, a signed reference trace | `git clone` |
+
+`scripts/setup_dependencies.sh` fetches all of them. No GitHub credentials are
+needed.
+
+**The reference ledger is synthetic on purpose.** It carries three chain-verified
+rows and one real GPG signature so `dx merge` can be exercised end-to-end — and
+so every way the gate *fails* can be reproduced. It attests to no real work.
+Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
 The test suite is the part built to be evaluated from outside: 327 tests,
 including real-GPG signature checks against committed keys, all runnable with no
-lab hardware, no keyring, no network and none of the private repos. If you are
+lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
 
 The role-card *format* is documented and the parser is exercised against
@@ -115,7 +119,7 @@ returns 404 and every task fails with `MODEL_UNAVAILABLE`.
 | --- | --- |
 | `DX_CONFIG` | Path to the hardware manifest |
 | `DX_ROLES_PATH` | Role-card directory (also settable as `roles_path:` in the manifest) |
-| `DX_LEDGER_REPO` | Path to the `devswarm-ledger` clone |
+| `DX_LEDGER_REPO` | Path to a ledger repo — set this to your own operational ledger; the default is the public reference one |
 | `DX_VLM_ENDPOINT` / `DX_VLM_MODEL` | GUI verification model endpoint and name |
 | `DX_GUI_SSH_HOST` | Host to capture screenshots from |
 | `PSOPERATOR_REPO` / `PSOPERATOR_SNAPSHOT_DIR` | PSOperator clone and snapshot locations |
@@ -131,11 +135,10 @@ There are no hardcoded remote hosts anywhere in the package. An unconfigured
 - Python 3.11+
 - `pxx-orchestrator>=2.5.4` (PyPI), `PyYAML`, `requests`
 - `gpg` and `ssh` on the host
-- **External clones** (handled by `setup_dependencies.sh`, two are private and
-  need `gh auth login`):
+- **External clones** (all public; handled by `setup_dependencies.sh`):
   - `~/ai/psoperator` — https://github.com/cdnwetzel/psoperator
-  - `~/ai/claude-sdlc-roles` — https://github.com/cdnwetzel/claude-sdlc-roles
-  - `~/ai/devswarm-ledger` — https://github.com/cdnwetzel/devswarm-ledger
+  - `~/ai/sdlc-agent-roles` — https://github.com/cdnwetzel/sdlc-agent-roles
+  - `~/ai/devswarm-ledger-reference` — https://github.com/cdnwetzel/devswarm-ledger-reference
 
 See `RESOURCES.md` for the full footprint and for fleet sizing requirements.
 
@@ -150,7 +153,7 @@ pytest --cov=dx           # CI floor is 88%
 ```
 
 The test suite is hermetic — it runs against synthetic fixtures in
-`tests/fixtures/` and never needs the private sibling repos, a GPG keyring, or
+`tests/fixtures/` and never needs the sibling clones, a GPG keyring, or
 network access. CI runs ruff plus pytest on Python 3.11, 3.12 and 3.13, builds
 the package, and checks that `LICENSE` ships inside the wheel.
 
@@ -174,6 +177,7 @@ fails the build if this README drifts from the implementation.
 | `SECURITY.md` | Trust boundaries, disclosure route, what dx does *not* protect |
 | `CONTRIBUTING.md` | Dev setup, the gates, fixture rules |
 | `checkpoint.md` | Current state and next work |
+| `RELEASE_READINESS.md` | Cross-repo open-source readiness: the five repos, what each scan found, cost to publish |
 
 ## Status
 

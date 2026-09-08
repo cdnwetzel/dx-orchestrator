@@ -4,7 +4,7 @@ from pathlib import Path
 from .role_models import FitLevel, RoleCard
 from .role_registry import get_parse_failures, get_registry, load_registry
 
-# Seat is free-form text in claude-sdlc-roles (e.g. "S4", "S8 + borrowed",
+# Seat is free-form text in sdlc-agent-roles (e.g. "S4", "S8 + borrowed",
 # "S9 design + S8 validate", "All engineers (rotating)", "Borrowed").
 # We only reject empty / whitespace-only values.
 _SEAT_RE = re.compile(r"^\S.*\S$|^\S$")

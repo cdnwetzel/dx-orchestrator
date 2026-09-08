@@ -12,7 +12,7 @@ from dx.role_parser import parse_role_file
 
 
 def test_parses_inline_metadata_line(roles_dir):
-    """claude-sdlc-roles uses an inline `**Agent fit:** X · **9-person seat:** Y`
+    """sdlc-agent-roles uses an inline `**Agent fit:** X · **9-person seat:** Y`
     line, not YAML frontmatter. Regression: parser originally only read frontmatter.
     """
     card = parse_role_file(roles_dir / "widget-engineer.md")
@@ -103,7 +103,7 @@ def test_missing_metadata_uses_documented_defaults(tmp_path):
 
 
 def test_yaml_frontmatter_still_supported(tmp_path):
-    """Frontmatter is not used by claude-sdlc-roles today but is a supported input."""
+    """Frontmatter is not used by sdlc-agent-roles today but is a supported input."""
     card_file = tmp_path / "fm-role.md"
     card_file.write_text(
         "---\nfit: Anchored\nseat: S2\n---\n\n"
@@ -205,15 +205,15 @@ class TestBulletExtraction:
                 )
 
 
-REAL_CARDS = Path("~/ai/claude-sdlc-roles/skills/sdlc-role/roles").expanduser()
+REAL_CARDS = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 
 
 @pytest.mark.skipif(
     not REAL_CARDS.is_dir(),
-    reason="claude-sdlc-roles not cloned (private repo; skipped in CI)",
+    reason="sdlc-agent-roles not cloned; CI clones it, so this should run there",
 )
 class TestAgainstRealCards:
-    """Opt-in checks against the real 38 cards when the private repo is present.
+    """Checks against the real 38 cards when the deck is cloned.
 
     The hermetic fixtures prove the parser handles the format as documented;
     these prove the documented format matches what actually ships.

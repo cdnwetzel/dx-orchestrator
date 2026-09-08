@@ -167,15 +167,17 @@ def get_psoperator_config() -> dict[str, Any]:
 # External repo locations
 # ---------------------------------------------------------------------------
 
-DEFAULT_LEDGER_REPO = Path("~/ai/devswarm-ledger").expanduser()
-DEFAULT_ROLES_PATH = Path("~/ai/claude-sdlc-roles/skills/sdlc-role/roles").expanduser()
+DEFAULT_LEDGER_REPO = Path("~/ai/devswarm-ledger-reference").expanduser()
+DEFAULT_ROLES_PATH = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 
 
 def get_ledger_repo_path() -> Path:
-    """Path to a local clone of cdnwetzel/devswarm-ledger.
+    """Path to a local clone of a devswarm-ledger-format repository.
 
-    Override with DX_LEDGER_REPO. Falls back to ~/ai/devswarm-ledger,
-    which is where scripts/setup_dependencies.sh clones it.
+    Defaults to ~/ai/devswarm-ledger-reference — the public reference ledger,
+    which setup_dependencies.sh clones and which exercises every RL-003 gate
+    with synthetic rows. Point DX_LEDGER_REPO at your own operational ledger to
+    gate real merges; the reference ledger attests to no real work.
     """
     return Path(
         os.environ.get("DX_LEDGER_REPO", str(DEFAULT_LEDGER_REPO))
@@ -204,12 +206,12 @@ def get_psoperator_repo() -> Path:
 
 
 def get_roles_path() -> Path:
-    """Directory holding the claude-sdlc-roles role cards.
+    """Directory holding the sdlc-agent-roles role cards.
 
     Resolution order:
       1. DX_ROLES_PATH environment variable
       2. `roles_path:` at the top level of the hardware manifest
-      3. ~/ai/claude-sdlc-roles/skills/sdlc-role/roles (setup_dependencies.sh default)
+      3. ~/ai/sdlc-agent-roles/skills/sdlc-role/roles (setup_dependencies.sh default)
 
     Every other external path dx depends on is overridable; this one is too, so
     the install is not pinned to one directory layout.
