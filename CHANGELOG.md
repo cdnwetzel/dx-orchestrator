@@ -5,6 +5,33 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] — 2026-09-08
+
+### Fixed
+
+- **A real lab address reached a tracked file.** `VISION.md`'s red line is "no
+  real lab addresses in tracked files" and the go-live claim was "0 lab
+  addresses in the tree **or** the full git history". The guard enforcing it
+  (`test_no_real_addresses_leaked_back_in`) only ever read `TUTORIAL.md`, so
+  writing one into `checkpoint.md` — while documenting the fix for exactly this
+  problem in `psoperator` — passed 327 green tests and was pushed as `e066854`.
+
+  Scrubbed from the tree. It cannot be removed from history without a
+  force-push, which the branch ruleset now forbids and which is the wrong trade
+  on a published repo, so the privacy claim in `checkpoint.md` is scoped to say
+  the tree is clean and the history is not.
+
+### Added
+
+- `TestNoLabAddressesAnywhere` — the red line is now enforced across **every
+  tracked text file**, not one document. RFC1918 and RFC6598 are rejected;
+  loopback and the RFC-5737 documentation ranges are allowed, because those are
+  what examples should use. Reports `file:line`, and carries a self-test so a
+  pattern that silently stops matching fails the build.
+
+  The narrow guard was the actual defect. A red line enforced on one file is a
+  red line that reads as enforced and is not.
+
 ## [0.7.1] — 2026-09-08
 
 ### Fixed
@@ -417,6 +444,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.7.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.6.1...v0.6.2

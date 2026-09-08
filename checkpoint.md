@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.7.1
+**Version:** 0.7.2
 
 ## Where we are
 
@@ -15,13 +15,13 @@ and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 335 passed |
+| `pytest` | 337 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.7.1` |
+| `dx --version` | `dx 0.7.2` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
@@ -113,7 +113,7 @@ Reviewed for public peer review and cleared, with scope stated.
 | Clean clone passes cold | ruff, `mypy --strict`, 327 tests, 91% coverage — verified from a fresh `git clone` |
 | RL-003 gate | proved against real revoked and expired GPG keys, not captured transcripts |
 | Live run | `dx run` generated working code on lab hardware at 0.6.2, exit 0 |
-| Privacy | 0 lab addresses in the tree **or** the full git history (`psoperator` matches in-tree as of 2026-09-08; its pre-existing history still carries them — see `CONTRIBUTING.md`) |
+| Privacy | 0 lab addresses in the tree, now guarded tree-wide by `TestNoLabAddressesAnywhere`. **History is not clean:** commit `e066854` wrote the psoperator home range into `checkpoint.md` while documenting the fix for exactly that problem. Removed from the tree; unremovable from history without a force-push the ruleset now forbids. `psoperator` is the same shape. |
 | Legal | MIT, LICENSE ships inside the wheel |
 | Docs | version, env-override table, command table, tutorial transcripts and test count all machine-checked |
 | CI | 6 jobs, Python 3.11/3.12/3.13, GPG tests asserted to run rather than skip |
@@ -221,14 +221,14 @@ while this was live.
 
 ## Fleet addressing policy (2026-09-08)
 
-Settled, and now uniform. `psoperator` published real RFC1918 lab addresses
-(`10.0.1.x`, including the t5810 this box routes to) while its own `config.py`
-claimed those addresses "are RFC-5737 documentation placeholders" — true of its
-work fleet, false of its home fleet. Its home fleet now uses `192.0.2.0/24`
+Settled, and now uniform. `psoperator` published real RFC1918 lab addresses —
+the same private /24 this box routes to — while its own `config.py` claimed
+those addresses "are RFC-5737 documentation placeholders", true of its work
+fleet and false of its home fleet. Its home fleet now uses `192.0.2.0/24`
 (TEST-NET-1); the fail-closed addressing invariants were untouched in substance
 and all still fire by name.
 
-The "device-model hostnames and the 10.0.1.0/24 range are an approved exception"
+The "device-model hostnames and the home range are an approved exception"
 carve-out in its `CONTRIBUTING.md`, `greptile.json` and `.coderabbit.yaml` is
 gone rather than renumbered — the exception was the defect. Both repos now state
 the same rule, and `dx`'s `CONTRIBUTING.md` records it.

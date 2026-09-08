@@ -326,3 +326,56 @@ class TestExitCodeContract:
             "cmd_run returns a subprocess's exit code, so pxx can forge "
             "EXIT_ANCHORED_REFUSED"
         )
+
+
+class TestNoLabAddressesAnywhere:
+    """`VISION.md` red line: no real lab addresses in tracked files. It was
+    enforced for `TUTORIAL.md` alone, so writing one into `checkpoint.md` sailed
+    through 327 green tests and was pushed — while documenting the fix for the
+    identical problem in a sibling repo. The narrow guard was the bug.
+
+    RFC1918 and RFC6598 are rejected everywhere in the tree. Loopback and the
+    RFC-5737 documentation ranges are fine: those are what examples should use.
+    """
+
+    _PRIVATE = re.compile(
+        r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01])"
+        r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}(?:\.\d{1,3})?\b"
+    )
+
+    @staticmethod
+    def _tracked_text_files():
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, timeout=30
+        )
+        for rel in out.stdout.splitlines():
+            if rel.endswith((".md", ".py", ".sh", ".yml", ".yaml", ".toml", ".json")):
+                path = ROOT / rel
+                if path.is_file():
+                    yield rel, path.read_text(encoding="utf-8", errors="replace")
+
+    def test_no_private_range_address_in_any_tracked_file(self):
+        offenders = [
+            f"{rel}:{text[:m.start()].count(chr(10)) + 1}: {m.group(0)}"
+            for rel, text in self._tracked_text_files()
+            for m in self._PRIVATE.finditer(text)
+        ]
+        assert not offenders, (
+            "real private-range addresses in tracked files (VISION.md red line); "
+            "use RFC-5737 documentation ranges instead:\n  " + "\n  ".join(offenders)
+        )
+
+    def test_the_guard_actually_matches_something(self):
+        """A red-line guard whose pattern never fires is decoration.
+
+        The probes are assembled from parts on purpose: written literally they
+        would be found by the scan above, in this very file.
+        """
+        blocked = ["10." + "0.1.125", "192." + "168.1.1", "172." + "16.0.9"]
+        allowed = ["127." + "0.0.1", "192." + "0.2.125", "203." + "0.113.10"]
+        for probe in blocked:
+            assert self._PRIVATE.search(probe), f"guard missed {probe}"
+        for probe in allowed:
+            assert not self._PRIVATE.search(probe), f"guard wrongly flagged {probe}"
