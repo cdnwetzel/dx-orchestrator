@@ -128,6 +128,26 @@ a prompt" is necessary but not sufficient: **code that is never exercised agains
 its own failure modes is no more trustworthy than a prompt.** A gate is not
 delivered until the ways it can wrongly pass are tests.
 
+### A gate that fails badly is a gate that gets bypassed (0.4.1)
+
+`dx merge` on a corrupt ledger printed two green checkmarks and then died with a
+`JSONDecodeError` traceback. Every individual check was correct; the *failure
+mode* was not. An operator seeing that has three bad options — read a traceback,
+assume dx is broken, or reach for `--force`. The third is the one that actually
+happens under time pressure, and it is how a mechanically-enforced invariant
+becomes optional in practice.
+
+`dx doctor` was worse in a quieter way: it validated the manifest's YAML syntax
+and pronounced the install healthy, while `dx run` could not use that manifest
+at all. A self-test whose green light does not mean "this works" trains people
+to ignore it.
+
+Both are the same class of defect as a fail-open gate, and neither shows up in a
+test that only feeds well-formed input. The rule that follows: **a gate is not
+finished until its failure output is as designed as its success output** — it
+must name the file, the line, and what to do, and it must never make the tool
+look broken when the input is what is broken.
+
 ### Proving the premise, not just the parser (0.4.0)
 
 The 0.3.0 fix for revoked and expired signing keys was tested against *captured

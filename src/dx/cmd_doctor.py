@@ -9,17 +9,20 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-import yaml
-
 from ._argtypes import SubParsers
 from .config_loader import (
+    ConfigError,
     get_config_path,
     get_gui_config,
     get_ledger_repo_path,
     get_psoperator_repo,
     get_roles_path,
     load_config,
+    validate_manifest,
 )
+
+# doctor asks tools for their version; none of them should take longer.
+PROBE_TIMEOUT_S = 15
 
 
 def _find_on_path(name: str) -> str | None:
@@ -48,11 +51,16 @@ def _check_cmd(cmd: list[str], label: str) -> bool:
         print(f"❌ {label}")
         return False
     try:
-        subprocess.run([resolved, *cmd[1:]], check=True, capture_output=True)
+        subprocess.run(
+            [resolved, *cmd[1:]], check=True, capture_output=True, timeout=PROBE_TIMEOUT_S
+        )
         print(f"✅ {label} ({resolved})")
         return True
     except subprocess.CalledProcessError:
         print(f"❌ {label} (found at {resolved} but returned non-zero)")
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"❌ {label} (found at {resolved} but hung for {PROBE_TIMEOUT_S}s)")
         return False
 
 
@@ -130,15 +138,20 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         # Not marking all_ok=False — same reason as above.
 
     # 5. Hardware manifest
+    #
+    # Checked by loading it exactly the way dx run and dx verify-gui do, not by
+    # parsing the YAML and calling it a day. A manifest can be syntactically
+    # perfect and still be the wrong shape — `roles:` written as a list, say —
+    # and doctor used to report that install as healthy right up until the
+    # first `dx run` failed. A green doctor has to mean the config is usable.
     cfg_path = get_config_path()
     if cfg_path.exists():
         print(f"✅ Hardware manifest at {cfg_path}")
         try:
-            with cfg_path.open() as f:
-                yaml.safe_load(f)
-            print("   (YAML syntax OK)")
-        except Exception as exc:
-            print(f"   ❌ YAML parse error: {exc}")
+            validate_manifest()
+            print("   (parses, and every section has the expected shape)")
+        except ConfigError as exc:
+            print(f"   ❌ {exc}")
             all_ok = False
     else:
         print(f"❌ Hardware manifest missing at {cfg_path}")

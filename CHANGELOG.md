@@ -5,6 +5,53 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-09-08
+
+Malformed operator input now stops the line with a message instead of a
+traceback. All three defects below were found by probing the code with bad input
+rather than reading it.
+
+### Fixed
+
+- **`dx merge` crashed on a corrupt ledger — after printing two green
+  checkmarks.** A `ledger.jsonl` row that was not valid JSON raised a bare
+  `JSONDecodeError` from inside the gate, past the chain and signature checks
+  that had already reported success. That is the worst available shape for a
+  gate failure: it looks like it is passing, then explodes. Corrupt rows now
+  raise `LedgerError` naming the file and line number and invoking RL-009.
+- **`dx run` printed a Python traceback for a hand-edited manifest.** Writing
+  `roles:` as a list — the usual way this mistake is made — produced
+  `AttributeError: 'list' object has no attribute 'get'`. The manifest is
+  hand-edited by design, so a wrong shape is an ordinary operator mistake. It
+  now raises `ConfigError` naming the file, the offending key, and the likely
+  cause.
+- **`dx doctor` reported "All core checks passed" for a manifest `dx run` could
+  not use.** It validated YAML *syntax* and stopped there, so a structurally
+  wrong manifest passed the self-test and failed on first use. `dx doctor` now
+  loads the manifest exactly the way the commands do, and `validate_manifest()`
+  checks **every** role entry rather than only the one a given command happens
+  to select — validating just the default route let a malformed entry for
+  another role through.
+- **Unbounded subprocess calls.** `psoperator observer-health`, `audit-verify`
+  and `kill` had no timeout; an emergency stop that can hang is not an emergency
+  stop. `dx doctor`'s version probes and the chain verifier and gpg calls are
+  bounded too. `dx run`'s call into pxx is deliberately left unbounded — that is
+  the model doing the work — and carries a comment saying so.
+- A `queue/<task>.json` containing a JSON array was returned as-is and failed
+  later on `.get("approve_role")`, far from the cause.
+
+### Added
+
+- `ConfigError` for malformed manifests, and a top-level handler in `cli.main()`
+  that turns both it and `LedgerError` into one line and exit 1. Programming
+  errors still surface as tracebacks — only these two operator-input families
+  are caught, and a test pins that distinction.
+- `config_loader.validate_manifest()` — checks every section and every role.
+- `tests/test_malformed_inputs.py`, including an audit that fails the build if
+  any `subprocess.run` in the package lacks a timeout or a documented
+  `# unbounded:` reason, plus a vacuity check so the audit cannot pass by
+  matching nothing.
+
 ## [0.4.0] — 2026-09-08
 
 Peer-review hardening. The 0.3.0 release fixed three gates that were failing
@@ -171,6 +218,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.4.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.1.0...v0.2.0

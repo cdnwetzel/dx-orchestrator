@@ -40,6 +40,15 @@ So: when you add or change a gate, add tests for **the ways it can wrongly
 pass**, not just the ways it correctly fails. If you cannot write a test that
 would have caught the bug you are fixing, say so in the PR and explain why.
 
+Two corollaries, both learned the hard way:
+
+- **Design the failure output, not just the success path.** `dx merge` once
+  printed two green checkmarks and then a traceback on a corrupt ledger. Errors
+  must name the file, the line where possible, and what to do next.
+- **Bound every shell-out.** A hung gate gets bypassed. `subprocess.run` without
+  a `timeout=` fails the build unless it carries a `# unbounded:` comment saying
+  why — `dx run` waits on model generation and legitimately has no deadline.
+
 ## Test conventions
 
 - **Fixtures are synthetic.** Role cards in `tests/fixtures/roles/` mirror the

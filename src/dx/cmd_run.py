@@ -159,6 +159,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         f"🚀 Running task {args.task_id} with role {args.required_role} "
         f"on {route.endpoint} (model: {route.model or 'default'})..."
     )
+    # unbounded: this is the model doing the work. A large refactor on a slow
+    # local endpoint legitimately runs for minutes, and cutting it off at an
+    # arbitrary deadline would destroy in-flight edits. Ctrl-C is the control.
     result = subprocess.run(cmd, env=env)
 
     if result.returncode != 0:

@@ -5,6 +5,11 @@ from pathlib import Path
 
 from .config_loader import get_psoperator_config, get_psoperator_repo
 
+# Short bounds for the auxiliary commands. These are status and control calls,
+# not work — and an emergency stop that can hang is not an emergency stop.
+CLI_TIMEOUT_S = 15
+STOP_TIMEOUT_S = 5
+
 
 def run_agent_script() -> Path:
     """Absolute path to psoperator's examples/run_agent.py.
@@ -95,6 +100,7 @@ class PSOperatorClient:
                 ["psoperator", "audit-verify", target],
                 capture_output=True,
                 text=True,
+                timeout=CLI_TIMEOUT_S,
             )
             if result.returncode != 0:
                 print(f"⚠️  audit-verify failed: {result.stderr.strip()}")
@@ -102,18 +108,23 @@ class PSOperatorClient:
         except FileNotFoundError:
             print("⚠️  psoperator CLI not on PATH.")
             return False
+        except subprocess.TimeoutExpired:
+            print(f"⚠️  audit-verify timed out after {CLI_TIMEOUT_S}s.")
+            return False
 
     def emergency_stop(self) -> None:
         try:
-            subprocess.run(["psoperator", "kill"], check=False)
-        except FileNotFoundError:
+            subprocess.run(["psoperator", "kill"], check=False, timeout=STOP_TIMEOUT_S)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
     def observer_health(self) -> bool:
         try:
             result = subprocess.run(
-                ["psoperator", "observer-health"], capture_output=True
+                ["psoperator", "observer-health"],
+                capture_output=True,
+                timeout=CLI_TIMEOUT_S,
             )
             return result.returncode == 0
-        except FileNotFoundError:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             return False

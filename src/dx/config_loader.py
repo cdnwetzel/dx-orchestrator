@@ -6,6 +6,28 @@ from typing import Any
 import yaml
 
 
+class ConfigError(RuntimeError):
+    """The hardware manifest is malformed.
+
+    The manifest is hand-edited by design, so a wrong shape is an ordinary
+    operator mistake rather than an exotic case. dx reports it and stops; it
+    never guesses at what was meant.
+    """
+
+
+def _as_mapping(value: object, what: str, path: Path) -> dict[str, Any]:
+    """Return `value` as a mapping, or raise ConfigError naming the offender."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(
+            f"{path}: expected `{what}` to be a mapping, found "
+            f"{type(value).__name__}. Check the indentation — a leading '-' "
+            f"makes a list where dx expects `key: value` pairs."
+        )
+    return value
+
+
 @dataclass
 class RoleRoute:
     endpoint: str
@@ -41,9 +63,12 @@ def load_config(force: bool = False) -> dict[str, Any]:
         )
 
     with path.open("r", encoding="utf-8") as f:
-        loaded = yaml.safe_load(f) or {}
+        try:
+            loaded = yaml.safe_load(f) or {}
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"{path}: invalid YAML — {exc}") from exc
 
-    _config = loaded
+    _config = _as_mapping(loaded, "the manifest", path)
     _config_source = path
     return _config
 
@@ -55,13 +80,14 @@ def get_model_endpoint_for_role(role_slug: str) -> str:
 def get_route_for_role(role_slug: str) -> RoleRoute:
     """Return the endpoint/model/provider for a role, falling back to `default`."""
     cfg = load_config()
-    roles = cfg.get("roles", {}) or {}
-    default_cfg = roles.get("default") or {}
+    path = get_config_path()
+    roles = _as_mapping(cfg.get("roles"), "roles", path)
+    default_cfg = _as_mapping(roles.get("default"), "roles.default", path)
     default_ep = default_cfg.get("endpoint", "http://localhost:11434")
     default_model = default_cfg.get("model")
     default_provider = default_cfg.get("provider")
 
-    role_cfg = roles.get(role_slug) or {}
+    role_cfg = _as_mapping(roles.get(role_slug), f"roles.{role_slug}", path)
     return RoleRoute(
         endpoint=role_cfg.get("endpoint") or default_ep,
         model=role_cfg.get("model") or default_model,
@@ -69,12 +95,33 @@ def get_route_for_role(role_slug: str) -> RoleRoute:
     )
 
 
+def validate_manifest() -> None:
+    """Load the manifest and check every section dx reads.
+
+    `dx doctor` uses this so a green self-test means the config is actually
+    usable. Checking only the section a given command happens to touch let a
+    malformed role entry pass doctor and fail on the first `dx run` that
+    selected it.
+    """
+    path = get_config_path()
+    cfg = load_config(force=True)
+    roles = _as_mapping(cfg.get("roles"), "roles", path)
+    for slug in roles:
+        _as_mapping(roles.get(slug), f"roles.{slug}", path)
+    _as_mapping(cfg.get("gui_verification"), "gui_verification", path)
+    _as_mapping(cfg.get("psoperator"), "psoperator", path)
+
+
 def get_gui_config() -> dict[str, Any]:
-    return load_config().get("gui_verification", {}) or {}
+    return _as_mapping(
+        load_config().get("gui_verification"), "gui_verification", get_config_path()
+    )
 
 
 def get_psoperator_config() -> dict[str, Any]:
-    return load_config().get("psoperator", {}) or {}
+    return _as_mapping(
+        load_config().get("psoperator"), "psoperator", get_config_path()
+    )
 
 
 # ---------------------------------------------------------------------------

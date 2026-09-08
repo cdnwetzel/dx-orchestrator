@@ -89,7 +89,7 @@ def test_missing_manifest_is_a_core_failure(all_green, monkeypatch, tmp_path, ca
     assert "Hardware manifest missing" in capsys.readouterr().out
 
 
-def test_malformed_manifest_is_a_core_failure(all_green, monkeypatch, tmp_path, capsys):
+def test_unparseable_manifest_is_a_core_failure(all_green, monkeypatch, tmp_path, capsys):
     bad = tmp_path / "bad.yml"
     bad.write_text("roles: [unclosed\n", encoding="utf-8")
     monkeypatch.setenv("DX_CONFIG", str(bad))
@@ -97,7 +97,46 @@ def test_malformed_manifest_is_a_core_failure(all_green, monkeypatch, tmp_path, 
         _doctor("--no-network")
     out = capsys.readouterr().out
     assert exc.value.code == 1
-    assert "YAML parse error" in out
+    assert "invalid YAML" in out
+
+
+@pytest.mark.parametrize(
+    "manifest,offender",
+    [
+        ("roles:\n  - backend-engineer\n", "roles"),
+        ("roles: nope\n", "roles"),
+        ("roles:\n  backend-engineer: http://host:1\n", "roles.backend-engineer"),
+        ("roles:\n  default: http://host:1\n", "roles.default"),
+        ("gui_verification:\n  - a\n", "gui_verification"),
+        ("psoperator:\n  - a\n", "psoperator"),
+        ("- a\n- b\n", "the manifest"),
+    ],
+)
+def test_wrong_shaped_manifest_is_a_core_failure(
+    all_green, monkeypatch, tmp_path, capsys, manifest, offender
+):
+    """Regression: doctor validated YAML *syntax* only, so a manifest that
+    parsed but had the wrong shape — `roles:` written as a list, say — was
+    reported as a healthy install right up until the first `dx run` failed.
+    A green doctor has to mean the config is actually usable.
+    """
+    bad = tmp_path / "shape.yml"
+    bad.write_text(manifest, encoding="utf-8")
+    monkeypatch.setenv("DX_CONFIG", str(bad))
+    with pytest.raises(SystemExit) as exc:
+        _doctor("--no-network")
+    out = capsys.readouterr().out
+    assert exc.value.code == 1, out
+    assert f"`{offender}`" in out or offender in out
+    assert "Some core checks failed" in out
+
+
+def test_well_shaped_manifest_reports_shape_not_just_syntax(all_green, capsys):
+    with pytest.raises(SystemExit) as exc:
+        _doctor("--no-network")
+    out = capsys.readouterr().out
+    assert exc.value.code == 0, out
+    assert "expected shape" in out
 
 
 def test_missing_ledger_is_a_warning_not_a_failure(all_green, monkeypatch, tmp_path, capsys):

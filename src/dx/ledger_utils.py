@@ -23,6 +23,12 @@ class LedgerError(RuntimeError):
     """Ledger state is inconsistent or unreachable — stop the line."""
 
 
+# A gate that hangs is a gate that gets bypassed. Both external commands dx
+# shells out to are bounded.
+VERIFIER_TIMEOUT_S = 60
+GPG_TIMEOUT_S = 30
+
+
 @dataclass(frozen=True)
 class SignerIdentity:
     fingerprint: str
@@ -75,11 +81,17 @@ def get_ledger_head(ledger_repo: Path) -> str:
     if not ledger.exists():
         raise LedgerError(f"ledger.jsonl not found at {ledger}")
 
-    result = subprocess.run(
-        [sys.executable, str(verifier), str(ledger)],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, str(verifier), str(ledger)],
+            capture_output=True,
+            text=True,
+            timeout=VERIFIER_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LedgerError(
+            f"chain verification timed out after {VERIFIER_TIMEOUT_S}s: {verifier}"
+        ) from exc
     if result.returncode != 0:
         raise LedgerError(
             f"chain verification failed:\n{result.stderr.strip() or result.stdout.strip()}"
@@ -103,7 +115,14 @@ def get_task_queue(task_id: str, ledger_repo: Path) -> dict[str, Any]:
     if not path.exists():
         raise LedgerError(f"queue file not found: {path}")
     with path.open(encoding="utf-8") as f:
-        queue: dict[str, Any] = json.load(f)
+        try:
+            queue = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise LedgerError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(queue, dict):
+        raise LedgerError(
+            f"{path}: expected a JSON object, found {type(queue).__name__}"
+        )
     return queue
 
 
@@ -115,11 +134,23 @@ def get_task_author_human(task_id: str, ledger_repo: Path) -> str | None:
     if not ledger.exists():
         raise LedgerError(f"ledger.jsonl not found at {ledger}")
     with ledger.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for lineno, raw in enumerate(f, start=1):
+            line = raw.strip()
             if not line:
                 continue
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise LedgerError(
+                    f"{ledger}:{lineno} is not valid JSON: {exc}. "
+                    "The ledger is corrupt — stop the line (RL-009) and repair "
+                    "it before merging anything."
+                ) from exc
+            if not isinstance(row, dict):
+                raise LedgerError(
+                    f"{ledger}:{lineno}: expected a JSON object, found "
+                    f"{type(row).__name__}"
+                )
             if row.get("task_id") == task_id and row.get("author_human"):
                 author: str = row["author_human"]
                 return author
@@ -143,7 +174,14 @@ def _gpg(
         "--status-fd", "1",
         *args,
     ]
-    return subprocess.run(cmd, input=input_bytes, capture_output=True)
+    try:
+        return subprocess.run(
+            cmd, input=input_bytes, capture_output=True, timeout=GPG_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LedgerError(
+            f"gpg timed out after {GPG_TIMEOUT_S}s: {' '.join(args)}"
+        ) from exc
 
 
 def _import_registered_keys(ledger_repo: Path, keyring: Path) -> None:
