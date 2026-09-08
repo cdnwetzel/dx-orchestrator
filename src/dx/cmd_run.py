@@ -87,6 +87,25 @@ def _emit_evidence(
     if diff is not None:
         artifacts["changes.patch"] = diff
         checks["scope_diff_captured"] = Check(ok=True, path="artifacts/changes.patch")
+        # A run can exit zero having changed nothing — a model that reports
+        # COMPLETED without writing a file does exactly that, and the first
+        # dogfood run of this feature produced one. pxx's exit code cannot see
+        # it, so the receipt has to. This is recorded, not failed: a legitimately
+        # no-op task exists. What must not happen is an empty run reading as an
+        # accomplishment.
+        # Derived from `git status`, not from the patch. `git diff <base>` shows
+        # tracked changes only, so a brand-new file — the most common shape of a
+        # successful task — is invisible to it. Deriving "did anything happen"
+        # from the patch reported a real run that created a file as 0 changes.
+        untracked = [ln for ln in (status or "").splitlines() if ln.startswith("??")]
+        checks["produced_changes"] = Check(
+            ok=bool(diff.strip()) or bool((status or "").strip()),
+            path="artifacts/git-status.txt",
+            detail=(
+                f"{len(diff.splitlines())} tracked diff lines, "
+                f"{len(untracked)} untracked path(s)"
+            ),
+        )
     else:
         checks["scope_diff_captured"] = Check(
             ok=False, detail="scope is not a git repository, or git failed"

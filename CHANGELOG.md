@@ -5,7 +5,42 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.1] — 2026-09-09
+## [0.9.1] — 2026-09-08
+
+### Fixed
+
+Two defects in the 0.9.0 evidence bundles, both found by using `dx` to build
+`dx` — neither was visible from reading the code, and the suite was green
+through both.
+
+- **A run that changed nothing was recorded as a success.** The first factory
+  run reported `COMPLETED` after 11 rounds and 198k tokens without writing a
+  file. pxx exited zero, so `result.passed` was `True` and every check was
+  green — an empty run reading as an accomplishment. Bundles now carry a
+  `produced_changes` check. A no-op is recorded, not failed: some tasks
+  legitimately change nothing. It must simply be visible in its own receipt.
+- **`produced_changes` then reported a real run as zero changes.** It was
+  derived from `git diff <base>`, which shows *tracked* changes only — so a
+  brand-new file, the most common shape of a successful task, was invisible to
+  it. It now comes from `git status`, which sees untracked paths, and the
+  `boundary` block says the patch covers tracked changes only.
+
+The second is the same mistake as the first: deriving "did anything happen" from
+a signal that cannot see the answer.
+
+### Added
+
+- `docs/admissions/T-1102-ledger-append.md` — the admission record for ROADMAP
+  §1.2, drafted by `dx run --required_role tech-lead` against the lab vLLM node
+  and accepted after review. Its §4 independently states "stop and open a new
+  admission rather than widening this one" — the discipline T-1101 broke.
+
+
+#### Also in 0.9.1 — from a second session, landed 2026-09-09
+
+The `verify-gui` capture fix below shipped on `main` under the same version number
+while the evidence-bundle work above was in flight on a branch; both are in the
+0.9.1 tree, so both are recorded here.
 
 ### Fixed
 

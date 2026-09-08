@@ -47,8 +47,11 @@ DEFAULT_BOUNDARY: tuple[str, ...] = (
     "sees, and evidence must not perturb what it observes.",
     "A passing `result` means pxx exited zero, not that any test of the "
     "generated behaviour was written or run.",
-    "The diff is of the scope directory only. Changes made outside it, if any, "
-    "are not captured here.",
+    "`result.passed` does not mean anything changed. Check "
+    "`checks.produced_changes`: a run can exit zero having written nothing.",
+    "The diff is of the scope directory only, and covers tracked changes only. "
+    "New files not yet added to git appear in `artifacts/git-status.txt`, not in "
+    "the patch. Changes made outside the scope are not captured at all.",
 )
 
 

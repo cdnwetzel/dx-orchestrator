@@ -140,3 +140,64 @@ class TestTamperEvidence:
         m["result"]["passed"] = False        # the edit an attacker would want
         (out / "manifest.json").write_text(json.dumps(m, indent=2, sort_keys=True) + "\n")
         assert self._verify(out).returncode != 0, "a forged manifest still verified"
+
+
+class TestUntrackedFilesCount:
+    """Second dogfood finding, same root cause as the first: `produced_changes`
+    was derived from `git diff`, which shows tracked changes only. A run whose
+    whole output was one new file reported 0 changes. "Did anything happen" now
+    comes from `git status`, which sees untracked paths."""
+
+    def test_a_new_untracked_file_counts_as_a_change(self, tmp_path):
+        out = write_bundle(
+            _bundle(
+                checks={
+                    "produced_changes": Check(
+                        ok=True,
+                        path="artifacts/git-status.txt",
+                        detail="0 tracked diff lines, 1 untracked path(s)",
+                    )
+                },
+                artifacts={"changes.patch": "", "git-status.txt": "?? new_file.py\n"},
+            ),
+            tmp_path,
+        )
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["checks"]["produced_changes"]["ok"] is True
+        assert "untracked" in m["checks"]["produced_changes"]["detail"]
+
+    def test_the_boundary_says_the_patch_is_tracked_changes_only(self, tmp_path):
+        out = write_bundle(_bundle(), tmp_path)
+        boundary = " ".join(json.loads((out / "manifest.json").read_text())["boundary"])
+        assert "tracked changes only" in boundary
+        assert "git-status.txt" in boundary
+class TestNoOpRunsAreVisible:
+    """Found by dogfooding: a model reported COMPLETED over 11 rounds and 198k
+    tokens without writing a file. pxx exited zero, so `result.passed` was True
+    and every check was green — an empty run reading as an accomplishment.
+
+    A no-op is not automatically a failure; some tasks legitimately change
+    nothing. It must simply be *visible* in the receipt.
+    """
+
+    def test_an_empty_diff_is_recorded_as_no_changes(self, tmp_path):
+        out = write_bundle(
+            _bundle(
+                checks={
+                    "pxx_exit_zero": Check(ok=True),
+                    "produced_changes": Check(ok=False, detail="0 diff lines"),
+                },
+                artifacts={"changes.patch": ""},
+            ),
+            tmp_path,
+        )
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["result"]["passed"] is True, "the task itself still succeeded"
+        assert m["checks"]["produced_changes"]["ok"] is False, (
+            "a run that changed nothing must say so in its own receipt"
+        )
+
+    def test_the_boundary_warns_that_passing_does_not_mean_changed(self, tmp_path):
+        out = write_bundle(_bundle(), tmp_path)
+        boundary = " ".join(json.loads((out / "manifest.json").read_text())["boundary"])
+        assert "produced_changes" in boundary
