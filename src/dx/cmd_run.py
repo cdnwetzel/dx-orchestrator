@@ -11,7 +11,7 @@ from ._argtypes import SubParsers
 from .config_loader import get_roles_path, get_route_for_role
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
-from .role_registry import get_role, load_registry
+from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
 
 
 def _resolve_pxx() -> str | None:
@@ -73,6 +73,22 @@ def cmd_run(args: argparse.Namespace) -> None:
     load_registry(roles_path)
     card = get_role(args.required_role)
     if not card:
+        broken = failed_slug(args.required_role)
+        if broken:
+            # Distinguishing these matters: "not found" reads like a typo, and
+            # would send an operator looking in the wrong place while their
+            # governance file is the thing that is broken.
+            print(
+                f"ERROR: the card for role '{args.required_role}' exists but "
+                f"could not be parsed ({broken}).",
+                file=sys.stderr,
+            )
+            print(
+                f"       {get_parse_failures()[broken]}",
+                file=sys.stderr,
+            )
+            print("Run: dx roles validate", file=sys.stderr)
+            sys.exit(1)
         print(f"ERROR: role '{args.required_role}' not found.", file=sys.stderr)
         print("Run: dx roles list", file=sys.stderr)
         sys.exit(1)

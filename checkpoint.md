@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.4.1
+**Version:** 0.5.0
 
 ## Where we are
 
@@ -15,15 +15,16 @@ and CI; 0.4.0 raised the floor for outside review — real-key GPG proofs,
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 280 passed |
+| `pytest` | 300 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.4.1` |
+| `dx --version` | `dx 0.5.0` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
+| corrupt role card | fails validate, doctor and run (was: silently dropped) |
 | `dx roles validate` | 38/38 pass |
 | `dx merge T-0007` | correctly rejects on stale head (RL-003), exit 1 |
 | `dx run … --dry-run` | routes per manifest (endpoint + model + provider) |
@@ -51,7 +52,7 @@ dx-orchestrator/
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
 ├── scripts/setup_dependencies.sh — idempotent installer
 ├── src/dx/                       — 14 modules (see README)
-└── tests/                        — 280 tests, hermetic fixtures + real GPG keys
+└── tests/                        — 300 tests, hermetic fixtures + real GPG keys
 ```
 
 ## Resume here

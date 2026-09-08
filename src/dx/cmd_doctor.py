@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from ._argtypes import SubParsers
 from .config_loader import (
     ConfigError,
+    endpoint_warnings,
     get_config_path,
     get_gui_config,
     get_ledger_repo_path,
@@ -20,6 +21,7 @@ from .config_loader import (
     load_config,
     validate_manifest,
 )
+from .role_registry import get_parse_failures, load_registry
 
 # doctor asks tools for their version; none of them should take longer.
 PROBE_TIMEOUT_S = 15
@@ -117,7 +119,19 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     roles_path = get_roles_path()
     if roles_path.exists():
         count = len(list(roles_path.glob("*.md")))
-        print(f"✅ Role cards found ({count} files at {roles_path})")
+        # Parse them, don't just count files. A card that cannot be parsed is
+        # dropped from the registry, which for an Anchored role silently removes
+        # its hard-block from dx run.
+        load_registry(roles_path, force=True)
+        parse_failures = get_parse_failures()
+        if parse_failures:
+            print(f"❌ Role cards at {roles_path}: {len(parse_failures)} of {count} failed to parse")
+            for filename, reason in sorted(parse_failures.items()):
+                print(f"   - {filename}: {reason}")
+            print("   hint: dx roles validate")
+            all_ok = False
+        else:
+            print(f"✅ Role cards parse cleanly ({count} files at {roles_path})")
     else:
         print(f"❌ Role cards missing at {roles_path}")
         print("   hint: set DX_ROLES_PATH or run scripts/setup_dependencies.sh")
@@ -150,6 +164,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         try:
             validate_manifest()
             print("   (parses, and every section has the expected shape)")
+            for warning in endpoint_warnings():
+                # Not fatal — the endpoint may be unusual on purpose — but this
+                # is the mistake that actually gets made, so say it loudly.
+                print(f"   ⚠️  {warning}")
         except ConfigError as exc:
             print(f"   ❌ {exc}")
             all_ok = False

@@ -17,7 +17,13 @@ import sys
 import pytest
 
 from dx.cli import main
-from dx.config_loader import ConfigError, get_gui_config, get_route_for_role, validate_manifest
+from dx.config_loader import (
+    ConfigError,
+    endpoint_warnings,
+    get_gui_config,
+    get_route_for_role,
+    validate_manifest,
+)
 from dx.ledger_utils import (
     GPG_TIMEOUT_S,
     LedgerError,
@@ -275,3 +281,67 @@ class TestNoTracebackReachesTheUser:
         monkeypatch.setattr("dx.cmd_roles.cmd_roles_list", boom)
         with pytest.raises(ZeroDivisionError):
             main()
+
+
+class TestEndpointWarnings:
+    """The trailing-`/v1` mistake is the most-documented failure mode in the
+    project — a tutorial section, a troubleshooting row, a comment in the seeded
+    manifest — and nothing checked for it. Documenting a footgun is not the same
+    as removing it.
+    """
+
+    def test_trailing_v1_is_flagged(self, manifest):
+        manifest('roles:\n  default:\n    endpoint: "http://h.invalid:8000/v1"\n')
+        warnings = endpoint_warnings()
+        assert len(warnings) == 1
+        assert "/v1" in warnings[0]
+        assert "404" in warnings[0]
+
+    def test_trailing_v1_with_a_slash_is_flagged(self, manifest):
+        manifest('roles:\n  default:\n    endpoint: "http://h.invalid:8000/v1/"\n')
+        assert endpoint_warnings()
+
+    def test_a_correct_endpoint_is_not_flagged(self, manifest):
+        manifest('roles:\n  default:\n    endpoint: "http://h.invalid:8000"\n')
+        assert endpoint_warnings() == []
+
+    def test_v1_inside_a_path_is_not_flagged(self, manifest):
+        """Only a *trailing* /v1 is the bug; /v1/chat is somebody's real route."""
+        manifest('roles:\n  default:\n    endpoint: "http://h.invalid:8000/v1/chat"\n')
+        assert endpoint_warnings() == []
+
+    def test_missing_scheme_is_flagged(self, manifest):
+        manifest('roles:\n  default:\n    endpoint: "h.invalid:8000"\n')
+        assert any("scheme" in w for w in endpoint_warnings())
+
+    def test_every_role_is_checked_not_just_default(self, manifest):
+        manifest(
+            'roles:\n'
+            '  default:\n    endpoint: "http://ok.invalid:1"\n'
+            '  widget-engineer:\n    endpoint: "http://bad.invalid:2/v1"\n'
+        )
+        warnings = endpoint_warnings()
+        assert any("widget-engineer" in w for w in warnings)
+
+    def test_warnings_are_not_fatal(self, manifest):
+        """An unusual endpoint may be deliberate; this warns, it does not stop."""
+        manifest('roles:\n  default:\n    endpoint: "http://h.invalid:8000/v1"\n')
+        validate_manifest()  # must not raise
+
+    def test_the_shipped_seed_manifest_is_clean(self):
+        """The installer's own seed must not demonstrate the mistake it warns
+        about."""
+        import re
+        from pathlib import Path
+
+        import yaml
+
+        script = (Path(__file__).resolve().parent.parent
+                  / "scripts" / "setup_dependencies.sh").read_text()
+        block = re.search(r"<<'YAML'\n(.*?)\nYAML\n", script, re.DOTALL)
+        assert block, "could not find the seeded manifest in setup_dependencies.sh"
+        cfg = yaml.safe_load(block.group(1))
+        for slug, entry in (cfg.get("roles") or {}).items():
+            endpoint = (entry or {}).get("endpoint", "")
+            assert not endpoint.rstrip("/").endswith("/v1"), f"seed roles.{slug}: {endpoint}"
+            assert endpoint.startswith("http"), f"seed roles.{slug}: {endpoint}"

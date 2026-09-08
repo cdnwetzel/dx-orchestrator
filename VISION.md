@@ -128,6 +128,36 @@ a prompt" is necessary but not sufficient: **code that is never exercised agains
 its own failure modes is no more trustworthy than a prompt.** A gate is not
 delivered until the ways it can wrongly pass are tests.
 
+### The registry is part of the gate (0.5.0)
+
+Every fail-open found so far was in a *check*. This one was in the data the
+checks run on. A role card that could not be parsed printed a warning and was
+dropped, so the deck silently shrank — and `dx roles validate`, the command
+whose entire purpose is to certify the constitution is intact, reported `PASS`
+on the remainder.
+
+For an Anchored card the consequence is exact: the card vanishes, so the role is
+no longer in the registry, so `dx run` reports "role not found" instead of
+refusing to execute it autonomously. The hard-block cannot fire for a role the
+registry has never heard of. Corrupting one file turns a governance stop into a
+typo message.
+
+The lesson generalises past this bug: **an invariant enforced over a collection
+is only as strong as the guarantee that the collection is complete.** Loading
+must fail closed, not degrade quietly, and "we parsed 36 of 38" is not a
+successful load.
+
+### Documenting a footgun is not removing it (0.5.0)
+
+The trailing-`/v1` endpoint mistake had a tutorial section, a troubleshooting
+table row, a warning in the README, and a comment block in the seeded manifest.
+It had no check. Every one of those words was written *after* somebody hit it,
+and none of them would stop the next person — `dx doctor` pronounced such a
+manifest healthy right up to the first `MODEL_UNAVAILABLE`.
+
+When a failure mode is well-understood enough to document at length, that is the
+evidence that it should be detected in code.
+
 ### A gate that fails badly is a gate that gets bypassed (0.4.1)
 
 `dx merge` on a corrupt ledger printed two green checkmarks and then died with a

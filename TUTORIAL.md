@@ -149,11 +149,11 @@ Actual observed output on this box:
 ✅ pxx installed (/home/cwe/ai/dx-orchestrator/.venv/bin/pxx)
 ✅ PSOperator importable
 ✅ PSOperator run_agent script at /home/cwe/ai/psoperator/examples/run_agent.py
-✅ Role cards found (38 files at /home/cwe/ai/claude-sdlc-roles/skills/sdlc-role/roles)
+✅ Role cards parse cleanly (38 files at /home/cwe/ai/claude-sdlc-roles/skills/sdlc-role/roles)
 ✅ devswarm-ledger at /home/cwe/ai/devswarm-ledger
 ✅ gpg installed (/usr/bin/gpg)
 ✅ Hardware manifest at /home/cwe/.config/dx/hardware_manifest.yml
-   (YAML syntax OK)
+   (parses, and every section has the expected shape)
 
 🌐 Network checks (non-critical):
 ✅ role:backend-engineer → t5810.lab:8007 reachable
@@ -165,6 +165,8 @@ Actual observed output on this box:
 ```
 
 The network probes are TCP-connect only (`socket.create_connection`), so a live vLLM that 404s on `/` still shows reachable. Add `--no-network` to skip the probes.
+
+`dx doctor` is deliberately more than a liveness check. It parses every role card (a card that fails to parse is dropped from the registry, which for an Anchored role would silently remove its hard-block), loads the manifest exactly the way `dx run` does rather than only checking that the YAML is well-formed, and warns about a trailing `/v1` on any endpoint. A green doctor is meant to mean *this install works*, not *these files exist*.
 
 ---
 

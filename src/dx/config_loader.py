@@ -95,6 +95,45 @@ def get_route_for_role(role_slug: str) -> RoleRoute:
     )
 
 
+def endpoint_warnings(cfg: dict[str, Any] | None = None) -> list[str]:
+    """Non-fatal problems with configured endpoints.
+
+    The trailing-`/v1` mistake is the most-documented failure mode in this
+    project — a tutorial section, a troubleshooting row, a comment in the seeded
+    manifest — and nothing checked for it. pxx appends its own suffix per
+    provider, so `http://host:8000/v1` is probed as `/v1/v1/models`, returns
+    404, and every task fails with MODEL_UNAVAILABLE. Documenting a footgun is
+    not the same as removing it.
+    """
+    cfg = load_config() if cfg is None else cfg
+    path = get_config_path()
+    warnings: list[str] = []
+
+    roles = _as_mapping(cfg.get("roles"), "roles", path)
+    for slug in sorted(roles):
+        entry = _as_mapping(roles.get(slug), f"roles.{slug}", path)
+        endpoint = str(entry.get("endpoint") or "")
+        if endpoint.rstrip("/").endswith("/v1"):
+            warnings.append(
+                f"roles.{slug}.endpoint ends with /v1 ({endpoint}). pxx appends "
+                f"its own suffix, so this is probed as /v1/v1/models and 404s. "
+                f"Strip the /v1."
+            )
+        if endpoint and not endpoint.startswith(("http://", "https://")):
+            warnings.append(
+                f"roles.{slug}.endpoint has no scheme ({endpoint}). "
+                f"Prefix it with http:// or https://."
+            )
+
+    gui = _as_mapping(cfg.get("gui_verification"), "gui_verification", path)
+    vlm = str(gui.get("vlm_endpoint") or "")
+    if vlm and not vlm.startswith(("http://", "https://")):
+        warnings.append(
+            f"gui_verification.vlm_endpoint has no scheme ({vlm})."
+        )
+    return warnings
+
+
 def validate_manifest() -> None:
     """Load the manifest and check every section dx reads.
 

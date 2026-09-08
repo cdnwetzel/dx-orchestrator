@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 from .role_models import FitLevel, RoleCard
-from .role_registry import get_registry, load_registry
+from .role_registry import get_parse_failures, get_registry, load_registry
 
 # Seat is free-form text in claude-sdlc-roles (e.g. "S4", "S8 + borrowed",
 # "S9 design + S8 validate", "All engineers (rotating)", "Borrowed").
@@ -47,6 +47,16 @@ def validate_registry(cards_path: Path) -> tuple[bool, list[tuple[str, list[str]
 
     if len(registry) == 0:
         return (False, [("REGISTRY", [f"no role cards found under {cards_path}"])])
+
+    # A card that could not be parsed is not a card that passed. Reporting PASS
+    # on a short deck would mean `dx roles validate` certifies a constitution
+    # with pages missing — and an unparseable Anchored card silently removes its
+    # hard-block from dx run.
+    parse_failures = get_parse_failures()
+    if parse_failures:
+        all_ok = False
+        for filename, reason in sorted(parse_failures.items()):
+            failures.append((filename, [f"could not be parsed — {reason}"]))
 
     for slug, card in sorted(registry.items()):
         ok, errs = validate_card(card)

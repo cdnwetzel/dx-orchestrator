@@ -5,6 +5,48 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-09-08
+
+Two fail-open defects in the governance layer, and the first check for the
+footgun this project documents most.
+
+### Security
+
+- **An unparseable role card was silently dropped, and `dx roles validate` still
+  reported `PASS`.** The role cards are the constitution; validate is the
+  command that certifies it is intact. It printed a `WARN` to stdout, excluded
+  the card, counted the rest, and exited 0 — certifying a deck with pages
+  missing.
+
+  The sharp end is Anchored roles. Those seven exist to refuse autonomous
+  execution. A corrupt Anchored card vanished from the registry entirely, so
+  `dx run --required_role <that role>` reported "role not found" and the
+  hard-block never fired — a fail-open on the one gate whose entire job is to
+  stop. Parse failures are now recorded, fail `dx roles validate`, fail
+  `dx doctor`, and `dx run` distinguishes "that card is corrupt" from "no such
+  role" (the latter reads like a typo and sends you looking in the wrong place).
+
+### Added
+
+- `config_loader.endpoint_warnings()` and a `dx doctor` warning for the
+  **trailing `/v1`** mistake. It has a tutorial section, a troubleshooting row,
+  and a comment in the seeded manifest — and nothing checked for it. pxx appends
+  its own suffix per provider, so `http://host:8000/v1` is probed as
+  `/v1/v1/models`, 404s, and every task fails with `MODEL_UNAVAILABLE`.
+  Documenting a footgun is not the same as removing it. Endpoints missing a
+  URL scheme are flagged too, and a test asserts the shipped seed manifest does
+  not demonstrate the mistake it warns about.
+- `role_registry.get_parse_failures()` and `failed_slug()`.
+- `tests/test_corrupt_role_cards.py`.
+
+### Changed
+
+- **`dx roles validate` now exits 1 when any card fails to parse**, where it
+  previously exited 0. This is the point of the release, but it is a behavior
+  change for anything scripting that exit code.
+- `dx doctor` parses every role card rather than counting `*.md` files, and
+  reports "Role cards parse cleanly" instead of "Role cards found".
+
 ## [0.4.1] — 2026-09-08
 
 Malformed operator input now stops the line with a message instead of a
@@ -218,6 +260,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.5.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.2.0...v0.3.0
