@@ -560,3 +560,53 @@ class TestNoLabAddressesAnywhere:
             assert self._PRIVATE.search(probe), f"guard missed {probe}"
         for probe in allowed:
             assert not self._PRIVATE.search(probe), f"guard wrongly flagged {probe}"
+
+
+class TestUsageAndSpecTemplate:
+    """USAGE.md and the spec template are the tool's front door for a coding
+    task. They only work if the template keeps the fields the workflow depends
+    on and USAGE keeps pointing at the real command."""
+
+    USAGE = ROOT / "USAGE.md"
+    SPEC = ROOT / "templates" / "spec.md"
+    EXAMPLE = ROOT / "templates" / "spec.example.md"
+
+    def test_the_files_exist(self):
+        assert self.USAGE.is_file() and self.SPEC.is_file() and self.EXAMPLE.is_file()
+
+    def test_usage_shows_the_real_run_command(self):
+        text = self.USAGE.read_text(encoding="utf-8")
+        assert "dx run --required_role" in text
+        assert "templates/spec.md" in text  # points at the template
+
+    def test_readme_links_usage(self):
+        assert "USAGE.md" in README
+
+    def test_the_template_keeps_the_fields_the_workflow_needs(self):
+        """These are the inputs dx wraps and the role cards expect. Dropping one
+        is how results stop being consistent."""
+        text = self.SPEC.read_text(encoding="utf-8")
+        for field in (
+            "**Role:**",
+            "**Scope:**",
+            "## 1. Objective",
+            "## 2. Non-goals",
+            "## 3. Allowed and prohibited paths",
+            "## 5. Acceptance criteria",
+            "## 6. Reviewer",
+        ):
+            assert field in text, f"spec template lost a required field: {field}"
+
+    def test_the_example_is_a_filled_version_of_the_template(self):
+        """The example must carry the same section skeleton as the template, so
+        it stays a working model rather than drifting into a different shape."""
+        example = self.EXAMPLE.read_text(encoding="utf-8")
+        for heading in (
+            "## 1. Objective",
+            "## 2. Non-goals",
+            "## 3. Allowed and prohibited paths",
+            "## 5. Acceptance criteria",
+            "## 6. Reviewer",
+        ):
+            assert heading in example, f"example spec is missing {heading}"
+        assert "dx run --required_role" in example  # shows how to run itself
