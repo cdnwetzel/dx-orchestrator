@@ -5,6 +5,20 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-09-09
+
+### Added
+
+- **`dx verify-gui`'s VLM wait is configurable.** `DX_VLM_TIMEOUT`, or
+  `gui_verification.timeout_s` in the manifest, overrides the 30 s default; the
+  env var wins over the manifest. A large vision model on a cold load can take
+  well over 30 s to answer, so a slow or memory-tight box was seeing every check
+  fail with `VLM error: Read timed out` — a real box (an 8 GB M1) hit exactly
+  this. The default is unchanged, so nothing already working changes. A
+  non-numeric or non-positive value is a `GuiConfigError`, not a silent fallback.
+  `TestVlmTimeout` pins the default, both override paths, the two rejections, and
+  that the resolved value is the timeout actually handed to `requests.post`.
+
 ## [0.10.0] — 2026-09-08
 
 ### Added
@@ -689,6 +703,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.11.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.1...v0.9.0

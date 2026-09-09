@@ -81,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.10.0
+dx --version    # dx 0.11.0
 pytest          # all green
 ```
 

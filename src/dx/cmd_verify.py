@@ -27,12 +27,38 @@ class GuiConfigError(RuntimeError):
     """The manifest's gui_verification section is missing or incomplete."""
 
 
+DEFAULT_VLM_TIMEOUT_S = 30
+
+
 @dataclass(frozen=True)
 class GuiTarget:
     vlm_endpoint: str
     vlm_model: str
     ssh_host: str | None
     screenshot_cmd: str
+    vlm_timeout_s: int = DEFAULT_VLM_TIMEOUT_S
+
+
+def _resolve_vlm_timeout(cfg: dict[str, Any]) -> int:
+    """Seconds to wait on the VLM. DX_VLM_TIMEOUT overrides the manifest's
+    gui_verification.timeout_s, which overrides the 30 s default. A large local
+    vision model on a cold load can take well over 30 s to answer, so a slow box
+    can raise this rather than see every check fail with a read timeout."""
+    raw = os.environ.get("DX_VLM_TIMEOUT")
+    source = "$DX_VLM_TIMEOUT"
+    if raw is None:
+        val = cfg.get("timeout_s")
+        if val is None:
+            return DEFAULT_VLM_TIMEOUT_S
+        raw = str(val)
+        source = "gui_verification.timeout_s"
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        raise GuiConfigError(f"{source} must be a positive integer, got {raw!r}") from None
+    if seconds <= 0:
+        raise GuiConfigError(f"{source} must be a positive integer, got {seconds}")
+    return seconds
 
 
 def _require(cfg: dict[str, Any], key: str, env_var: str) -> str:
@@ -57,6 +83,7 @@ def gui_target(require_ssh: bool = False) -> GuiTarget:
     return GuiTarget(
         vlm_endpoint=_require(cfg, "vlm_endpoint", "DX_VLM_ENDPOINT"),
         vlm_model=_require(cfg, "vlm_model", "DX_VLM_MODEL"),
+        vlm_timeout_s=_resolve_vlm_timeout(cfg),
         ssh_host=str(ssh_host) if ssh_host else None,
         # png:- is load-bearing: with a bare "-" ImageMagick writes PostScript to
         # stdout, and the VLM would be handed a PS document labelled as an image.
@@ -121,7 +148,11 @@ def _capture_psoperator_snapshot() -> bytes:
 
 
 def _verify_with_vlm(
-    png_data: bytes, expected: str, endpoint: str, model: str
+    png_data: bytes,
+    expected: str,
+    endpoint: str,
+    model: str,
+    timeout_s: int = DEFAULT_VLM_TIMEOUT_S,
 ) -> tuple[bool, str]:
     import requests
 
@@ -135,7 +166,7 @@ def _verify_with_vlm(
     )
     payload = {"model": model, "prompt": prompt, "images": [img_b64], "stream": False}
     try:
-        resp = requests.post(endpoint, json=payload, timeout=30)
+        resp = requests.post(endpoint, json=payload, timeout=timeout_s)
         resp.raise_for_status()
         output = (resp.json().get("response") or "").strip()
         # RL-007: this is advisory evidence, never a gate on its own. dx merge
@@ -157,7 +188,7 @@ def verify_gui(expected: str) -> tuple[bool, str]:
     except Exception as exc:
         return (False, f"capture error: {exc}")
     return _verify_with_vlm(
-        png_data, expected, target.vlm_endpoint, target.vlm_model
+        png_data, expected, target.vlm_endpoint, target.vlm_model, target.vlm_timeout_s
     )
 
 
@@ -167,13 +198,15 @@ def cmd_verify(args: argparse.Namespace) -> None:
             target = gui_target()
             png_data = Path(args.screenshot).expanduser().read_bytes()
             passed, output = _verify_with_vlm(
-                png_data, args.expected, target.vlm_endpoint, target.vlm_model
+                png_data, args.expected, target.vlm_endpoint, target.vlm_model,
+                target.vlm_timeout_s,
             )
         elif args.use_psoperator:
             target = gui_target()
             png_data = _capture_psoperator_snapshot()
             passed, output = _verify_with_vlm(
-                png_data, args.expected, target.vlm_endpoint, target.vlm_model
+                png_data, args.expected, target.vlm_endpoint, target.vlm_model,
+                target.vlm_timeout_s,
             )
         else:
             passed, output = verify_gui(args.expected)

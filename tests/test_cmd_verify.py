@@ -42,6 +42,73 @@ def test_screenshot_cmd_has_a_documented_default(monkeypatch, tmp_path):
     assert gui_target().screenshot_cmd == "import -window root png:-"
 
 
+def _min_manifest(tmp_path, extra=""):
+    cfg = tmp_path / "m.yml"
+    cfg.write_text(
+        "gui_verification:\n"
+        '  vlm_endpoint: "http://x.invalid/api/generate"\n'
+        '  vlm_model: "m"\n' + extra,
+        encoding="utf-8",
+    )
+    return cfg
+
+
+class TestVlmTimeout:
+    """A slow box on a cold vision model exceeds the 30 s default and every check
+    fails with a read timeout. The wait must be raisable without a code change."""
+
+    def test_default_is_30(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DX_VLM_TIMEOUT", raising=False)
+        monkeypatch.setenv("DX_CONFIG", str(_min_manifest(tmp_path)))
+        assert gui_target().vlm_timeout_s == 30
+
+    def test_manifest_overrides_default(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DX_VLM_TIMEOUT", raising=False)
+        monkeypatch.setenv("DX_CONFIG", str(_min_manifest(tmp_path, "  timeout_s: 120\n")))
+        assert gui_target().vlm_timeout_s == 120
+
+    def test_env_overrides_manifest(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DX_VLM_TIMEOUT", "90")
+        monkeypatch.setenv("DX_CONFIG", str(_min_manifest(tmp_path, "  timeout_s: 120\n")))
+        assert gui_target().vlm_timeout_s == 90
+
+    def test_non_numeric_is_a_config_error(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DX_VLM_TIMEOUT", "soon")
+        monkeypatch.setenv("DX_CONFIG", str(_min_manifest(tmp_path)))
+        with pytest.raises(GuiConfigError):
+            gui_target()
+
+    def test_non_positive_is_a_config_error(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DX_VLM_TIMEOUT", raising=False)
+        monkeypatch.setenv("DX_CONFIG", str(_min_manifest(tmp_path, "  timeout_s: 0\n")))
+        with pytest.raises(GuiConfigError):
+            gui_target()
+
+    def test_it_reaches_the_request(self, monkeypatch, tmp_path):
+        """The resolved value is the timeout actually handed to requests.post."""
+        monkeypatch.setenv("DX_VLM_TIMEOUT", "77")
+        monkeypatch.setenv("DX_CONFIG", str(_min_manifest(tmp_path)))
+        seen = {}
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"response": "YES fine"}
+
+        def fake_post(url, json, timeout):
+            seen["timeout"] = timeout
+            return _Resp()
+
+        import dx.cmd_verify as cv
+
+        monkeypatch.setattr("requests.post", fake_post)
+        t = gui_target()
+        cv._verify_with_vlm(b"\x89PNG", "x", t.vlm_endpoint, t.vlm_model, t.vlm_timeout_s)
+        assert seen["timeout"] == 77
+
+
 class TestNoHostDefaults:
     """Regression: a real lab IP and SSH username were baked in as fallbacks, so
     an unconfigured install would silently SSH to someone else's machine.
@@ -123,7 +190,7 @@ class TestCaptureMustBePng:
         monkeypatch.setattr("dx.cmd_verify.subprocess.run", self._fake_ssh(png))
         seen = {}
 
-        def fake_vlm(data, expected, endpoint, model):
+        def fake_vlm(data, expected, endpoint, model, timeout_s=30):
             seen["data"] = data
             return (True, "YES")
 
@@ -150,7 +217,7 @@ def test_vlm_yes_and_no_are_both_honoured(monkeypatch, tmp_path, capsys):
     for answer, expected_pass in (("YES — the dialog is shown", True), ("NO — blank", False)):
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, _a=answer: (_a.startswith("YES"), _a),
+            lambda png, exp, ep, model, timeout_s=30, _a=answer: (_a.startswith("YES"), _a),
         )
         args = build_parser().parse_args(
             ["verify-gui", "--screenshot", str(shot), "--json"]
