@@ -135,12 +135,13 @@ Stated in `README.md` Status, `TUTORIAL.md` §9 and its closing boundary, and
 `SECURITY.md`.
 
 **Known and stated, not blockers:**
-- `dx verify-gui` writes a `dx.gui_verification.v1` bundle as of 0.12.0 (the
-  screenshot stored verbatim, the model's answer, an RL-007 boundary) and has
-  run live on two capture hosts — a headless Linux Xvfb display and a headless
-  macOS box via window-backing-store capture. ROADMAP 1.3 is mostly shipped;
-  the one open piece is PSOperator's observer, so the frame is a bare SSH
-  capture rather than a signed observer envelope (depends on §3.1).
+- ROADMAP 1.3 is shipped. `dx verify-gui` writes a `dx.gui_verification.v1`
+  bundle (0.12.0: screenshot verbatim, model answer, RL-007 boundary) and
+  `--observer` binds a verified PSOperator observer attestation to the frame by
+  hash (0.13.0). Demonstrated live: on the Xvfb host the observer's mss capture
+  and dx's import capture hashed identically (`frame_hash_matches`), so the
+  bundle carried the signed attestation. The observer was hand-started for the
+  demo; making it a boot service is §3.1 (repeatability, not a 1.3 gap).
 - No all-green merge against a *live operational* ledger with a fresh RL-010
   signature. The gate does pass all-green against the public reference ledger
   with a real `gpg --verify` — but that ledger's rows attest to no work and its

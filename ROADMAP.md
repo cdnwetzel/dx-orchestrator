@@ -122,19 +122,24 @@ findings, both from running it:
   verifier reporting a head unrelated to its own rows. `append_row`
   cross-checked and refused. The fixture is now a real chain.
 
-### 1.3 — `dx verify-gui` against a live desktop — 🟡 MOSTLY SHIPPED in 0.12.0
+### 1.3 — `dx verify-gui` against a live desktop — ✅ SHIPPED (0.12.0 bundle, 0.13.0 observer)
 
 **Acceptance (met):** a screenshot captured from a live session, checked by the
 VLM, producing a `dx.gui_verification.v1` bundle with the image as an artifact
-and a `boundary` block stating the VLM's confidence is not a proof. Shipped in
-0.12.0 and exercised live on two capture hosts — a headless Linux Xvfb display
-and a headless macOS box (window-backing-store capture) — with a local VLM.
+and a `boundary` block stating the VLM's confidence is not a proof — 0.12.0,
+exercised live on a headless Linux Xvfb display and a headless macOS box
+(window-backing-store capture).
 
-**Still open:** PSOperator's observer is not in the loop, so the frame is a bare
-SSH capture rather than a signed observer envelope. Closing that is the
-remaining §1.3 work and depends on §3.1 (PSOperator running as a service).
+**Observer in the loop (0.13.0):** `dx verify-gui --observer` binds a verified
+PSOperator observer attestation to the exact frame by hash. Demonstrated live on
+the Xvfb host: the observer's `mss` capture and dx's `import` capture of the same
+static framebuffer hashed identically, so `frame_hash_matches` held, and the
+bundle recorded the signed attestation (key id, epoch, nonce, issued/expires,
+signature) — provenance for the pixels, verified, fail-closed on any mismatch.
 
-**Effort:** ~1 day for the observer wiring once §3.1 lands.
+**Operational remainder (→ §3.1):** the observer was started by hand for the
+demonstration. Making it a boot service so `dx doctor` sees it without manual
+start is §3.1 — repeatability, not a §1.3 capability gap.
 
 ---
 
