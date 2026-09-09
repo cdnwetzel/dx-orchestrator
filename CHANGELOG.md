@@ -5,6 +5,22 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] — 2026-09-09
+
+### Changed
+
+- **A non-zero `pxx` exit that still changed the scope is no longer reported as a
+  flat failure.** A model that reaches for a shell `pxx` fail-closes on (no
+  safeguard configured) can exit non-zero *after* writing correct code — the
+  "non-zero but green" case. `dx run` now distinguishes it: when the run exits
+  non-zero **and** the scope changed, it prints `pxx exited N, but the scope
+  changed — a non-zero exit is not proof the work is wrong` and points at the
+  bundle, rather than `pxx task failed`. A genuine failure that wrote nothing
+  still gets the plain failure line the tutorial pins. The exit code stays
+  `3` in both cases: the exit code is the tool's, the judgement is the
+  operator's, and the evidence bundle's `produced_changes` check already carried
+  the honest signal. `USAGE.md` explains the distinction.
+
 ## [0.15.0] — 2026-09-09
 
 ### Added
@@ -801,6 +817,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.16.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.12.0...v0.13.0

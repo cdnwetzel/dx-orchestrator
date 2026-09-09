@@ -287,3 +287,77 @@ class TestEvidenceEmission:
         _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
              "--dry-run", "--evidence-dir", str(tmp_path))
         assert not tmp_path.exists() or not any(tmp_path.iterdir())
+
+
+def test_nonzero_exit_that_still_changed_the_scope_is_flagged_not_flatly_failed(
+    monkeypatch, tmp_path, capsys
+):
+    """The 'non-zero but the code is fine' case: a model reaches for a shell pxx
+    refuses and exits non-zero *after* writing correct code. dx must not report
+    that as a flat failure — it says the scope changed and points at the receipt,
+    while still exiting EXIT_TASK_FAILED (the exit code is the tool's, the
+    judgement is the operator's)."""
+    import subprocess as sp
+
+    repo = tmp_path / "scope"
+    repo.mkdir()
+    sp.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
+    sp.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@e.invalid", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+
+    real_run = sp.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return real_run(cmd, **kwargs)  # let dx's git probes run for real
+        (repo / "hello.py").write_text("print('hi')\n")  # pxx wrote a file, then…
+        class R:
+            returncode = 2  # …exited non-zero (e.g. a refused ungated shell)
+        return R()
+
+    monkeypatch.setattr("dx.cmd_run.subprocess.run", fake_run)
+    with pytest.raises(SystemExit) as exc:
+        _run(
+            "T-010", "--required_role", "widget-engineer", "-m", "x",
+            "--no-commit", "--scope", str(repo), "--evidence-dir", str(tmp_path / "ev"),
+        )
+    assert exc.value.code == cmd_run.EXIT_TASK_FAILED
+    err = capsys.readouterr().err
+    assert "not proof the work is wrong" in err
+    assert "pxx exit 2" in err
+    assert "task failed" not in err  # not the flat-failure line
+
+
+def test_nonzero_exit_with_no_change_is_still_a_flat_failure(monkeypatch, tmp_path, capsys):
+    """The other half: pxx failed and wrote nothing → the plain failure line,
+    the one TUTORIAL §6 and the docs-consistency test pin."""
+    import subprocess as sp
+
+    repo = tmp_path / "scope"
+    repo.mkdir()
+    sp.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
+    sp.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@e.invalid", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+    real_run = sp.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return real_run(cmd, **kwargs)
+        class R:
+            returncode = 2  # wrote nothing
+        return R()
+
+    monkeypatch.setattr("dx.cmd_run.subprocess.run", fake_run)
+    with pytest.raises(SystemExit) as exc:
+        _run(
+            "T-011", "--required_role", "widget-engineer", "-m", "x",
+            "--no-commit", "--scope", str(repo), "--evidence-dir", str(tmp_path / "ev"),
+        )
+    assert exc.value.code == cmd_run.EXIT_TASK_FAILED
+    assert "pxx task failed (pxx exit 2)" in capsys.readouterr().err

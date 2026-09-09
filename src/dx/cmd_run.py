@@ -51,11 +51,15 @@ def _emit_evidence(
     cmd: list[str],
     source_head: str | None,
     returncode: int,
-) -> Path:
+) -> tuple[Path, bool]:
     """Build and write the `dx.role_task.v1` bundle for this run.
 
-    Raises EvidenceError; the caller decides what a missing receipt is worth.
+    Returns the bundle path and whether the scope actually changed — the caller
+    uses the latter so a non-zero pxx exit that still wrote code is not reported
+    as a flat failure. Raises EvidenceError; the caller decides what a missing
+    receipt is worth.
     """
+    produced = False
     endpoint = getattr(route, "endpoint", None)
     model = getattr(route, "model", None)
     provider = getattr(route, "provider", None)
@@ -98,6 +102,7 @@ def _emit_evidence(
         # successful task — is invisible to it. Deriving "did anything happen"
         # from the patch reported a real run that created a file as 0 changes.
         untracked = [ln for ln in (status or "").splitlines() if ln.startswith("??")]
+        produced = bool(diff.strip()) or bool((status or "").strip())
         checks["produced_changes"] = Check(
             ok=bool(diff.strip()) or bool((status or "").strip()),
             path="artifacts/git-status.txt",
@@ -123,7 +128,7 @@ def _emit_evidence(
         checks=checks,
         artifacts=artifacts,
     )
-    return write_bundle(bundle, _evidence_root(args))
+    return write_bundle(bundle, _evidence_root(args)), produced
 
 
 def _resolve_pxx() -> str | None:
@@ -369,9 +374,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     # Emitted for failed runs too. A failed run's evidence is worth more, not
     # less, and a store that only records successes is a highlight reel.
+    produced_changes = False
     if not args.no_evidence:
         try:
-            bundle_path = _emit_evidence(
+            bundle_path, produced_changes = _emit_evidence(
                 args, card.fit.value, route, enhanced_prompt, cmd,
                 source_head, result.returncode,
             )
@@ -386,11 +392,25 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"🧾 Evidence: {bundle_path}", flush=True)
 
     if result.returncode != 0:
-        print(
-            f"❌ pxx task failed (pxx exit {result.returncode}).",
-            file=sys.stderr,
-            flush=True,
-        )
+        if produced_changes:
+            # A non-zero exit is not proof the work is wrong: a model that
+            # reaches for a shell pxx fail-closes on (no safeguard configured)
+            # can exit non-zero after writing correct code. Say so, and point at
+            # the receipt — the exit code is the tool's, the judgement is yours.
+            print(
+                f"⚠️  pxx exited {result.returncode}, but the scope changed. A "
+                f"non-zero exit is not proof the work is wrong — inspect the "
+                f"result and the evidence bundle against your acceptance "
+                f"criteria before discarding it. pxx exit {result.returncode}.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"❌ pxx task failed (pxx exit {result.returncode}).",
+                file=sys.stderr,
+                flush=True,
+            )
         sys.exit(EXIT_TASK_FAILED)
 
     if args.gui:

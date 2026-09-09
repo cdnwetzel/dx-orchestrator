@@ -39,10 +39,14 @@ That is the whole loop. Everything below is detail.
 `dx run` reports the code generator's own exit code (`3` means the tool exited
 non-zero). A non-zero exit does **not** always mean the code is wrong: some models
 try to run a shell command mid-task, and the generator fails closed when no shell
-safeguard is configured — after the file was already written correctly. This is
-why your spec lists **acceptance criteria** and why every run leaves an evidence
-bundle: the exit code is the tool's, but the judgement is yours. Read the code and
-run the tests your spec named before you trust or discard a result.
+safeguard is configured — after the file was already written correctly. When that
+happens, dx tells you: instead of a flat "task failed" it prints **"pxx exited N,
+but the scope changed — a non-zero exit is not proof the work is wrong"** and
+points at the receipt. The exit code stays `3` (the tool did not cleanly finish),
+because the judgement is yours: read the code and run the tests your spec named
+before you trust or discard the result. This is why your spec lists **acceptance
+criteria** and why every run leaves an evidence bundle whose `produced_changes`
+check records that files were written even when the exit code was non-zero.
 
 If you want a clean exit when a model reaches for the shell, configure the
 generator's shell handling once (a `PreToolUse` hook, a sandbox, or an explicit
