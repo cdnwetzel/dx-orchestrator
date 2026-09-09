@@ -17,7 +17,7 @@ resuming, not for history.
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 393 passed |
+| `pytest` | 394 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
@@ -37,7 +37,7 @@ resuming, not for history.
 | Evidence bundle from a live run | `dx.role_task.v1` written; `sha256sum -c SHA256SUMS` passes |
 | Live `dx run` via `openai-compatible` | exit 0 — dx wires to any OpenAI-shaped stack |
 | Live `dx run` with a vendor-style `.../v1` endpoint | exit 0 — the trailing `/v1` is corrected and announced |
-| Clean clone from GitHub | 393 tests, ruff, `mypy --strict` all green cold |
+| Clean clone from GitHub | 394 tests, ruff, `mypy --strict` all green cold |
 
 **Lab topology is NOT recorded in this repo.** The live routing table is in
 `~/.config/dx/hardware_manifest.yml` on each driver box; the manifest seeded by
@@ -63,7 +63,7 @@ dx-orchestrator/
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
 ├── scripts/setup_dependencies.sh — idempotent installer
 ├── src/dx/                       — 14 modules (see README)
-└── tests/                        — 393 tests, hermetic fixtures + real GPG keys
+└── tests/                        — 394 tests, hermetic fixtures + real GPG keys
 ```
 
 ## Resume here
@@ -119,7 +119,7 @@ Reviewed for public peer review and cleared, with scope stated.
 
 | | |
 | --- | --- |
-| Clean clone passes cold | ruff, `mypy --strict`, 393 tests, 91% coverage — verified from a fresh `git clone` of the public repo |
+| Clean clone passes cold | ruff, `mypy --strict`, 394 tests, 91% coverage — verified from a fresh `git clone` of the public repo |
 | RL-003 gate | proved against real revoked and expired GPG keys, not captured transcripts |
 | Live run | `dx run` generated working code on lab hardware at 0.8.1, exit 0, and the generated tests pass |
 | Privacy | 0 lab addresses in the tree, now guarded tree-wide by `TestNoLabAddressesAnywhere`. **History is not clean:** commit `e066854` wrote the psoperator home range into `checkpoint.md` while documenting the fix for exactly that problem. Removed from the tree; unremovable from history without a force-push the ruleset now forbids. `psoperator` is the same shape. |

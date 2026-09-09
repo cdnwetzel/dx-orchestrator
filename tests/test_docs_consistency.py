@@ -152,6 +152,36 @@ class TestClaimsAreQualified:
                     f"{path.name} requires a sibling clone without a skip guard"
                 )
 
+    def test_every_clone_dependent_test_carries_its_own_skip(self):
+        """A file-level check cannot see *which* function a decorator landed on.
+
+        0.10.0 inserted a helper between `@pytest.mark.skipif` and the
+        merge-transcript test, so the decorator guarded the helper and CI ran
+        the test with no clone present. Both development boxes had the clone,
+        so it could not show locally. Check the marker on each function that
+        actually reaches for a clone.
+        """
+        import inspect
+        import sys
+
+        module = sys.modules[__name__]
+        reaches = re.compile(r"REF_LEDGER|REAL_CARDS|self\._merge\((?![^)]*ledger=)")
+        offenders = []
+        for cls in (obj for obj in vars(module).values() if inspect.isclass(obj)):
+            for name, fn in vars(cls).items():
+                if not name.startswith("test_"):
+                    continue
+                if name == "test_every_clone_dependent_test_carries_its_own_skip":
+                    continue  # this test's own source names the constants it hunts for
+                if reaches.search(inspect.getsource(fn)) and not any(
+                    m.name == "skipif" for m in getattr(fn, "pytestmark", [])
+                ):
+                    offenders.append(f"{cls.__name__}.{name}")
+        assert not offenders, (
+            "tests that need a sibling clone but carry no skipif of their own: "
+            f"{offenders}"
+        )
+
     def test_the_hermetic_guard_actually_fires(self):
         """The guard is worthless if its pattern matches nothing; the real-card
         tests are the one place a clone path is legitimately used."""
@@ -344,16 +374,16 @@ class TestMergeTranscriptFidelity:
                 f"following the tutorial gets 'queue file not found'."
             )
 
-    @pytest.mark.skipif(
-        not REF_LEDGER.is_dir(),
-        reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
-    )
     @staticmethod
     def _blur(text):
         """Ledger rows carry a timestamp, so every append yields a different
         head. Pin the wording, not the digest."""
         return re.sub(r"\b[0-9a-f]{8,64}\b", "<hash>", text)
 
+    @pytest.mark.skipif(
+        not REF_LEDGER.is_dir(),
+        reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
+    )
     def test_the_green_merge_transcript_is_reproducible(self):
         result = self._merge("T-0001")
         assert result.returncode == 0, result.stderr
