@@ -9,25 +9,33 @@ signature, an expired envelope, and a frame that is not the frame attested.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 
 import pytest
 
-psoperator = pytest.importorskip("psoperator")
-PIL = pytest.importorskip("PIL")
-
-from PIL import Image  # noqa: E402
-from psoperator.common.attestation import (  # noqa: E402
-    SnapshotSigner,
-    provision_attestation_key,
+# psoperator and Pillow are optional deps of the observer path. Collected-but-
+# skipped (like the real-card tests) rather than importorskip'd, so the pinned
+# README test count is the same whether or not they are installed — CI installs
+# them, so these RUN there and the no-skip gate covers them.
+_HAVE_DEPS = (
+    importlib.util.find_spec("psoperator") is not None
+    and importlib.util.find_spec("PIL") is not None
 )
-from psoperator.common.schema import PerceptionSnapshot  # noqa: E402
+pytestmark = pytest.mark.skipif(
+    not _HAVE_DEPS, reason="psoperator/Pillow not installed (CI installs them)"
+)
 
-from dx.observer import (  # noqa: E402
+from dx.observer import (  # noqa: E402  (lazy deps: importable without psoperator)
     ObserverError,
     frame_rgb_sha256,
     verify_attested_frame,
 )
+
+if _HAVE_DEPS:
+    from PIL import Image
+    from psoperator.common.attestation import SnapshotSigner, provision_attestation_key
+    from psoperator.common.schema import PerceptionSnapshot
 
 
 def _png_and_hash() -> tuple[bytes, str, tuple[int, int]]:

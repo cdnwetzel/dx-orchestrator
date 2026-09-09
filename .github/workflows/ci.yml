@@ -74,6 +74,13 @@ jobs:
       # broken through several releases.
       - name: Clone the reference ledger
         run: git clone --depth 1 https://github.com/cdnwetzel/devswarm-ledger-reference.git "$HOME/ai/devswarm-ledger-reference"
+      # psoperator + Pillow back the observer-attestation tests (dx.observer).
+      # Installed here, after the hermetic run above proved dx needs neither, so
+      # the no-skip full suite exercises the observer binding rather than skipping it.
+      - name: Install psoperator for the observer tests
+        run: |
+          git clone --depth 1 https://github.com/cdnwetzel/psoperator.git "$HOME/ai/psoperator"
+          pip install -e "$HOME/ai/psoperator"
       - name: Full suite with the real deck — nothing may skip
         run: |
           pytest -q -rs 2>&1 | tee /tmp/cards.log
