@@ -49,6 +49,21 @@ class TestVersion:
         for version in re.findall(r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\]", CHANGELOG, re.MULTILINE):
             assert f"[{version}]: https://" in CHANGELOG, f"no link target for {version}"
 
+    def test_no_duplicate_changelog_version_headings(self):
+        """Two driver boxes push to one repo, so the same version number can be
+        cut twice — 0.9.0/0.9.1 collided exactly this way (9074854 and e6bf51e
+        both landed as 0.9.1). A duplicate `## [X.Y.Z]` heading means one
+        release's notes silently overwrote another's in the reader's eyes. The
+        existing link-definition check only catches a *missing* link, never a
+        repeated heading, so this is the guard that turns the collision from
+        'a human noticed' into a build failure. Before cutting a version, also
+        run `git fetch` + `git ls-remote --heads origin` to see the other box's
+        in-flight work."""
+        headings = re.findall(r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\]", CHANGELOG, re.MULTILINE)
+        seen: set[str] = set()
+        dupes = sorted({v for v in headings if v in seen or seen.add(v)})
+        assert not dupes, f"CHANGELOG.md has duplicate version heading(s): {dupes}"
+
 
 class TestEnvironmentOverrides:
     """Every override the code reads must be documented, and vice versa.
