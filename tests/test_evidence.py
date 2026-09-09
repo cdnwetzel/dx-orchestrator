@@ -201,3 +201,99 @@ class TestNoOpRunsAreVisible:
         out = write_bundle(_bundle(), tmp_path)
         boundary = " ".join(json.loads((out / "manifest.json").read_text())["boundary"])
         assert "produced_changes" in boundary
+
+
+# ---------------------------------------------------------------------------
+# dx.gui_verification.v1
+# ---------------------------------------------------------------------------
+
+from dx.evidence import (  # noqa: E402
+    GUI_DEFAULT_BOUNDARY,
+    GUI_SCHEMA,
+    GuiVerificationBundle,
+    write_gui_bundle,
+)
+
+# a real 1x1 PNG, so the stored artifact is genuine image bytes
+_PNG_1x1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000d4944415478da6360000002000001e221bc330000000049454e44ae426082"
+)
+
+
+def _gui_bundle(**kw) -> GuiVerificationBundle:
+    base = dict(
+        task_id="verify-gui",
+        title="GUI verification — verify-gui",
+        passed=True,
+        expected="A window titled dx-under-test shows a temperature converter",
+        vlm_answer="YES the window matches",
+        vlm_model="gemma4:26b",
+        vlm_endpoint="http://vlm.invalid:11434/api/generate",
+        screenshot=_PNG_1x1,
+        capture="ssh:tester@vlm.invalid",
+        checks={"expectation_met": Check(ok=True, detail="YES")},
+    )
+    base.update(kw)
+    return GuiVerificationBundle(**base)
+
+
+class TestGuiVerificationBundle:
+    def test_schema_and_family_tail(self, tmp_path):
+        out = write_gui_bundle(_gui_bundle(), tmp_path)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["schema"] == GUI_SCHEMA
+        assert m["result"]["passed"] is True
+        gv = m["gui_verification"]
+        assert gv["expected"].startswith("A window titled dx-under-test")
+        assert gv["vlm_model"] == "gemma4:26b"
+        assert gv["vlm_answer"] == "YES the window matches"
+        assert gv["capture"] == "ssh:tester@vlm.invalid"
+        assert gv["screenshot"] == "artifacts/screenshot.png"
+
+    def test_the_screenshot_is_stored_verbatim(self, tmp_path):
+        """The whole point of this family: a later reader can look at the exact
+        bytes the model judged, not a re-capture or a description."""
+        out = write_gui_bundle(_gui_bundle(), tmp_path)
+        assert (out / "artifacts" / "screenshot.png").read_bytes() == _PNG_1x1
+
+    def test_boundary_says_the_model_is_not_a_proof(self, tmp_path):
+        out = write_gui_bundle(_gui_bundle(), tmp_path)
+        boundary = " ".join(json.loads((out / "manifest.json").read_text())["boundary"])
+        assert "advisory" in boundary and "never a" in boundary
+        assert "GPG signature" in boundary  # RL-007: not a merge gate
+
+    def test_an_empty_boundary_is_refused(self, tmp_path):
+        with pytest.raises(EvidenceError):
+            write_gui_bundle(_gui_bundle(boundary=()), tmp_path)
+
+    def test_a_failed_verification_still_gets_a_bundle(self, tmp_path):
+        out = write_gui_bundle(_gui_bundle(passed=False, vlm_answer="NO it is blank"), tmp_path)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["result"]["passed"] is False
+        assert m["gui_verification"]["vlm_answer"] == "NO it is blank"
+
+    def test_default_boundary_is_the_gui_family_one(self, tmp_path):
+        out = write_gui_bundle(_gui_bundle(), tmp_path)
+        assert tuple(json.loads((out / "manifest.json").read_text())["boundary"]) == GUI_DEFAULT_BOUNDARY
+
+
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum not on PATH")
+class TestGuiBundleTamperEvidence:
+    @staticmethod
+    def _verify(out) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["sha256sum", "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True
+        )
+
+    def test_a_fresh_gui_bundle_verifies(self, tmp_path):
+        out = write_gui_bundle(_gui_bundle(), tmp_path)
+        assert self._verify(out).returncode == 0
+
+    def test_mutating_one_byte_of_the_screenshot_fails_verification(self, tmp_path):
+        out = write_gui_bundle(_gui_bundle(), tmp_path)
+        shot = out / "artifacts" / "screenshot.png"
+        blob = bytearray(shot.read_bytes())
+        blob[-1] ^= 0x01
+        shot.write_bytes(bytes(blob))
+        assert self._verify(out).returncode != 0

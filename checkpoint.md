@@ -130,16 +130,17 @@ Reviewed for public peer review and cleared, with scope stated.
 **Scope of the GO.** Ready for peer review of *the control plane and its gates*.
 Both pipeline stubs are closed as of 0.10.0: `dx run` writes evidence bundles
 and `dx merge` merges and appends. What is still not demonstrated is the RL-010
-ceremony — a signature made interactively over a ledger attesting to real work —
-and `dx verify-gui` as a receipted stage (it has run once against a live desktop
-but writes no bundle). Stated in `README.md` Status,
-`TUTORIAL.md` §9 and its closing boundary, and `SECURITY.md`.
+ceremony — a signature made interactively over a ledger attesting to real work.
+Stated in `README.md` Status, `TUTORIAL.md` §9 and its closing boundary, and
+`SECURITY.md`.
 
 **Known and stated, not blockers:**
-- `dx verify-gui` has run against a live desktop once (0.9.1: SSH capture from an
-  Xvfb session, checked by a local VLM — YES on a matching expectation, NO on a
-  mismatched one), but ROADMAP 1.3 stays open: no `dx.gui_verification.v1`
-  bundle is written and PSOperator was not involved.
+- `dx verify-gui` writes a `dx.gui_verification.v1` bundle as of 0.12.0 (the
+  screenshot stored verbatim, the model's answer, an RL-007 boundary) and has
+  run live on two capture hosts — a headless Linux Xvfb display and a headless
+  macOS box via window-backing-store capture. ROADMAP 1.3 is mostly shipped;
+  the one open piece is PSOperator's observer, so the frame is a bare SSH
+  capture rather than a signed observer envelope (depends on §3.1).
 - No all-green merge against a *live operational* ledger with a fresh RL-010
   signature. The gate does pass all-green against the public reference ledger
   with a real `gpg --verify` — but that ledger's rows attest to no work and its

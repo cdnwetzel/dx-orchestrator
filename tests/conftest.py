@@ -16,12 +16,16 @@ MANIFEST = FIXTURES / "manifest.yml"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_dx_env(monkeypatch):
+def _isolate_dx_env(monkeypatch, tmp_path_factory):
     """Point dx at fixtures and drop any inherited dx env for every test."""
     for var in ("DX_CONFIG", "DX_ROLES_PATH", "DX_LEDGER_REPO", "DX_VLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DX_CONFIG", str(MANIFEST))
     monkeypatch.setenv("DX_ROLES_PATH", str(ROLES_DIR))
+    # Never let a test write a real evidence bundle into ~/.local/state/dx —
+    # dx run and dx verify-gui both emit by default. Redirect to a throwaway dir
+    # unless the test sets its own.
+    monkeypatch.setenv("DX_EVIDENCE_DIR", str(tmp_path_factory.mktemp("dx-evidence")))
     yield
 
 

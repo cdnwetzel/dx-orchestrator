@@ -122,17 +122,19 @@ findings, both from running it:
   verifier reporting a head unrelated to its own rows. `append_row`
   cross-checked and refused. The fixture is now a real chain.
 
-### 1.3 — `dx verify-gui` against a live desktop
+### 1.3 — `dx verify-gui` against a live desktop — 🟡 MOSTLY SHIPPED in 0.12.0
 
-Never run for real. Requires PSOperator's observer up on a machine with a
-desktop, and a VLM endpoint.
+**Acceptance (met):** a screenshot captured from a live session, checked by the
+VLM, producing a `dx.gui_verification.v1` bundle with the image as an artifact
+and a `boundary` block stating the VLM's confidence is not a proof. Shipped in
+0.12.0 and exercised live on two capture hosts — a headless Linux Xvfb display
+and a headless macOS box (window-backing-store capture) — with a local VLM.
 
-**Acceptance:** a screenshot captured from a live session, checked by the VLM,
-producing a `dx.gui_verification.v1` bundle with the image as an artifact and a
-`boundary` block stating the VLM's confidence is not a proof.
+**Still open:** PSOperator's observer is not in the loop, so the frame is a bare
+SSH capture rather than a signed observer envelope. Closing that is the
+remaining §1.3 work and depends on §3.1 (PSOperator running as a service).
 
-**Effort:** 1–2 days once a desktop target exists. **Blocked by:** a reachable
-desktop and PSOperator running as a service (see 3.1).
+**Effort:** ~1 day for the observer wiring once §3.1 lands.
 
 ---
 

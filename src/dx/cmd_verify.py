@@ -19,8 +19,26 @@ from typing import Any
 
 from ._argtypes import SubParsers
 from .config_loader import get_config_path, get_gui_config
+from .evidence import (
+    Check,
+    EvidenceError,
+    GuiVerificationBundle,
+    write_gui_bundle,
+)
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+#: Kept in sync with cmd_run.DEFAULT_EVIDENCE_ROOT — receipts live outside any
+#: repo under edit. Duplicated (three trivial lines) rather than imported so the
+#: two command modules stay independent.
+DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+
+
+def _evidence_root(args: argparse.Namespace) -> Path:
+    if getattr(args, "evidence_dir", None):
+        return Path(args.evidence_dir).expanduser()
+    env = os.environ.get("DX_EVIDENCE_DIR")
+    return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
 
 
 class GuiConfigError(RuntimeError):
@@ -111,6 +129,21 @@ def register_verify_subcommand(subparsers: SubParsers) -> None:
         action="store_true",
         help="Use the latest PSOperator observer snapshot",
     )
+    parser.add_argument(
+        "--task",
+        default="verify-gui",
+        help="Task id the evidence bundle is filed under (default: verify-gui)",
+    )
+    parser.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="Skip the dx.gui_verification.v1 bundle (the check still runs)",
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        help="Where to write the bundle (default: DX_EVIDENCE_DIR, "
+        "else ~/.local/state/dx/evidence)",
+    )
     parser.set_defaults(func=cmd_verify)
 
 
@@ -192,35 +225,93 @@ def verify_gui(expected: str) -> tuple[bool, str]:
     )
 
 
+def _obtain_frame(args: argparse.Namespace) -> tuple[GuiTarget, bytes, str]:
+    """Resolve the target and the exact bytes to verify, plus how they were got.
+
+    Captured explicitly (rather than inside ``verify_gui``) so the same bytes
+    handed to the model can be stored in the evidence bundle — the receipt shows
+    what was actually judged, not a re-capture.
+    """
+    if args.screenshot:
+        target = gui_target()
+        png = Path(args.screenshot).expanduser().read_bytes()
+        return target, png, f"--screenshot {args.screenshot}"
+    if args.use_psoperator:
+        target = gui_target()
+        png = _capture_psoperator_snapshot()
+        return target, png, "psoperator-observer-snapshot"
+    target = gui_target(require_ssh=True)
+    png = _capture_ssh(target.ssh_host or "", target.screenshot_cmd)
+    return target, png, f"ssh:{target.ssh_host}"
+
+
+def _emit_gui_evidence(
+    args: argparse.Namespace,
+    target: GuiTarget,
+    png: bytes,
+    capture: str,
+    passed: bool,
+    output: str,
+) -> Path:
+    answered = not output.startswith("VLM error")
+    checks = {
+        "frame_captured": Check(ok=True, path="artifacts/screenshot.png", detail=capture),
+        "vlm_answered": Check(ok=answered, detail=target.vlm_model),
+        "expectation_met": Check(ok=passed, detail=output[:200]),
+    }
+    bundle = GuiVerificationBundle(
+        task_id=args.task,
+        title=f"GUI verification — {args.task}",
+        passed=passed,
+        expected=args.expected,
+        vlm_answer=output,
+        vlm_model=target.vlm_model,
+        vlm_endpoint=target.vlm_endpoint,
+        screenshot=png,
+        capture=capture,
+        checks=checks,
+    )
+    return write_gui_bundle(bundle, _evidence_root(args))
+
+
 def cmd_verify(args: argparse.Namespace) -> None:
     try:
-        if args.screenshot:
-            target = gui_target()
-            png_data = Path(args.screenshot).expanduser().read_bytes()
-            passed, output = _verify_with_vlm(
-                png_data, args.expected, target.vlm_endpoint, target.vlm_model,
-                target.vlm_timeout_s,
-            )
-        elif args.use_psoperator:
-            target = gui_target()
-            png_data = _capture_psoperator_snapshot()
-            passed, output = _verify_with_vlm(
-                png_data, args.expected, target.vlm_endpoint, target.vlm_model,
-                target.vlm_timeout_s,
-            )
-        else:
-            passed, output = verify_gui(args.expected)
+        target, png_data, capture = _obtain_frame(args)
     except (GuiConfigError, FileNotFoundError, OSError, RuntimeError) as exc:
+        # No frame means nothing to attest to, so no bundle is written.
         if args.json:
             print(json.dumps({"passed": False, "error": str(exc)}))
         else:
             print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    passed, output = _verify_with_vlm(
+        png_data, args.expected, target.vlm_endpoint, target.vlm_model, target.vlm_timeout_s
+    )
+
+    bundle_path: Path | None = None
+    if not args.no_evidence:
+        try:
+            bundle_path = _emit_gui_evidence(args, target, png_data, capture, passed, output)
+        except EvidenceError as exc:
+            # Same stance as dx run: a receipted verification that produced no
+            # receipt is not one. Fail closed rather than report a clean pass.
+            msg = f"evidence bundle could not be written: {exc}"
+            if args.json:
+                print(json.dumps({"passed": False, "error": msg}))
+            else:
+                print(f"ERROR: {msg}", file=sys.stderr)
+            sys.exit(1)
+
     if args.json:
-        print(json.dumps({"passed": passed, "output": output}))
+        payload: dict[str, object] = {"passed": passed, "output": output}
+        if bundle_path is not None:
+            payload["evidence"] = str(bundle_path)
+        print(json.dumps(payload))
     else:
         marker = "✅" if passed else "❌"
         print(f"{marker} GUI verification: {output}")
+        if bundle_path is not None:
+            print(f"🧾 Evidence: {bundle_path}")
 
     sys.exit(0 if passed else 1)

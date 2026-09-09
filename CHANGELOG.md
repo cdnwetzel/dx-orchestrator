@@ -5,6 +5,36 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] — 2026-09-09
+
+### Added
+
+- **`dx verify-gui` writes a `dx.gui_verification.v1` evidence bundle** — ROADMAP
+  §1.3. The screenshot handed to the vision model is stored verbatim under
+  `artifacts/screenshot.png`, beside the model's YES/NO answer, the expected
+  text, and the model/endpoint. The whole point of the family: a later reader
+  looks at the exact frame that was judged, not a re-capture or a one-line
+  verdict. `sha256sum -c SHA256SUMS` covers the PNG, so a mutated screenshot
+  fails verification — there is a test that it does.
+- The bundle's `boundary` leads with RL-007: the model's answer is advisory
+  evidence, never a proof, and `dx merge` still requires a GPG signature. The
+  writer refuses an empty boundary here exactly as it does for `dx.role_task.v1`.
+- Emission is on by default with the same controls as `dx run` —
+  `--evidence-dir` / `DX_EVIDENCE_DIR` / `--no-evidence` — plus `--task` for the
+  id it files under (default `verify-gui`). A failed check still leaves a bundle;
+  an unwritable bundle fails closed, so a receipted verification that produced no
+  receipt is reported as a failure rather than a clean pass.
+- `evidence.py` grew a shared writer core (`_finalize`) so both families share
+  the directory layout, `SHA256SUMS`, and the mandatory-boundary check, and it
+  now supports binary artifacts. The test conftest redirects `DX_EVIDENCE_DIR`
+  to a throwaway dir for every test, so no test can write into the real store.
+
+### Still open (ROADMAP §1.3)
+
+- The bundle closes the receipt half. PSOperator's observer is still not in the
+  loop, so a signed observer envelope does not yet back the frame — that stays
+  the remaining cap under §1.3 / §3.1.
+
 ## [0.11.0] — 2026-09-09
 
 ### Added
@@ -703,6 +733,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.12.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.0...v0.9.1

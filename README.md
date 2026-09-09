@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 401 tests,
+The test suite is the part built to be evaluated from outside: 412 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -82,7 +82,7 @@ code-generation task.
 | `dx roles validate` | Structural checks on role cards |
 | `dx run` | Load role card → inject mandate → route to hardware → invoke pxx |
 | `dx merge` | Merge gate: RL-003 checks, then `git merge --no-ff` (`--repo`) and `SIGNED`/`MERGED` ledger rows |
-| `dx verify-gui` | Capture screen (SSH or PSOperator observer) → check with a VLM |
+| `dx verify-gui` | Capture screen (SSH or PSOperator observer) → check with a VLM → write a `dx.gui_verification.v1` bundle |
 
 Exit codes: `0` success, `1` error or gate failure, `2` Anchored role refused, `3` the task itself failed.
 
@@ -120,6 +120,13 @@ Every bundle carries a mandatory `boundary` block stating what it does **not**
 prove — that the code is correct, that anyone reviewed it, that any test of the
 generated behaviour was run. A bundle without one is a claim wearing a receipt's
 clothing, so the writer refuses to emit it.
+
+`dx verify-gui` writes its own family, `dx.gui_verification.v1`: the screenshot
+it judged stored verbatim under `artifacts/`, the model's YES/NO answer, and a
+`boundary` block whose first line is that the answer is advisory evidence, never
+a proof (RL-007 — `dx merge` still requires a GPG signature). Same
+`--evidence-dir` / `DX_EVIDENCE_DIR` / `--no-evidence` controls; `--task` sets
+the id it is filed under (default `verify-gui`).
 
 ## Configuration
 

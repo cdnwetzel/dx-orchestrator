@@ -55,6 +55,27 @@ DEFAULT_BOUNDARY: tuple[str, ...] = (
 )
 
 
+GUI_SCHEMA = "dx.gui_verification.v1"
+
+#: Policy text for the GUI-verification family. RL-007: a vision model's answer
+#: is advisory evidence, never a gate. Same standing as DEFAULT_BOUNDARY — a
+#: `compliance-privacy` judgement, so changing it is a policy change.
+GUI_DEFAULT_BOUNDARY: tuple[str, ...] = (
+    "This bundle records that a vision-language model was shown one screenshot "
+    "and returned a YES/NO answer. That answer is advisory evidence, never a "
+    "proof.",
+    "`result.passed` true means the model's reply began with YES for the stated "
+    "expectation. It does not mean the GUI is correct — only that one model said "
+    "so, about one frame.",
+    "The screenshot under `artifacts/` is the exact bytes the model was shown. "
+    "The model's reasoning beyond its short reply is not recorded.",
+    "This is not a merge gate. `dx merge` requires a GPG signature regardless of "
+    "what this bundle says (RL-007).",
+    "The frame is one moment. It attests to nothing before or after it, and to "
+    "nothing off-screen or scrolled out of view.",
+)
+
+
 class EvidenceError(RuntimeError):
     """A bundle could not be written, or would have been misleading if it were."""
 
@@ -90,6 +111,31 @@ class RoleTaskBundle:
     #: relative-path -> text content, written under ``artifacts/``
     artifacts: dict[str, str] = field(default_factory=dict)
     boundary: tuple[str, ...] = DEFAULT_BOUNDARY
+
+
+@dataclass
+class GuiVerificationBundle:
+    """The inputs a ``dx.gui_verification.v1`` bundle is built from.
+
+    The screenshot is the load-bearing artifact: the exact bytes handed to the
+    model, stored so a later reader can look at what was actually judged rather
+    than trust the one-line verdict.
+    """
+
+    task_id: str
+    title: str
+    passed: bool
+    expected: str
+    vlm_answer: str
+    vlm_model: str
+    vlm_endpoint: str
+    screenshot: bytes
+    screenshot_name: str = "screenshot.png"
+    #: how the frame was obtained (ssh host, --screenshot <path>, psoperator)
+    capture: str | None = None
+    source_head: str | None = None
+    checks: dict[str, Check] = field(default_factory=dict)
+    boundary: tuple[str, ...] = GUI_DEFAULT_BOUNDARY
 
 
 def _utc_now() -> str:
@@ -139,53 +185,47 @@ def _render_readme(bundle: RoleTaskBundle, generated_utc: str) -> str:
     return "\n".join(lines)
 
 
-def write_bundle(bundle: RoleTaskBundle, root: Path, *, now: str | None = None) -> Path:
-    """Write ``bundle`` under ``root`` and return the bundle directory.
-
-    ``root`` is the evidence root; the bundle lands at
-    ``<root>/<task_id>/<timestamp>/`` so repeated runs of one task accumulate
-    rather than overwrite — an evidence store that silently replaces its own
-    history is not an evidence store.
-    """
-    if not bundle.boundary or not any(line.strip() for line in bundle.boundary):
+def _check_boundary(boundary: tuple[str, ...]) -> None:
+    if not boundary or not any(line.strip() for line in boundary):
         raise EvidenceError(
             "refusing to write a bundle with an empty boundary block. Every "
             "bundle must state what it does not prove; see VISION.md "
             "§ Reference formats."
         )
 
-    generated_utc = now or _utc_now()
+
+def _prepare_out(root: Path, task_id: str, generated_utc: str) -> Path:
     stamp = generated_utc.replace(":", "").replace("-", "")
-    out = root / bundle.task_id / stamp
+    out = root / task_id / stamp
     try:
         (out / "artifacts").mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise EvidenceError(f"could not create bundle directory {out}: {exc}") from exc
+    return out
 
+
+def _finalize(
+    out: Path,
+    manifest: dict[str, object],
+    readme: str,
+    text_artifacts: dict[str, str],
+    binary_artifacts: dict[str, bytes],
+) -> Path:
+    """Write artifacts, manifest.json, README.md and SHA256SUMS into ``out``."""
     try:
-        for name, content in bundle.artifacts.items():
+        for name, content in text_artifacts.items():
             target = out / "artifacts" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
+        for name, blob in binary_artifacts.items():
+            target = out / "artifacts" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
 
-        manifest = {
-            "schema": SCHEMA,
-            "title": bundle.title,
-            "task_id": bundle.task_id,
-            "source_head": bundle.source_head,
-            "generated_utc": generated_utc,
-            "result": {"passed": bundle.passed},
-            "role": bundle.role,
-            "routing": bundle.routing,
-            "checks": {k: v.as_json() for k, v in bundle.checks.items()},
-            "boundary": list(bundle.boundary),
-        }
         (out / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        (out / "README.md").write_text(
-            _render_readme(bundle, generated_utc), encoding="utf-8"
-        )
+        (out / "README.md").write_text(readme, encoding="utf-8")
 
         # SHA256SUMS covers every file in the bundle except itself, in the exact
         # `<hex>  <path>` form GNU coreutils expects, with paths relative to the
@@ -199,3 +239,99 @@ def write_bundle(bundle: RoleTaskBundle, root: Path, *, now: str | None = None) 
         raise EvidenceError(f"could not write bundle at {out}: {exc}") from exc
 
     return out
+
+
+def write_bundle(bundle: RoleTaskBundle, root: Path, *, now: str | None = None) -> Path:
+    """Write ``bundle`` under ``root`` and return the bundle directory.
+
+    ``root`` is the evidence root; the bundle lands at
+    ``<root>/<task_id>/<timestamp>/`` so repeated runs of one task accumulate
+    rather than overwrite — an evidence store that silently replaces its own
+    history is not an evidence store.
+    """
+    _check_boundary(bundle.boundary)
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.task_id, generated_utc)
+    manifest: dict[str, object] = {
+        "schema": SCHEMA,
+        "title": bundle.title,
+        "task_id": bundle.task_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed},
+        "role": bundle.role,
+        "routing": bundle.routing,
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(out, manifest, _render_readme(bundle, generated_utc), bundle.artifacts, {})
+
+
+def _render_gui_readme(bundle: GuiVerificationBundle, generated_utc: str) -> str:
+    lines = [
+        f"# {bundle.title}",
+        "",
+        f"**Schema:** `{GUI_SCHEMA}` · **Task:** `{bundle.task_id}` · "
+        f"**Generated:** {generated_utc}",
+        f"**Result:** {'PASSED' if bundle.passed else 'FAILED'}",
+        "",
+        "## GUI verification",
+        "",
+        f"- **Expected:** {bundle.expected}",
+        f"- **VLM answer:** {bundle.vlm_answer}",
+        f"- **VLM model:** `{bundle.vlm_model}`",
+        f"- **VLM endpoint:** `{bundle.vlm_endpoint}`",
+    ]
+    if bundle.capture:
+        lines.append(f"- **Capture:** `{bundle.capture}`")
+    lines += [f"- **Screenshot:** `artifacts/{bundle.screenshot_name}`", ""]
+    if bundle.checks:
+        lines += ["## Checks", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
+        for name, check in bundle.checks.items():
+            mark = "✅" if check.ok else "❌"
+            lines.append(f"| `{name}` | {mark} | {check.detail or '—'} |")
+        lines += [""]
+    lines += ["## Boundary — what this bundle does NOT prove", ""]
+    lines += [f"- {line}" for line in bundle.boundary]
+    lines += ["", "## Verify", "", "```sh", "sha256sum -c SHA256SUMS", "```", ""]
+    return "\n".join(lines)
+
+
+def write_gui_bundle(
+    bundle: GuiVerificationBundle, root: Path, *, now: str | None = None
+) -> Path:
+    """Write a ``dx.gui_verification.v1`` bundle and return its directory.
+
+    Same core as :func:`write_bundle` — directory layout, SHA256SUMS,
+    mandatory boundary — with a family-specific tail (`gui_verification`) and
+    the screenshot stored as a binary artifact, since the whole point is that a
+    later reader can look at what the model was actually shown.
+    """
+    _check_boundary(bundle.boundary)
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.task_id, generated_utc)
+    manifest: dict[str, object] = {
+        "schema": GUI_SCHEMA,
+        "title": bundle.title,
+        "task_id": bundle.task_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed},
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "gui_verification": {
+            "expected": bundle.expected,
+            "vlm_answer": bundle.vlm_answer,
+            "vlm_model": bundle.vlm_model,
+            "vlm_endpoint": bundle.vlm_endpoint,
+            "capture": bundle.capture,
+            "screenshot": f"artifacts/{bundle.screenshot_name}",
+        },
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(
+        out,
+        manifest,
+        _render_gui_readme(bundle, generated_utc),
+        {},
+        {bundle.screenshot_name: bundle.screenshot},
+    )

@@ -6,6 +6,7 @@ merge gate (dx merge still requires a GPG signature).
 """
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -249,3 +250,71 @@ def test_psoperator_snapshot_dir_is_overridable(monkeypatch, tmp_path, capsys):
         args.func(args)
     assert exc.value.code == 1
     assert "no PSOperator snapshots found" in json.loads(capsys.readouterr().out)["error"]
+
+
+class TestVerifyGuiEmitsEvidence:
+    """dx verify-gui writes a dx.gui_verification.v1 bundle by default — the
+    screenshot it judged, stored so a reader sees what was actually checked.
+    ROADMAP §1.3."""
+
+    def test_a_bundle_is_written_and_reported(self, monkeypatch, tmp_path, capsys):
+        shot = tmp_path / "screen.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+        )
+        ev = tmp_path / "ev"
+        args = build_parser().parse_args(
+            ["verify-gui", "--screenshot", str(shot), "--json", "--task", "T-GUI",
+             "--evidence-dir", str(ev)]
+        )
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert exc.value.code == 0
+        assert "evidence" in payload
+        bundle = Path(payload["evidence"])
+        assert bundle.is_dir() and bundle.parent.parent == ev and bundle.parent.name == "T-GUI"
+        m = json.loads((bundle / "manifest.json").read_text())
+        assert m["schema"] == "dx.gui_verification.v1"
+        # the exact bytes we captured are what got stored
+        assert (bundle / "artifacts" / "screenshot.png").read_bytes() == shot.read_bytes()
+
+    def test_no_evidence_skips_the_bundle(self, monkeypatch, tmp_path, capsys):
+        shot = tmp_path / "screen.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+        )
+        ev = tmp_path / "ev"
+        args = build_parser().parse_args(
+            ["verify-gui", "--screenshot", str(shot), "--json", "--no-evidence",
+             "--evidence-dir", str(ev)]
+        )
+        with pytest.raises(SystemExit):
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["passed"] is True
+        assert "evidence" not in payload
+        assert not ev.exists()
+
+    def test_a_failed_check_still_leaves_a_bundle(self, monkeypatch, tmp_path, capsys):
+        shot = tmp_path / "screen.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (False, "NO it is blank"),
+        )
+        ev = tmp_path / "ev"
+        args = build_parser().parse_args(
+            ["verify-gui", "--screenshot", str(shot), "--json", "--evidence-dir", str(ev)]
+        )
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert exc.value.code == 1
+        bundle = Path(payload["evidence"])
+        m = json.loads((bundle / "manifest.json").read_text())
+        assert m["result"]["passed"] is False
