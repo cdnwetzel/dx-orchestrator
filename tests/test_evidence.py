@@ -273,6 +273,20 @@ class TestGuiVerificationBundle:
         assert m["result"]["passed"] is False
         assert m["gui_verification"]["vlm_answer"] == "NO it is blank"
 
+    def test_observer_provenance_is_recorded_when_present(self, tmp_path):
+        prov = {
+            "key_id": "dx-test-observer", "frame_hash": "a" * 64,
+            "signature_verified": True, "frame_hash_matches": True,
+        }
+        out = write_gui_bundle(_gui_bundle(observer=prov), tmp_path)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["gui_verification"]["observer"] == prov
+        assert "PSOperator observer" in " ".join(m["boundary"])
+
+    def test_observer_is_null_when_absent(self, tmp_path):
+        out = write_gui_bundle(_gui_bundle(), tmp_path)
+        assert json.loads((out / "manifest.json").read_text())["gui_verification"]["observer"] is None
+
     def test_default_boundary_is_the_gui_family_one(self, tmp_path):
         out = write_gui_bundle(_gui_bundle(), tmp_path)
         assert tuple(json.loads((out / "manifest.json").read_text())["boundary"]) == GUI_DEFAULT_BOUNDARY

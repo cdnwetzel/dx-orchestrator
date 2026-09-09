@@ -73,6 +73,10 @@ GUI_DEFAULT_BOUNDARY: tuple[str, ...] = (
     "what this bundle says (RL-007).",
     "The frame is one moment. It attests to nothing before or after it, and to "
     "nothing off-screen or scrolled out of view.",
+    "An `observer` block means an independent PSOperator observer signed a "
+    "perception snapshot whose frame hash matches this screenshot — provenance "
+    "for the pixels, not a judgement of them. Its absence means the frame's only "
+    "provenance is the `capture` command that produced it.",
 )
 
 
@@ -133,6 +137,8 @@ class GuiVerificationBundle:
     screenshot_name: str = "screenshot.png"
     #: how the frame was obtained (ssh host, --screenshot <path>, psoperator)
     capture: str | None = None
+    #: a verified PSOperator observer attestation bound to this frame, if any
+    observer: dict[str, object] | None = None
     source_head: str | None = None
     checks: dict[str, Check] = field(default_factory=dict)
     boundary: tuple[str, ...] = GUI_DEFAULT_BOUNDARY
@@ -284,7 +290,13 @@ def _render_gui_readme(bundle: GuiVerificationBundle, generated_utc: str) -> str
     ]
     if bundle.capture:
         lines.append(f"- **Capture:** `{bundle.capture}`")
-    lines += [f"- **Screenshot:** `artifacts/{bundle.screenshot_name}`", ""]
+    lines += [f"- **Screenshot:** `artifacts/{bundle.screenshot_name}`"]
+    if bundle.observer:
+        lines += [
+            f"- **Observer attestation:** verified — key `{bundle.observer.get('key_id')}`, "
+            f"frame hash matches (`{str(bundle.observer.get('frame_hash'))[:16]}…`)"
+        ]
+    lines += [""]
     if bundle.checks:
         lines += ["## Checks", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
         for name, check in bundle.checks.items():
@@ -325,6 +337,7 @@ def write_gui_bundle(
             "vlm_endpoint": bundle.vlm_endpoint,
             "capture": bundle.capture,
             "screenshot": f"artifacts/{bundle.screenshot_name}",
+            "observer": bundle.observer,
         },
         "boundary": list(bundle.boundary),
     }

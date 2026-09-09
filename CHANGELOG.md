@@ -5,6 +5,33 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] — 2026-09-09
+
+### Added
+
+- **`dx verify-gui --observer` binds a verified PSOperator observer attestation
+  to the frame** — the remaining half of ROADMAP §1.3. The observer signs a
+  perception snapshot (element inventory + `frame_hash = sha256(raw RGB pixels)`)
+  under an owner-only key; `dx.observer` verifies that signature, checks the
+  envelope has not expired, and recomputes the RGB hash of the exact bytes the
+  vision model was shown, requiring it to match. On any failure — bad signature,
+  expired, or a frame that is not the frame attested — it fails closed rather
+  than record provenance it cannot stand behind. The verified attestation
+  (key id, epoch, nonce, issued/expires, frame hash, signature) lands in the
+  bundle under `gui_verification.observer`, with an `observer_attested` check and
+  a boundary line explaining it is provenance for the pixels, not a judgement of
+  them. `TestObserverAttestation` (hermetic, against a provisioned test key and a
+  synthetic signed snapshot) pins the three failure modes.
+- psoperator and Pillow are optional; `dx.observer` imports them lazily, so `dx`
+  runs without them unless `--observer` is used. mypy is told they are untyped.
+
+### Still open (ROADMAP §1.3 / §3.1)
+
+- The binding holds when the screen is static between dx's capture and the
+  observer's — the normal case for a settled window. The live end-to-end still
+  wants the observer running as a service with a provisioned key (§3.1); until
+  then `--observer` is exercised hermetically and on demand, not by default.
+
 ## [0.12.0] — 2026-09-09
 
 ### Added
@@ -733,6 +760,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.13.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.1...v0.10.0

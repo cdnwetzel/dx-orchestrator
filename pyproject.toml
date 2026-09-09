@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dx-orchestrator"
-version = "0.12.0"
+version = "0.13.0"
 description = "Sovereign orchestration layer for AI coding agents and GUI automation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -62,3 +62,9 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
+
+[[tool.mypy.overrides]]
+# psoperator and Pillow are optional, untyped deps used only by the observer
+# attestation path (dx.observer). They ship no stubs.
+module = ["psoperator.*", "PIL.*"]
+ignore_missing_imports = true

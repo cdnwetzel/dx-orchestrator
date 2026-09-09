@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 412 tests,
+The test suite is the part built to be evaluated from outside: 422 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -126,7 +126,7 @@ it judged stored verbatim under `artifacts/`, the model's YES/NO answer, and a
 `boundary` block whose first line is that the answer is advisory evidence, never
 a proof (RL-007 — `dx merge` still requires a GPG signature). Same
 `--evidence-dir` / `DX_EVIDENCE_DIR` / `--no-evidence` controls; `--task` sets
-the id it is filed under (default `verify-gui`).
+the id it is filed under (default `verify-gui`). Add `--observer` and the bundle also carries a **verified** PSOperator observer attestation bound to the exact frame by hash (signature and freshness checked, `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` required); it fails closed if that provenance cannot be obtained.
 
 ## Configuration
 
@@ -195,6 +195,8 @@ file ends up saying what actually runs.
 | `DX_GUI_SSH_HOST` | Host to capture screenshots from |
 | `PSOPERATOR_REPO` / `PSOPERATOR_SNAPSHOT_DIR` | PSOperator clone and snapshot locations |
 | `PSOPERATOR_OBSERVER_PORT` / `PSOPERATOR_GATEKEEPER_PORT` / `PSOPERATOR_EXECUTOR_PORT` | PSOperator service ports (manifest: `psoperator.*_port`) |
+| `PSOPERATOR_OBSERVER_HOST` | Observer host for `dx verify-gui --observer` (default `127.0.0.1`) |
+| `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` | Owner-only observer attestation key, required by `dx verify-gui --observer` |
 | `PSOPERATOR_MODEL_ENDPOINT` / `PSOPERATOR_MODEL_NAME` | Model the GUI agent drives |
 | `PSOPERATOR_AUDIT_LOG_PATH` | Where PSOperator writes its audit log |
 

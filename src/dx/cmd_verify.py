@@ -130,6 +130,13 @@ def register_verify_subcommand(subparsers: SubParsers) -> None:
         help="Use the latest PSOperator observer snapshot",
     )
     parser.add_argument(
+        "--observer",
+        action="store_true",
+        help="Require a verified PSOperator observer attestation bound to the "
+        "captured frame (needs PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH and a "
+        "running observer); fails closed if it cannot be obtained",
+    )
+    parser.add_argument(
         "--task",
         default="verify-gui",
         help="Task id the evidence bundle is filed under (default: verify-gui)",
@@ -245,6 +252,25 @@ def _obtain_frame(args: argparse.Namespace) -> tuple[GuiTarget, bytes, str]:
     return target, png, f"ssh:{target.ssh_host}"
 
 
+def _observer_provenance(png: bytes) -> dict[str, object]:
+    """Obtain and verify an observer attestation bound to ``png``.
+
+    Raises (ObserverError / RuntimeError) so the caller can fail closed —
+    ``--observer`` means the provenance is required, not best-effort.
+    """
+    from .observer import observe_and_bind
+
+    key_path = os.environ.get("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH")
+    if not key_path:
+        raise RuntimeError(
+            "--observer requires PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH "
+            "(the owner-only observer attestation key)"
+        )
+    host = os.environ.get("PSOPERATOR_OBSERVER_HOST", "127.0.0.1")
+    port = os.environ.get("PSOPERATOR_OBSERVER_PORT", "8764")
+    return observe_and_bind(png, host=host, port=port, key_path=key_path).as_json()
+
+
 def _emit_gui_evidence(
     args: argparse.Namespace,
     target: GuiTarget,
@@ -252,6 +278,7 @@ def _emit_gui_evidence(
     capture: str,
     passed: bool,
     output: str,
+    observer: dict[str, object] | None = None,
 ) -> Path:
     answered = not output.startswith("VLM error")
     checks = {
@@ -259,6 +286,10 @@ def _emit_gui_evidence(
         "vlm_answered": Check(ok=answered, detail=target.vlm_model),
         "expectation_met": Check(ok=passed, detail=output[:200]),
     }
+    if observer is not None:
+        checks["observer_attested"] = Check(
+            ok=True, detail=f"key {observer.get('key_id')}, frame hash matches"
+        )
     bundle = GuiVerificationBundle(
         task_id=args.task,
         title=f"GUI verification — {args.task}",
@@ -269,6 +300,7 @@ def _emit_gui_evidence(
         vlm_endpoint=target.vlm_endpoint,
         screenshot=png,
         capture=capture,
+        observer=observer,
         checks=checks,
     )
     return write_gui_bundle(bundle, _evidence_root(args))
@@ -285,6 +317,21 @@ def cmd_verify(args: argparse.Namespace) -> None:
             print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    # Bind the observer attestation right after capture, while the frame is
+    # still the one the observer will independently see — the hash binding holds
+    # only on a static screen. Requested-but-unobtainable fails closed.
+    observer: dict[str, object] | None = None
+    if args.observer:
+        try:
+            observer = _observer_provenance(png_data)
+        except Exception as exc:
+            msg = f"observer attestation not obtained: {exc}"
+            if args.json:
+                print(json.dumps({"passed": False, "error": msg}))
+            else:
+                print(f"ERROR: {msg}", file=sys.stderr)
+            sys.exit(1)
+
     passed, output = _verify_with_vlm(
         png_data, args.expected, target.vlm_endpoint, target.vlm_model, target.vlm_timeout_s
     )
@@ -292,7 +339,9 @@ def cmd_verify(args: argparse.Namespace) -> None:
     bundle_path: Path | None = None
     if not args.no_evidence:
         try:
-            bundle_path = _emit_gui_evidence(args, target, png_data, capture, passed, output)
+            bundle_path = _emit_gui_evidence(
+                args, target, png_data, capture, passed, output, observer
+            )
         except EvidenceError as exc:
             # Same stance as dx run: a receipted verification that produced no
             # receipt is not one. Fail closed rather than report a clean pass.

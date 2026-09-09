@@ -318,3 +318,69 @@ class TestVerifyGuiEmitsEvidence:
         bundle = Path(payload["evidence"])
         m = json.loads((bundle / "manifest.json").read_text())
         assert m["result"]["passed"] is False
+
+
+class TestObserverAttestation:
+    """`--observer` requires a verified observer attestation bound to the frame.
+    It fails closed: requested-but-unobtainable is an error, never a clean pass
+    that silently dropped the provenance."""
+
+    @staticmethod
+    def _args(tmp_path, ev, *extra):
+        shot = tmp_path / "screen.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
+        return build_parser().parse_args(
+            ["verify-gui", "--screenshot", str(shot), "--json", "--observer",
+             "--evidence-dir", str(ev), *extra]
+        )
+
+    def test_verified_provenance_is_recorded_in_the_bundle(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+        )
+        prov = {"key_id": "obs-1", "frame_hash": "b" * 64,
+                "signature_verified": True, "frame_hash_matches": True}
+        monkeypatch.setattr("dx.cmd_verify._observer_provenance", lambda png: prov)
+        ev = tmp_path / "ev"
+        args = self._args(tmp_path, ev)
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert exc.value.code == 0
+        m = json.loads((Path(payload["evidence"]) / "manifest.json").read_text())
+        assert m["gui_verification"]["observer"] == prov
+        assert m["checks"]["observer_attested"]["ok"] is True
+
+    def test_failure_to_attest_fails_closed_with_no_bundle(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+        )
+        def boom(png):
+            from dx.observer import ObserverError
+            raise ObserverError("frame hash mismatch: not the frame attested")
+        monkeypatch.setattr("dx.cmd_verify._observer_provenance", boom)
+        ev = tmp_path / "ev"
+        args = self._args(tmp_path, ev)
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert exc.value.code == 1
+        assert "observer attestation not obtained" in payload["error"]
+        assert not ev.exists()
+
+    def test_missing_key_path_is_the_failure(self, monkeypatch, tmp_path, capsys):
+        # real _observer_provenance, no key env → RuntimeError → fail closed
+        monkeypatch.delenv("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH", raising=False)
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+        )
+        ev = tmp_path / "ev"
+        args = self._args(tmp_path, ev)
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert exc.value.code == 1
+        assert "PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH" in payload["error"]
