@@ -183,11 +183,11 @@ def test_author_human_is_none_for_unknown_task(fake_ledger):
     assert get_task_author_human("T-NOPE", fake_ledger) is None
 
 
-def test_head_is_read_from_the_reference_verifier(fake_ledger):
+def test_head_is_read_from_the_reference_verifier(fake_ledger, ledger_head):
     """dx never parses ledger.jsonl for the head — verify_chain.py is the single
     source of truth, so a broken chain stops the line (RL-009).
     """
-    assert get_ledger_head(fake_ledger) == "b" * 64
+    assert get_ledger_head(fake_ledger) == ledger_head
 
 
 def test_broken_chain_surfaces_the_verifier_failure(fake_ledger):

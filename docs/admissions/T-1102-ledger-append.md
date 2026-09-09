@@ -69,3 +69,56 @@ ledger rows, keeping the chain verifiable afterwards.
   re-read) go to the architect. The live-ledger block (DevSwarmX Gate 1)
   escalates to the accountable human who holds the RL-010 key. That
   decision is human, not engineering.
+
+---
+
+## Amendment 1 — 2026-09-08, before implementation
+
+Issued under the same `tech-lead` card. §4 allowed `src/dx/cmd_merge.py` only.
+Implementation needs one module it does not cover, so the record is amended
+before the work rather than exceeded during it — which is what §4 itself
+instructs.
+
+**Added to allowed paths:** `src/dx/ledger_writer.py` (new),
+`tests/test_ledger_writer.py` (new).
+
+**Why a new module rather than more of `cmd_merge.py`.** `cmd_merge.py` is a
+command: it parses arguments, orders gates, and prints verdicts. Ledger writing
+is a different concern with its own invariants — canonical form, chain
+continuity, lock discipline — and it is the first code in `dx` that mutates
+shared state. Mixing it into a command module makes those invariants untestable
+except through the CLI, and they are exactly the invariants that need direct
+tests.
+
+**Still prohibited, unchanged:** `verify_chain.py` and `SCHEMA.md` are the
+contract this code must conform to, not negotiate with. `ledger_writer.py`
+reimplements the canonical form to *write* rows and a test asserts byte-identical
+agreement with the verifier's own function — if they ever disagree, that test
+fails rather than the chain breaking in production.
+
+## Amendment 2 — 2026-09-08, during implementation
+
+**Added to allowed paths:** `tests/conftest.py`, `tests/test_cmd_merge.py`,
+`tests/test_gpg_integration.py`, `tests/test_docs_consistency.py`.
+
+Forced, and worth recording rather than absorbing quietly. `dx merge` was a
+read-only command; it is now a write. Two consequences the record did not
+foresee:
+
+1. **`fake_ledger` was a fiction that only worked while nothing wrote.** Its
+   stub `verify_chain.py` printed a head hash unrelated to its own rows, and the
+   rows carried no `prev_hash` at all. `append_row` cross-checks the verifier's
+   claimed head against the actual last row and refused — correctly. The fixture
+   is now a real chain in a real git repo, with the head computed from the rows.
+2. **A test shelled out to `dx merge` and wrote to the operator's real ledger.**
+   `test_the_green_merge_transcript_is_reproducible` runs `dx merge T-0001` as a
+   subprocess; with `DX_LEDGER_REPO` unset that resolves to
+   `~/ai/devswarm-ledger-reference`. It appended SIGNED, MERGED and UNLOCK
+   commits to the working clone. Restored from `origin/main`; nothing was
+   pushed, so the published ledger was never affected. The transcript tests now
+   run against a disposable copy.
+
+The second is the sharper lesson: a test that was safe against a read-only
+command became a mutation the moment the command grew teeth, and nothing about
+the test changed. Any test that invokes a writing command needs its own
+disposable target.

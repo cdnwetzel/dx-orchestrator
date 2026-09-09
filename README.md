@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 379 tests,
+The test suite is the part built to be evaluated from outside: 393 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -81,7 +81,7 @@ code-generation task.
 | `dx roles list` | List role cards (filter by `--fit`, `--seat`, `--anchored`, `--slug`; `--json`) |
 | `dx roles validate` | Structural checks on role cards |
 | `dx run` | Load role card → inject mandate → route to hardware → invoke pxx |
-| `dx merge` | Pre-merge gate: RL-003 signature checks, optional GUI verify |
+| `dx merge` | Merge gate: RL-003 checks, then `git merge --no-ff` (`--repo`) and `SIGNED`/`MERGED` ledger rows |
 | `dx verify-gui` | Capture screen (SSH or PSOperator observer) → check with a VLM |
 
 Exit codes: `0` success, `1` error or gate failure, `2` Anchored role refused, `3` the task itself failed.
@@ -252,9 +252,11 @@ fails the build if this README drifts from the implementation.
 - **Phase 4** — team mode: a second GPG key in the ledger, Author ≠ Signer
   enforced at the Git level.
 
-Deliberately not implemented yet: the actual `git merge` + ledger append in
-`dx merge`, stubbed with the design recorded in `VISION.md § Reference formats`
-and sequenced in `ROADMAP.md` §1.2.
+Both pipeline stubs are now closed: `dx run` writes evidence bundles (0.9.0) and
+`dx merge` performs the `git merge --no-ff` and appends `SIGNED`/`MERGED` rows
+(0.10.0). What remains open is stated in `ROADMAP.md`: the RL-010 ceremony —
+a signature made interactively over a ledger whose rows attest to real work —
+and `dx verify-gui` against a live desktop.
 
 ## License
 

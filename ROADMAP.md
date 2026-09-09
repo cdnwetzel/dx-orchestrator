@@ -80,7 +80,7 @@ Two decisions worth carrying into §1.2 and the other bundle families:
   closed at `EXIT_ERROR` — not `EXIT_TASK_FAILED`, which would misreport a
   successful task as a failed one.
 
-### 1.2 — Wire `TODO(ledger)` in `cmd_merge.py`
+### 1.2 — Wire `TODO(ledger)` in `cmd_merge.py` — ✅ SHIPPED in 0.10.0
 
 The real `git merge --no-ff` under `MERGE_LOCK.json`, plus `SIGNED` and `MERGED`
 rows appended to `ledger.jsonl` in `SCHEMA.md` canonical form.
@@ -102,9 +102,25 @@ this exact failure on purpose; do not treat it as an edge case.
 lock cleanly rather than corrupting the chain; a test proves the stale-signature
 gate still fires against the *post-append* head.
 
-**Effort:** 3–4 days. **Blocked by:** DevSwarmX Gate 1 for the *live* ledger —
-but not for the reference ledger, which is writable and exists precisely so this
-can be built and tested now. Build against the reference first.
+**Shipped 2026-09-08 in 0.10.0.** Admission record
+`docs/admissions/T-1102-ledger-append.md`, drafted by
+`dx run --required_role tech-lead` and amended twice, before and during the work.
+
+Built against the reference ledger exactly as this entry predicted, without
+waiting on Gate 1. `src/dx/ledger_writer.py` carries the invariants; `dx merge
+--repo <path>` performs the `git merge --no-ff` of the queue file's `sha`.
+
+The sequencing trap is handled by re-reading the head between the two appends,
+and there is a test that reusing the pre-append head is refused. Two further
+findings, both from running it:
+
+- **A test wrote to the operator's real ledger.** The tutorial-transcript test
+  shells out to `dx merge`; harmless while that command only read, a mutation
+  the moment it grew teeth. It now runs against a disposable copy, and a full
+  suite leaves the ledger repository byte-identical.
+- **`fake_ledger` was a fiction that only held while nothing wrote** — a stub
+  verifier reporting a head unrelated to its own rows. `append_row`
+  cross-checked and refused. The fixture is now a real chain.
 
 ### 1.3 — `dx verify-gui` against a live desktop
 

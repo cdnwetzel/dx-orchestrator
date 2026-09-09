@@ -274,19 +274,32 @@ class TestMergeTranscriptFidelity:
     """
 
     @staticmethod
-    def _merge(task_id, *extra):
-        import subprocess
+    def _merge(task_id, *extra, ledger=None):
+        """Runs against a *disposable copy* of the reference ledger.
 
-        return subprocess.run(
-            [sys.executable, "-m", "dx.cli", "merge", task_id, *extra],
-            capture_output=True,
-            text=True,
-            env={
-                "PATH": _SUBPROCESS_PATH,
-                "HOME": str(Path.home()),
-                "PYTHONPATH": str(ROOT / "src"),
-            },
-        )
+        `dx merge` was read-only when these tests were written. It writes now —
+        and with DX_LEDGER_REPO unset it resolves to the operator's own clone at
+        ~/ai/devswarm-ledger-reference. This test appended SIGNED, MERGED and
+        UNLOCK commits to it on every suite run before that was noticed. Any
+        test invoking a writing command needs its own target.
+        """
+        import shutil
+        import subprocess
+        import tempfile
+
+        env = {
+            "PATH": _SUBPROCESS_PATH,
+            "HOME": str(Path.home()),
+            "PYTHONPATH": str(ROOT / "src"),
+        }
+        with tempfile.TemporaryDirectory(prefix="dx-ledger-copy-") as tmp:
+            copy = Path(tmp) / "ledger"
+            shutil.copytree(ledger or REF_LEDGER, copy)
+            env["DX_LEDGER_REPO"] = str(copy)
+            return subprocess.run(
+                [sys.executable, "-m", "dx.cli", "merge", task_id, *extra],
+                capture_output=True, text=True, env=env,
+            )
 
     def test_the_pxx_failure_line_matches_what_cmd_run_prints(self):
         """§6 quoted "pxx task failed." for two releases after 0.7.1 changed it
@@ -335,11 +348,19 @@ class TestMergeTranscriptFidelity:
         not REF_LEDGER.is_dir(),
         reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
     )
+    @staticmethod
+    def _blur(text):
+        """Ledger rows carry a timestamp, so every append yields a different
+        head. Pin the wording, not the digest."""
+        return re.sub(r"\b[0-9a-f]{8,64}\b", "<hash>", text)
+
     def test_the_green_merge_transcript_is_reproducible(self):
         result = self._merge("T-0001")
         assert result.returncode == 0, result.stderr
-        for line in result.stdout.strip().splitlines():
-            assert line.strip() in TUTORIAL, (
+        blurred = self._blur(TUTORIAL)
+        for raw in result.stdout.strip().splitlines():
+            line = self._blur(raw)
+            assert line.strip() in blurred, (
                 "the `dx merge T-0001` transcript in TUTORIAL.md no longer matches "
                 f"what that command prints. Missing:\n  {line}"
             )
@@ -352,8 +373,10 @@ class TestMergeTranscriptFidelity:
         result = self._merge("T-0001", "--force")
         assert result.returncode == 0, result.stderr
         combined = result.stdout + result.stderr
-        for line in combined.strip().splitlines():
-            assert line.strip() in TUTORIAL, (
+        blurred = self._blur(TUTORIAL)
+        for raw in combined.strip().splitlines():
+            line = self._blur(raw)
+            assert line.strip() in blurred, (
                 "the `dx merge --force` transcript in TUTORIAL.md drifted. "
                 f"Missing:\n  {line}"
             )

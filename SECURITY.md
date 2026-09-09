@@ -53,14 +53,25 @@ Stated plainly, because a gate that overstates its coverage is worse than none:
 - **Anything after `--force`.** `--force` bypasses every gate by design, for
   emergency rollback. It announces itself on stderr; it does not stop you.
 
-## Currently stubbed
+## What a successful run does and does not mean
 
-`dx merge` verifies but **does not yet perform the merge or append to the
-ledger**. Do not read a successful `dx merge` as "this was merged and recorded" —
-it means "this passed the signature gate." The `TODO(ledger)` in `cmd_merge.py`
-marks the boundary. `dx run` does write evidence bundles as of 0.9.0; they are
-tamper-evident (`sha256sum -c SHA256SUMS`) but unsigned — they prove a file was
-not altered since the bundle was written, not who wrote it.
+As of 0.10.0 `dx merge` performs the `git merge --no-ff` and appends `SIGNED`
+and `MERGED` rows, so a green run does mean "merged and recorded". Three limits
+survive that:
+
+- **`--force` writes nothing.** It bypasses the gates, and dx will not append
+  rows for an ungated merge — the ledger would then attest to a check that did
+  not happen. A forced merge is your merge, not the gate's.
+- **Evidence bundles are tamper-evident, not signed.** `sha256sum -c SHA256SUMS`
+  proves nothing was altered after the bundle was written; it says nothing about
+  who wrote it.
+- **The approval's provenance is only as good as its key.** The gate proves a
+  registered, currently-valid key signed the current head. Whether that key was
+  generated to the RL-010 standard — interactively, by the accountable human,
+  unreachable by any harness — is a property of your process, not something dx
+  can check.
+
+`dx verify-gui` remains unexercised against a live desktop.
 
 ## Verifying a release
 

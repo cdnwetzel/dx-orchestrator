@@ -5,6 +5,54 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-09-08
+
+### Added
+
+- **`dx merge` performs the merge and appends to the ledger.** ROADMAP §1.2, the
+  second and last of the deliberate pipeline stubs. `src/dx/ledger_writer.py`
+  carries the ledger's invariants rather than the CLI's: append-only (RL-009),
+  SCHEMA.md canonical form, and a `MERGE_LOCK.json` held for the duration.
+  `dx merge <task> --repo <path>` performs `git merge --no-ff` of the queue
+  file's `sha`; without `--repo` the approval is recorded and dx says plainly
+  that it merged nothing.
+
+  **The sequencing trap is handled, and tested.** Appending moves the head an
+  approval binds to, so verification happens before any append and the head is
+  re-read between the `SIGNED` and `MERGED` rows. Reusing the pre-append head
+  writes a row one behind and breaks the chain; `append_row` refuses it, and
+  `TestTheSequencingTrap` proves the refusal. Run `dx merge` twice and the second
+  run is correctly rejected as stale — that is the mechanism working.
+
+  **`--force` writes nothing.** It bypasses the gates, so dx will not append
+  rows: the ledger would otherwise attest to a check that did not happen. Its
+  message says so instead of the old "stub" text.
+
+### Fixed
+
+- **A test was writing to the operator's real ledger.**
+  `test_the_green_merge_transcript_is_reproducible` shells out to `dx merge`,
+  which resolves to `~/ai/devswarm-ledger-reference` when `DX_LEDGER_REPO` is
+  unset. That was harmless while merge only read; the moment it grew teeth,
+  every suite run appended `SIGNED`, `MERGED` and `UNLOCK` commits to the
+  working clone. Restored from `origin/main` — nothing was pushed, so the
+  published ledger was never affected. Transcript tests now run against a
+  disposable copy, and a full suite leaves that repository byte-identical.
+
+  The lesson generalises: a test that was safe against a read-only command
+  becomes a mutation when the command changes, and nothing about the test has to
+  change for that to happen.
+
+- **`fake_ledger` was a fiction that only worked while nothing wrote.** Its stub
+  `verify_chain.py` printed a head unrelated to its own rows, which carried no
+  `prev_hash` at all. `append_row` cross-checks the verifier's claimed head
+  against the actual last row and refused it — correctly. The fixture is now a
+  real chain in a real git repo, with the head computed from the rows.
+
+- `TestCanonicalFormMatchesTheVerifier` imported `verify_chain.py` from the
+  operator's clone, leaving `__pycache__` in it. It copies the file out now: a
+  test has no business writing anything into the ledger repository.
+
 ## [0.9.1] — 2026-09-08
 
 ### Fixed
@@ -641,6 +689,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.10.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.0...v0.8.1

@@ -81,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.9.1
+dx --version    # dx 0.10.0
 pytest          # all green
 ```
 
@@ -373,10 +373,26 @@ Actual output on this box:
 ✅ Signed message binds task_id + current head + role.
 ✅ Separation of duties: author 'Ada Author' ≠ signer 'Rex Reviewer'.
 ✅ All RL-003 checks passed for T-0001.
-🔄 Merging T-0001... (stub — git merge + ledger append not wired yet)
+✅ SIGNED row appended. Head: de031821bcc37883…
+✅ MERGED row appended. Head: a1035cd89aa168ef…
+⚠️  No --repo given, so no git merge was performed. The ledger records the approval only.
+✅ T-0001 merged and recorded.
 ```
 
-Exit code: `0`. Four checks, each of which can fail on its own.
+Exit code: `0`. Four checks, each of which can fail on its own — then two appends.
+
+The head hashes will differ on your machine: rows carry a timestamp, so your
+chain diverges from this transcript the moment you run it. It still verifies
+(`python3 tools/verify_chain.py`), now with five rows.
+
+Pass `--repo <path>` to also perform the `git merge --no-ff` of the queue file's
+`sha` in that repository. Without it, `dx` records the approval and says plainly
+that it merged nothing.
+
+**Run it twice and the second run fails.** The appends moved the head the
+signature binds to, so the approval is now correctly stale — exactly the RL-003
+rejection shown below. That is the mechanism, not a bug: an approval covers one
+exact state of the world.
 
 **Now make it fail.** The signature binds to a specific ledger head, so appending
 any row invalidates it — that is the mechanism, not a bug. Append a row to
@@ -406,7 +422,7 @@ Output:
 
 ```
 ⚠️  --force in effect for T-0001: bypassing the RL-003 signature check.
-🔄 Merging T-0001... (stub — wire to devswarm-ledger)
+🔄 T-0001: gates bypassed, so nothing was written. dx does not append SIGNED or MERGED rows for an ungated merge — the ledger would then attest to a check that did not happen.
 ```
 
 Exit code: `0`. Pass `--verify-gui` as well and the banner says the GUI check was skipped too — `--force` bypasses every gate, and the message now names all of them.
@@ -523,7 +539,7 @@ The lesson worth carrying out of 0.3.0: **a gate without a test is a claim, not 
 
 ---
 
-*Re-validated end to end on 2026-09-08 at dx `0.9.0`, from a Surface Pro 6 running
+*Re-validated end to end on 2026-09-08 at dx `0.10.0`, from a Surface Pro 6 running
 Ubuntu 24.04 in WSL2 against a vLLM endpoint (Qwen3.8-27B-FP8) on the LAN. Every
 transcript in §4–§8 was re-run and re-captured at this version.*
 

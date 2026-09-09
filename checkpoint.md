@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-08
 **Working directory:** `/home/cwe/ai/dx-orchestrator`
-**Version:** 0.9.1
+**Version:** 0.10.0
 
 ## Where we are
 
@@ -17,26 +17,27 @@ resuming, not for history.
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 379 passed |
+| `pytest` | 393 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
 | `mypy src/dx --strict` | clean, 15 files |
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
-| `dx --version` | `dx 0.9.1` |
+| `dx --version` | `dx 0.10.0` |
 | `dx doctor --no-network` | 8/8 green |
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
 | invalid role card | `dx run` refuses to be governed by it |
 | `dx roles validate` | 38/38 pass |
-| `dx merge T-0001` | all-green against the reference ledger, exit 0 |
+| `dx merge T-0001` | all-green, appends SIGNED + MERGED, chain still verifies (5 rows) |
+| `dx merge --repo` | real `git merge --no-ff`, two-parent merge commit |
 | `dx merge` (head moved) | correctly rejects the stale signature (RL-003), exit 1 |
 | `dx run … --dry-run` | routes per manifest (endpoint + model + provider) |
 | Live `dx run` against the vLLM node | generated working code, exit 0; its own tests pass |
 | Evidence bundle from a live run | `dx.role_task.v1` written; `sha256sum -c SHA256SUMS` passes |
 | Live `dx run` via `openai-compatible` | exit 0 — dx wires to any OpenAI-shaped stack |
 | Live `dx run` with a vendor-style `.../v1` endpoint | exit 0 — the trailing `/v1` is corrected and announced |
-| Clean clone from GitHub | 379 tests, ruff, `mypy --strict` all green cold |
+| Clean clone from GitHub | 393 tests, ruff, `mypy --strict` all green cold |
 
 **Lab topology is NOT recorded in this repo.** The live routing table is in
 `~/.config/dx/hardware_manifest.yml` on each driver box; the manifest seeded by
@@ -62,7 +63,7 @@ dx-orchestrator/
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
 ├── scripts/setup_dependencies.sh — idempotent installer
 ├── src/dx/                       — 14 modules (see README)
-└── tests/                        — 379 tests, hermetic fixtures + real GPG keys
+└── tests/                        — 393 tests, hermetic fixtures + real GPG keys
 ```
 
 ## Resume here
@@ -118,7 +119,7 @@ Reviewed for public peer review and cleared, with scope stated.
 
 | | |
 | --- | --- |
-| Clean clone passes cold | ruff, `mypy --strict`, 379 tests, 91% coverage — verified from a fresh `git clone` of the public repo |
+| Clean clone passes cold | ruff, `mypy --strict`, 393 tests, 91% coverage — verified from a fresh `git clone` of the public repo |
 | RL-003 gate | proved against real revoked and expired GPG keys, not captured transcripts |
 | Live run | `dx run` generated working code on lab hardware at 0.8.1, exit 0, and the generated tests pass |
 | Privacy | 0 lab addresses in the tree, now guarded tree-wide by `TestNoLabAddressesAnywhere`. **History is not clean:** commit `e066854` wrote the psoperator home range into `checkpoint.md` while documenting the fix for exactly that problem. Removed from the tree; unremovable from history without a force-push the ruleset now forbids. `psoperator` is the same shape. |
@@ -127,14 +128,14 @@ Reviewed for public peer review and cleared, with scope stated.
 | CI | 6 jobs, Python 3.11/3.12/3.13; GPG **and** real-card **and** merge-transcript tests asserted to run rather than skip |
 
 **Scope of the GO.** Ready for peer review of *the control plane and its gates*.
-Not ready to be described as a working end-to-end factory — two pipeline stages
-are deliberately stubbed, and the repo says so in three places (`README.md`
-Status, `TUTORIAL.md` §9 and its closing boundary, `SECURITY.md` "Currently
-stubbed").
+Both pipeline stubs are closed as of 0.10.0: `dx run` writes evidence bundles
+and `dx merge` merges and appends. What is still not demonstrated is the RL-010
+ceremony — a signature made interactively over a ledger attesting to real work —
+and `dx verify-gui` as a receipted stage (it has run once against a live desktop
+but writes no bundle). Stated in `README.md` Status,
+`TUTORIAL.md` §9 and its closing boundary, and `SECURITY.md`.
 
 **Known and stated, not blockers:**
-- `dx merge` verifies but does not merge or append to the ledger.
-- `dx merge` still verifies but does not merge or append (ROADMAP §1.2).
 - `dx verify-gui` has run against a live desktop once (0.9.1: SSH capture from an
   Xvfb session, checked by a local VLM — YES on a matching expectation, NO on a
   mismatched one), but ROADMAP 1.3 stays open: no `dx.gui_verification.v1`

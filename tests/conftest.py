@@ -4,6 +4,7 @@ Every test that touches dx configuration points DX_CONFIG / DX_ROLES_PATH at
 the synthetic fixtures in this directory, so the suite never depends on the
 sibling clones or on a developer's ~/.config.
 """
+import hashlib
 import json
 from pathlib import Path
 
@@ -60,7 +61,38 @@ def manifest_path() -> Path:
 # without any clone or a keyring.
 # ---------------------------------------------------------------------------
 
-LEDGER_HEAD = "b" * 64
+def _canonical(row):
+    return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _chain(rows):
+    """Turn bare rows into a real hash chain and return (rows, head).
+
+    The fixture used to print a head unrelated to its own rows. That was
+    harmless while `dx merge` only read; once it appended, `append_row`
+    cross-checked the verifier's claim against the actual last row and refused.
+    A fake that cannot survive being written to is not a fake of a ledger.
+    """
+    prev = "0" * 64
+    out = []
+    for row in rows:
+        full = dict(row)
+        full["prev_hash"] = prev
+        out.append(full)
+        prev = hashlib.sha256(_canonical(full).encode()).hexdigest()
+    return out, prev
+
+
+_ROWS, LEDGER_HEAD = _chain(
+    [
+        {"ts": "2026-09-01T00:00:00Z", "task_id": "T-TEST", "action": "ADMITTED",
+         "author_human": "Alice Author", "author_seat": "S4"},
+        {"ts": "2026-09-02T00:00:00Z", "task_id": "T-TEST", "action": "EXECUTED",
+         "author_human": "Alice Author", "author_seat": "S4"},
+        {"ts": "2026-09-03T00:00:00Z", "task_id": "T-OTHER", "action": "ADMITTED",
+         "author_human": "Bob Other", "author_seat": "S6"},
+    ]
+)
 STALE_HEAD = "c" * 64
 
 
@@ -81,17 +113,8 @@ def fake_ledger(tmp_path) -> Path:
         encoding="utf-8",
     )
 
-    rows = [
-        {"ts": "2026-09-01T00:00:00Z", "task_id": "T-TEST", "action": "ADMITTED",
-         "author_human": "Alice Author", "author_seat": "S4"},
-        {"ts": "2026-09-02T00:00:00Z", "task_id": "T-TEST", "action": "EXECUTED",
-         "author_human": "Alice Author", "author_seat": "S4"},
-        {"ts": "2026-09-03T00:00:00Z", "task_id": "T-OTHER", "action": "ADMITTED",
-         "author_human": "Bob Other", "author_seat": "S6"},
-    ]
     (repo / "ledger.jsonl").write_text(
-        "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows),
-        encoding="utf-8",
+        "".join(_canonical(r) + "\n" for r in _ROWS), encoding="utf-8"
     )
 
     (repo / "queue" / "T-TEST.json").write_text(
@@ -111,6 +134,12 @@ def fake_ledger(tmp_path) -> Path:
         "-----BEGIN PGP SIGNATURE-----\n(stub)\n-----END PGP SIGNATURE-----\n",
         encoding="utf-8",
     )
+    import subprocess
+
+    for args in (("init", "-q", "-b", "main"), ("add", "-A"),
+                 ("-c", "user.email=t@e.invalid", "-c", "user.name=t", "commit", "-qm", "seed")):
+        subprocess.run(["git", "-C", str(repo), *args], check=True,
+                       capture_output=True, timeout=30)
     return repo
 
 

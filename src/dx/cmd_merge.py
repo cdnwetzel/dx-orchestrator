@@ -27,6 +27,14 @@ from .ledger_utils import (
     get_task_queue,
     verify_detached_signature,
 )
+from .ledger_writer import (
+    LedgerWriteError,
+    MergeLock,
+    append_row,
+    build_row,
+    git_merge_no_ff,
+    read_head,
+)
 
 
 def _ok(msg: str) -> None:
@@ -54,6 +62,11 @@ def register_merge_subcommand(subparsers: SubParsers) -> None:
         help="Merge gate: RL-003 signature check + optional GUI verification",
     )
     parser.add_argument("task_id", help="Task ID (e.g. T-0007)")
+    parser.add_argument(
+        "--repo",
+        help="Work repository to merge in. Without it dx records the approval "
+        "but performs no git merge, and says so.",
+    )
     parser.add_argument(
         "--signature", "-s",
         help="Path to GPG detached signature (.asc). "
@@ -103,7 +116,11 @@ def cmd_merge(args: argparse.Namespace) -> None:
             "signature check"
             + (" AND GUI verification." if args.verify_gui else ".")
         )
-        _info(f"🔄 Merging {args.task_id}... (stub — wire to devswarm-ledger)")
+        _info(
+            f"🔄 {args.task_id}: gates bypassed, so nothing was written. dx does "
+            f"not append SIGNED or MERGED rows for an ungated merge — the ledger "
+            f"would then attest to a check that did not happen."
+        )
         sys.exit(0)
 
     # 1. Optional GUI verification
@@ -207,12 +224,69 @@ def cmd_merge(args: argparse.Namespace) -> None:
 
     _ok(f"All RL-003 checks passed for {args.task_id}.")
 
-    # TODO(ledger): actually perform `git merge --no-ff` under MERGE_LOCK.json
-    # and append SIGNED (if not already there) + MERGED action rows to
-    # devswarm-ledger/ledger.jsonl per SCHEMA.md canonical form. This is a
-    # write into the shared ledger repo and is deliberately deferred until
-    # Gate 1 unpauses.
-    _info(
-        f"🔄 Merging {args.task_id}... (stub — git merge + ledger append not wired yet)"
-    )
+    # The head moves as soon as anything is appended, and the signature above
+    # was verified against `current_head`. So: verify first (done), then append,
+    # and never re-check that signature afterwards. The SIGNED row records the
+    # head it was actually checked against, so the sequence stays auditable once
+    # the head has moved on.
+    try:
+        with MergeLock(ledger_repo, args.task_id):
+            signed_head = append_row(
+                ledger_repo,
+                build_row(
+                    action="SIGNED",
+                    task_id=args.task_id,
+                    prev_hash=current_head,
+                    author_human="(reviewer)",
+                    author_seat=queue.get("author_seat"),
+                    reviewer_seat=queue.get("reviewer_seat"),
+                    sha=queue.get("sha"),
+                    evidence=(
+                        f"detached signature over task_id+{current_head}+{role} "
+                        f"at {sig_path.name}, verified against that head; "
+                        f"signer {signer.name}"
+                    ),
+                ),
+            )
+            _ok(f"SIGNED row appended. Head: {signed_head[:16]}…")
+
+            merged_sha = None
+            if args.repo:
+                target = Path(args.repo).expanduser()
+                task_sha = queue.get("sha")
+                if not task_sha:
+                    _fail(f"queue file for {args.task_id} has no 'sha' to merge")
+                merged_sha = git_merge_no_ff(target, str(task_sha), task_id=args.task_id)
+                _ok(f"Merged {str(task_sha)[:12]} into {target} — {merged_sha[:12]}")
+
+            # Re-read: the SIGNED append moved the head. Reusing current_head
+            # here would append a row whose prev_hash is two rows stale, and
+            # break the chain this gate exists to protect.
+            head_after_signed = read_head(ledger_repo / "ledger.jsonl")
+            merged_head = append_row(
+                ledger_repo,
+                build_row(
+                    action="MERGED",
+                    task_id=args.task_id,
+                    prev_hash=head_after_signed,
+                    author_seat=queue.get("author_seat"),
+                    reviewer_seat=queue.get("reviewer_seat"),
+                    sha=merged_sha or queue.get("sha"),
+                    evidence=(
+                        f"git merge --no-ff into {args.repo} at {merged_sha}"
+                        if merged_sha
+                        else "no --repo given: approval recorded, no git merge performed"
+                    ),
+                ),
+            )
+            _ok(f"MERGED row appended. Head: {merged_head[:16]}…")
+    except LedgerWriteError as exc:
+        _fail(f"Ledger write failed: {exc}")
+
+    if not args.repo:
+        _warn(
+            "No --repo given, so no git merge was performed. The ledger records "
+            "the approval only."
+        )
+    print(f"✅ {args.task_id} merged and recorded.", flush=True)
     sys.exit(0)

@@ -19,6 +19,7 @@ depends on wall-clock time.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -202,7 +203,22 @@ def _run_merge(*argv):
     args.func(args)
 
 
-def test_merge_all_green_with_a_real_signature(ledger_with_keys, monkeypatch, capsys):
+@pytest.fixture
+def gate_only(monkeypatch):
+    """Isolate the RL-003 crypto gate from the ledger append that follows it.
+
+    `HEAD` here is baked into a committed real signature — `payload.bin` was
+    signed over `T-TEST + HEAD + code_review` — so the fixture's rows cannot be
+    made to hash to it, and `append_row` rightly refuses a prev_hash that does
+    not match the actual last row. These tests are about whether the signature
+    gate holds; appending has its own tests in `test_ledger_writer.py`.
+    """
+    monkeypatch.setattr("dx.cmd_merge.MergeLock", lambda *a, **k: contextlib.nullcontext())
+    monkeypatch.setattr("dx.cmd_merge.append_row", lambda *a, **k: "d" * 64)
+    monkeypatch.setattr("dx.cmd_merge.read_head", lambda *a, **k: "d" * 64)
+
+
+def test_merge_all_green_with_a_real_signature(ledger_with_keys, monkeypatch, capsys, gate_only):
     """The complete RL-003 gate against real crypto: current head, registered
     and currently-valid key, signer != author. This is the all-green path.
     """
