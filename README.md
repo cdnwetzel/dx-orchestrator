@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 425 tests,
+The test suite is the part built to be evaluated from outside: 435 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -81,7 +81,7 @@ code-generation task.
 | `dx roles list` | List role cards (filter by `--fit`, `--seat`, `--anchored`, `--slug`; `--json`) |
 | `dx roles validate` | Structural checks on role cards |
 | `dx run` | Load role card → inject mandate → route to hardware → invoke pxx |
-| `dx merge` | Merge gate: RL-003 checks, then `git merge --no-ff` (`--repo`) and `SIGNED`/`MERGED` ledger rows |
+| `dx merge` | Merge gate: RL-003 checks, then `git merge --no-ff` (`--repo`) and `SIGNED`/`MERGED` ledger rows → writes a `dx.merge_gate.v1` bundle |
 | `dx verify-gui` | Capture screen (SSH or PSOperator observer) → check with a VLM → write a `dx.gui_verification.v1` bundle |
 
 Exit codes: `0` success, `1` error or gate failure, `2` Anchored role refused, `3` the task itself failed.
@@ -127,6 +127,8 @@ it judged stored verbatim under `artifacts/`, the model's YES/NO answer, and a
 a proof (RL-007 — `dx merge` still requires a GPG signature). Same
 `--evidence-dir` / `DX_EVIDENCE_DIR` / `--no-evidence` controls; `--task` sets
 the id it is filed under (default `verify-gui`). Add `--observer` and the bundle also carries a **verified** PSOperator observer attestation bound to the exact frame by hash (signature and freshness checked, `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` required); it fails closed if that provenance cannot be obtained.
+
+`dx merge` writes a `dx.merge_gate.v1` bundle too: the RL-003 decision and its facts — the ledger head the signature was checked against, who signed, whether duties were separated, any advisory GUI check, and the merge commit when `--repo` is given. A refused merge gets a bundle as well, with the failure reason. The path is announced on stderr so `dx merge`'s stdout stays the pinned RL-003 transcript.
 
 ## Configuration
 

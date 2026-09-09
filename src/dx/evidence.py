@@ -80,6 +80,29 @@ GUI_DEFAULT_BOUNDARY: tuple[str, ...] = (
 )
 
 
+MERGE_SCHEMA = "dx.merge_gate.v1"
+
+#: Policy text for the merge-gate family. RL-003 is the binding gate; a GUI
+#: check, if present, is advisory (RL-007). Same standing as DEFAULT_BOUNDARY.
+MERGE_DEFAULT_BOUNDARY: tuple[str, ...] = (
+    "This bundle records that dx merge's RL-003 gate ran and what it decided. A "
+    "passing result means the checks passed at the ledger head recorded here — "
+    "not that the merge is correct or wise.",
+    "The signature was verified against the ledger head at the time. The head "
+    "moves as rows are appended, so the SIGNED row records the head it was "
+    "checked against; a stale signature is refused, never recorded as passing.",
+    "Separation of duties compares names, and is only as good as the "
+    "`author_human` the ledger records. A missing author_human is noted, not "
+    "fabricated, and the check is reported as unenforced.",
+    "A GUI check, when present, is advisory (RL-007). The signature is what "
+    "gates the merge, not the vision model.",
+    "Without `--repo`, no git merge happened — the ledger records the approval "
+    "only, and `merge_gate.merged` is null.",
+    "This receipt is tamper-evident (`SHA256SUMS`), not signed. It proves "
+    "nothing was altered after the fact, not who produced it.",
+)
+
+
 class EvidenceError(RuntimeError):
     """A bundle could not be written, or would have been misleading if it were."""
 
@@ -142,6 +165,33 @@ class GuiVerificationBundle:
     source_head: str | None = None
     checks: dict[str, Check] = field(default_factory=dict)
     boundary: tuple[str, ...] = GUI_DEFAULT_BOUNDARY
+
+
+@dataclass
+class MergeGateBundle:
+    """The inputs a ``dx.merge_gate.v1`` bundle is built from.
+
+    Records the RL-003 gate decision and its facts: the ledger head the
+    signature was checked against, who signed, whether duties were separated,
+    any advisory GUI check, and whether a git merge actually happened.
+    """
+
+    task_id: str
+    title: str
+    passed: bool
+    ledger_repo: str
+    role: str | None = None
+    head_before: str | None = None
+    head_after: str | None = None
+    signer: dict[str, str | None] | None = None
+    author_human: str | None = None
+    separation_of_duties: bool | None = None
+    gui: dict[str, object] | None = None
+    merged: dict[str, str | None] | None = None
+    failure: str | None = None
+    checks: dict[str, Check] = field(default_factory=dict)
+    source_head: str | None = None
+    boundary: tuple[str, ...] = MERGE_DEFAULT_BOUNDARY
 
 
 def _utc_now() -> str:
@@ -348,3 +398,90 @@ def write_gui_bundle(
         {},
         {bundle.screenshot_name: bundle.screenshot},
     )
+
+
+def _render_merge_readme(bundle: MergeGateBundle, generated_utc: str) -> str:
+    lines = [
+        f"# {bundle.title}",
+        "",
+        f"**Schema:** `{MERGE_SCHEMA}` · **Task:** `{bundle.task_id}` · "
+        f"**Generated:** {generated_utc}",
+        f"**Result:** {'PASSED' if bundle.passed else 'FAILED'}",
+        "",
+        "## Merge gate",
+        "",
+        f"- **Ledger:** `{bundle.ledger_repo}`",
+    ]
+    if bundle.role:
+        lines.append(f"- **Approve role:** `{bundle.role}`")
+    if bundle.head_before:
+        lines.append(f"- **Head checked against:** `{bundle.head_before}`")
+    if bundle.head_after:
+        lines.append(f"- **Head after merge rows:** `{bundle.head_after}`")
+    if bundle.signer:
+        lines.append(
+            f"- **Signer:** {bundle.signer.get('name')} "
+            f"<{bundle.signer.get('email') or 'no-email'}>"
+        )
+    if bundle.author_human is not None:
+        lines.append(f"- **Author:** {bundle.author_human}")
+    if bundle.separation_of_duties is not None:
+        lines.append(f"- **Separation of duties:** {'held' if bundle.separation_of_duties else 'VIOLATED'}")
+    if bundle.gui is not None:
+        lines.append(f"- **GUI check (advisory):** {bundle.gui.get('answer')}")
+    if bundle.merged is not None:
+        lines.append(
+            f"- **Merged:** `{bundle.merged.get('task_sha')}` → "
+            f"`{bundle.merged.get('merge_commit')}` in `{bundle.merged.get('repo')}`"
+        )
+    else:
+        lines.append("- **Merged:** no `--repo` given — approval recorded, no git merge")
+    if bundle.failure:
+        lines.append(f"- **Failure:** {bundle.failure}")
+    lines.append("")
+    if bundle.checks:
+        lines += ["## Checks", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
+        for name, check in bundle.checks.items():
+            mark = "✅" if check.ok else "❌"
+            lines.append(f"| `{name}` | {mark} | {check.detail or '—'} |")
+        lines += [""]
+    lines += ["## Boundary — what this bundle does NOT prove", ""]
+    lines += [f"- {line}" for line in bundle.boundary]
+    lines += ["", "## Verify", "", "```sh", "sha256sum -c SHA256SUMS", "```", ""]
+    return "\n".join(lines)
+
+
+def write_merge_bundle(
+    bundle: MergeGateBundle, root: Path, *, now: str | None = None
+) -> Path:
+    """Write a ``dx.merge_gate.v1`` bundle and return its directory.
+
+    Same core as the other families. A failed gate gets a bundle too — the
+    reason a merge was refused is worth as much as a merge that passed.
+    """
+    _check_boundary(bundle.boundary)
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.task_id, generated_utc)
+    manifest: dict[str, object] = {
+        "schema": MERGE_SCHEMA,
+        "title": bundle.title,
+        "task_id": bundle.task_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed},
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "merge_gate": {
+            "ledger_repo": bundle.ledger_repo,
+            "role": bundle.role,
+            "head_before": bundle.head_before,
+            "head_after": bundle.head_after,
+            "signer": bundle.signer,
+            "author_human": bundle.author_human,
+            "separation_of_duties": bundle.separation_of_duties,
+            "gui": bundle.gui,
+            "merged": bundle.merged,
+            "failure": bundle.failure,
+        },
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(out, manifest, _render_merge_readme(bundle, generated_utc), {}, {})

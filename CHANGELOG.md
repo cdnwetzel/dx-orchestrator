@@ -5,6 +5,25 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-09-09
+
+### Added
+
+- **`dx merge` writes a `dx.merge_gate.v1` evidence bundle** — the third and
+  last evidence family the module reserved names for. It records the RL-003
+  decision and its facts: the ledger head the signature was checked against, the
+  verified signer, whether separation of duties held (and that it was unenforced
+  when the ledger has no `author_human`), any advisory GUI check, and the merge
+  commit when `--repo` performed a real `git merge --no-ff`. A refused merge
+  gets a bundle too, carrying the failure reason — a merge the gate stopped is
+  evidence worth as much as one it passed. Same `--evidence-dir` /
+  `DX_EVIDENCE_DIR` / `--no-evidence` controls as the other families.
+- The bundle path is announced on **stderr**, so `dx merge`'s stdout stays the
+  byte-for-byte RL-003 transcript the tutorial pins. The gate flow is unchanged;
+  a thin wrapper catches its exit and emits the bundle from the record the gate
+  accumulated, on both the passing and failing paths. A `--force` bypass writes
+  nothing (no gate ran), exactly as before.
+
 ## [0.14.0] — 2026-09-09
 
 ### Added
@@ -782,6 +801,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.15.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.11.0...v0.12.0

@@ -237,6 +237,59 @@ def test_merge_all_green_with_a_real_signature(ledger_with_keys, monkeypatch, ca
     assert "All RL-003 checks passed" in out
 
 
+def test_a_green_merge_writes_a_merge_gate_bundle(
+    ledger_with_keys, monkeypatch, tmp_path, capsys, gate_only
+):
+    """dx.merge_gate.v1: a passing gate leaves a receipt of what it decided."""
+    repo = _ledger_for_merge(ledger_with_keys, "valid")
+    monkeypatch.setenv("DX_LEDGER_REPO", str(repo))
+    ev = tmp_path / "ev"
+
+    with pytest.raises(SystemExit) as exc:
+        _run_merge("T-TEST", "--evidence-dir", str(ev))
+    assert exc.value.code == 0
+
+    bundles = sorted(ev.glob("T-TEST/*/manifest.json"))
+    assert bundles, "no merge_gate bundle written"
+    m = json.loads(bundles[-1].read_text())
+    assert m["schema"] == "dx.merge_gate.v1"
+    assert m["result"]["passed"] is True
+    mg = m["merge_gate"]
+    assert mg["signer"]["name"] == "Bob Reviewer"
+    assert mg["separation_of_duties"] is True
+    assert mg["merged"] is None  # no --repo
+    assert "advisory" in " ".join(m["boundary"])
+
+
+def test_a_rejected_merge_still_writes_a_bundle(ledger_with_keys, monkeypatch, tmp_path):
+    """A refused merge is evidence too — the reason is worth as much as a pass."""
+    repo = _ledger_for_merge(ledger_with_keys, "revoked")
+    monkeypatch.setenv("DX_LEDGER_REPO", str(repo))
+    ev = tmp_path / "ev"
+
+    with pytest.raises(SystemExit) as exc:
+        _run_merge("T-TEST", "--evidence-dir", str(ev))
+    assert exc.value.code == 1
+
+    bundles = sorted(ev.glob("T-TEST/*/manifest.json"))
+    assert bundles, "a rejected merge wrote no bundle"
+    m = json.loads(bundles[-1].read_text())
+    assert m["schema"] == "dx.merge_gate.v1"
+    assert m["result"]["passed"] is False
+
+
+def test_no_evidence_skips_the_merge_bundle(
+    ledger_with_keys, monkeypatch, tmp_path, gate_only
+):
+    repo = _ledger_for_merge(ledger_with_keys, "valid")
+    monkeypatch.setenv("DX_LEDGER_REPO", str(repo))
+    ev = tmp_path / "ev"
+    with pytest.raises(SystemExit) as exc:
+        _run_merge("T-TEST", "--evidence-dir", str(ev), "--no-evidence")
+    assert exc.value.code == 0
+    assert not ev.exists()
+
+
 @pytest.mark.parametrize("which,reason", [("revoked", "revoked"), ("expired", "expired")])
 def test_merge_rejects_degraded_signatures_end_to_end(
     ledger_with_keys, monkeypatch, capsys, which, reason

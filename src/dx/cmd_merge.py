@@ -12,6 +12,7 @@ must appear in the order they were reached whether stdout is a tty or a pipe.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -19,6 +20,12 @@ from pathlib import Path
 from ._argtypes import SubParsers
 from .cmd_verify import verify_gui
 from .config_loader import get_ledger_repo_path
+from .evidence import (
+    Check,
+    EvidenceError,
+    MergeGateBundle,
+    write_merge_bundle,
+)
 from .ledger_utils import (
     LedgerError,
     canonical_approval_message,
@@ -93,7 +100,93 @@ def register_merge_subcommand(subparsers: SubParsers) -> None:
             "verification. Audit-visible; use only for emergency rollback."
         ),
     )
+    parser.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="Skip the dx.merge_gate.v1 bundle (the gate still runs)",
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        help="Where to write the bundle (default: DX_EVIDENCE_DIR, "
+        "else ~/.local/state/dx/evidence)",
+    )
     parser.set_defaults(func=cmd_merge)
+
+
+# Kept in sync with cmd_run/cmd_verify — receipts live outside any repo under edit.
+DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+
+
+def _evidence_root(args: argparse.Namespace) -> Path:
+    if getattr(args, "evidence_dir", None):
+        return Path(args.evidence_dir).expanduser()
+    env = os.environ.get("DX_EVIDENCE_DIR")
+    return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
+
+
+def _emit_merge_evidence(args: argparse.Namespace, rec: dict[str, object], passed: bool) -> None:
+    """Write a dx.merge_gate.v1 bundle from the accumulated gate record and
+    announce it on stderr — stdout is the pinned RL-003 transcript."""
+    def _d(key: str) -> dict[str, object]:
+        val = rec.get(key)
+        return val if isinstance(val, dict) else {}
+
+    checks: dict[str, Check] = {}
+    if rec.get("head_before") is not None:
+        checks["ledger_chain_verifies"] = Check(ok=True, detail=str(rec.get("head_before"))[:16])
+    if rec.get("signer") is not None:
+        checks["signature_verified"] = Check(
+            ok=rec.get("failure") != "signed_message_mismatch",
+            detail=str(_d("signer").get("name")),
+        )
+    if rec.get("separation_of_duties") is not None:
+        checks["separation_of_duties"] = Check(ok=bool(rec.get("separation_of_duties")))
+    if rec.get("gui") is not None:
+        checks["gui_verification"] = Check(
+            ok=bool(_d("gui").get("verified")),
+            detail=str(_d("gui").get("answer"))[:120],
+        )
+    if rec.get("merged") is not None:
+        checks["git_merged"] = Check(ok=True, detail=str(_d("merged").get("merge_commit"))[:12])
+    bundle = MergeGateBundle(
+        task_id=args.task_id,
+        title=f"Merge gate — {args.task_id}",
+        passed=passed,
+        ledger_repo=str(rec.get("ledger_repo") or ""),
+        role=rec.get("role"),  # type: ignore[arg-type]
+        head_before=rec.get("head_before"),  # type: ignore[arg-type]
+        head_after=rec.get("head_after"),  # type: ignore[arg-type]
+        signer=rec.get("signer"),  # type: ignore[arg-type]
+        author_human=rec.get("author_human"),  # type: ignore[arg-type]
+        separation_of_duties=rec.get("separation_of_duties"),  # type: ignore[arg-type]
+        gui=rec.get("gui"),  # type: ignore[arg-type]
+        merged=rec.get("merged"),  # type: ignore[arg-type]
+        failure=rec.get("failure"),  # type: ignore[arg-type]
+        source_head=rec.get("head_before"),  # type: ignore[arg-type]
+        checks=checks,
+    )
+    try:
+        path = write_merge_bundle(bundle, _evidence_root(args))
+        print(f"🧾 Evidence: {path}", file=sys.stderr, flush=True)
+    except EvidenceError as exc:
+        print(f"⚠️  merge-gate evidence bundle could not be written: {exc}", file=sys.stderr, flush=True)
+
+
+def cmd_merge(args: argparse.Namespace) -> None:
+    """Run the gate, then emit a dx.merge_gate.v1 bundle from what it decided.
+
+    The gate exits via SystemExit at each verdict (0 pass, 1 fail); the bundle
+    is written on the way out, from the record the gate accumulated, unless the
+    gate never really started (a --force bypass, which writes nothing) or
+    --no-evidence was given."""
+    rec: dict[str, object] = {}
+    try:
+        _run_merge(args, rec)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        if rec.get("started") and not args.no_evidence:
+            _emit_merge_evidence(args, rec, passed=(code == 0))
+        raise
 
 
 _HEAD_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -109,7 +202,7 @@ def _norm(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
-def cmd_merge(args: argparse.Namespace) -> None:
+def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
     if args.force:
         _warn(
             f"--force in effect for {args.task_id}: bypassing the RL-003 "
@@ -123,19 +216,25 @@ def cmd_merge(args: argparse.Namespace) -> None:
         )
         sys.exit(0)
 
+    rec["started"] = True
+
     # 1. Optional GUI verification
     if args.verify_gui:
         _info("📷 Running GUI verification...")
         expected = args.expected or "The GUI shows the correct result."
         passed, output = verify_gui(expected)
+        rec["gui"] = {"verified": passed, "answer": output}
         if not passed:
+            rec["failure"] = "gui_verification_failed"
             _fail(f"GUI verification failed: {output}")
         _ok(f"GUI verification passed: {output}")
 
     # 2. Ledger-based signature check (RL-003)
     try:
         ledger_repo = get_ledger_repo_path()
+        rec["ledger_repo"] = str(ledger_repo)
         if not ledger_repo.exists():
+            rec["failure"] = "ledger_not_found"
             _fail(
                 f"devswarm-ledger not found at {ledger_repo}. "
                 "Clone it or set DX_LEDGER_REPO."
@@ -143,6 +242,7 @@ def cmd_merge(args: argparse.Namespace) -> None:
 
         queue = get_task_queue(args.task_id, ledger_repo)
         role = queue.get("approve_role")
+        rec["role"] = role
         if not role:
             raise LedgerError(
                 f"queue file for {args.task_id} has no 'approve_role' field"
@@ -162,16 +262,19 @@ def cmd_merge(args: argparse.Namespace) -> None:
 
         # (0) Verify the ledger chain itself and get the current head hash
         current_head = get_ledger_head(ledger_repo)
+        rec["head_before"] = current_head
         _ok(f"Ledger chain verifies. Head: {current_head[:16]}…")
 
         # (1) Signature verifies against a currently-valid key in docs/keys/
         signer = verify_detached_signature(sig_path, msg_path, ledger_repo)
+        rec["signer"] = {"name": signer.name, "email": signer.email}
         _ok(f"Signature verified. Signer: {signer.name} <{signer.email or 'no-email'}>")
 
         # (2) Signed message payload must be exactly `task_id + head + role`
         expected_msg = canonical_approval_message(args.task_id, current_head, role)
         actual_msg = msg_path.read_text(encoding="utf-8")
         if actual_msg != expected_msg:
+            rec["failure"] = "signed_message_mismatch"
             # Stale and tampered are different failures with different
             # remedies. "Stale" tells the operator to re-sign against the
             # current head — the wrong and actively unsafe advice if the
@@ -203,23 +306,29 @@ def cmd_merge(args: argparse.Namespace) -> None:
 
         # (3) Separation of duties: signer != task's author_human
         author_human = get_task_author_human(args.task_id, ledger_repo)
+        rec["author_human"] = author_human
         if author_human and _norm(author_human) == _norm(signer.name):
+            rec["separation_of_duties"] = False
+            rec["failure"] = "separation_of_duties"
             _fail(
                 f"Separation-of-duties violation: author '{author_human}' "
                 f"and signer '{signer.name}' are the same person."
             )
         if not author_human:
+            rec["separation_of_duties"] = None
             _warn(
                 f"No author_human found in ledger for {args.task_id} — "
                 "cannot enforce signer != author. Proceeding."
             )
         else:
+            rec["separation_of_duties"] = True
             _ok(
                 f"Separation of duties: author '{author_human}' ≠ "
                 f"signer '{signer.name}'."
             )
 
     except LedgerError as exc:
+        rec.setdefault("failure", "pre_merge_check_error")
         _fail(f"Pre-merge check failed: {exc}")
 
     _ok(f"All RL-003 checks passed for {args.task_id}.")
@@ -255,8 +364,14 @@ def cmd_merge(args: argparse.Namespace) -> None:
                 target = Path(args.repo).expanduser()
                 task_sha = queue.get("sha")
                 if not task_sha:
+                    rec["failure"] = "no_sha_to_merge"
                     _fail(f"queue file for {args.task_id} has no 'sha' to merge")
                 merged_sha = git_merge_no_ff(target, str(task_sha), task_id=args.task_id)
+                rec["merged"] = {
+                    "repo": str(target),
+                    "task_sha": str(task_sha),
+                    "merge_commit": merged_sha,
+                }
                 _ok(f"Merged {str(task_sha)[:12]} into {target} — {merged_sha[:12]}")
 
             # Re-read: the SIGNED append moved the head. Reusing current_head
@@ -279,8 +394,10 @@ def cmd_merge(args: argparse.Namespace) -> None:
                     ),
                 ),
             )
+            rec["head_after"] = merged_head
             _ok(f"MERGED row appended. Head: {merged_head[:16]}…")
     except LedgerWriteError as exc:
+        rec["failure"] = "ledger_write_failed"
         _fail(f"Ledger write failed: {exc}")
 
     if not args.repo:

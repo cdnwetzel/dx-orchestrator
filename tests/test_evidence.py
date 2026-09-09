@@ -311,3 +311,82 @@ class TestGuiBundleTamperEvidence:
         blob[-1] ^= 0x01
         shot.write_bytes(bytes(blob))
         assert self._verify(out).returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# dx.merge_gate.v1
+# ---------------------------------------------------------------------------
+
+from dx.evidence import (  # noqa: E402
+    MERGE_DEFAULT_BOUNDARY,
+    MERGE_SCHEMA,
+    MergeGateBundle,
+    write_merge_bundle,
+)
+
+
+def _merge_bundle(**kw) -> MergeGateBundle:
+    base = dict(
+        task_id="T-0001",
+        title="Merge gate — T-0001",
+        passed=True,
+        ledger_repo="/home/x/ledger",
+        role="code_review",
+        head_before="a" * 64,
+        head_after="b" * 64,
+        signer={"name": "Rex Reviewer", "email": "rex@example.invalid"},
+        author_human="Ada Author",
+        separation_of_duties=True,
+        checks={"signature_verified": Check(ok=True, detail="Rex Reviewer")},
+    )
+    base.update(kw)
+    return MergeGateBundle(**base)
+
+
+class TestMergeGateBundle:
+    def test_schema_and_family_tail(self, tmp_path):
+        out = write_merge_bundle(_merge_bundle(), tmp_path)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["schema"] == MERGE_SCHEMA
+        assert m["result"]["passed"] is True
+        mg = m["merge_gate"]
+        assert mg["role"] == "code_review"
+        assert mg["signer"]["name"] == "Rex Reviewer"
+        assert mg["separation_of_duties"] is True
+        assert mg["merged"] is None  # no --repo
+
+    def test_boundary_says_signature_gates_not_the_gui(self, tmp_path):
+        out = write_merge_bundle(_merge_bundle(), tmp_path)
+        boundary = " ".join(json.loads((out / "manifest.json").read_text())["boundary"])
+        assert "advisory" in boundary and "signature is what" in boundary
+
+    def test_a_failed_gate_gets_a_bundle_with_the_reason(self, tmp_path):
+        out = write_merge_bundle(
+            _merge_bundle(passed=False, separation_of_duties=False, failure="separation_of_duties"),
+            tmp_path,
+        )
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["result"]["passed"] is False
+        assert m["merge_gate"]["failure"] == "separation_of_duties"
+
+    def test_a_real_merge_records_the_commit(self, tmp_path):
+        out = write_merge_bundle(
+            _merge_bundle(merged={"repo": "/w", "task_sha": "deadbeef", "merge_commit": "c0ffee"}),
+            tmp_path,
+        )
+        assert json.loads((out / "manifest.json").read_text())["merge_gate"]["merged"]["merge_commit"] == "c0ffee"
+
+    def test_empty_boundary_is_refused(self, tmp_path):
+        with pytest.raises(EvidenceError):
+            write_merge_bundle(_merge_bundle(boundary=()), tmp_path)
+
+    def test_default_boundary_is_the_merge_family_one(self, tmp_path):
+        out = write_merge_bundle(_merge_bundle(), tmp_path)
+        assert tuple(json.loads((out / "manifest.json").read_text())["boundary"]) == MERGE_DEFAULT_BOUNDARY
+
+
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum not on PATH")
+def test_a_fresh_merge_bundle_verifies(tmp_path):
+    out = write_merge_bundle(_merge_bundle(), tmp_path)
+    r = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
+    assert r.returncode == 0
