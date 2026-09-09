@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import shutil
 import socket
 import subprocess
@@ -25,6 +26,18 @@ from .role_registry import get_parse_failures, load_registry
 
 # doctor asks tools for their version; none of them should take longer.
 PROBE_TIMEOUT_S = 15
+
+
+def _observer_health(host: str, port: int) -> str:
+    """One-line health summary from a running PSOperator observer, or raise.
+
+    Split out so `dx doctor` can be tested without psoperator installed — the
+    psoperator import lives here, behind the seam the test patches.
+    """
+    from psoperator.services.observer_client import ObserverClient
+
+    health = ObserverClient(host, port).health()
+    return f"epoch {health.observer_epoch[:8]}…, key {health.attestation_key_id}"
 
 
 def _find_on_path(name: str) -> str | None:
@@ -213,6 +226,19 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                     print(f"⚠️  {label} → {key} not reachable")
         except Exception as exc:
             print(f"⚠️  could not derive probes from manifest: {exc}")
+
+        # Observer health (non-critical). Probed only when the observer is
+        # configured for use — the attestation key path is the intent signal —
+        # so an install that never uses `--observer` sees no warning about it.
+        obs_key = os.environ.get("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH")
+        if obs_key:
+            obs_host = os.environ.get("PSOPERATOR_OBSERVER_HOST", "127.0.0.1")
+            obs_port = int(os.environ.get("PSOPERATOR_OBSERVER_PORT", "8764"))
+            try:
+                summary = _observer_health(obs_host, obs_port)
+                print(f"✅ observer → {obs_host}:{obs_port} healthy ({summary})")
+            except Exception as exc:
+                print(f"⚠️  observer → {obs_host}:{obs_port} not healthy: {exc}")
 
     print("")
     if all_ok:

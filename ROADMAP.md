@@ -219,7 +219,7 @@ remote one does not; both are tested.
 
 Not required for "full", required for "unattended".
 
-### 3.1 — PSOperator process-separated mode on the Orin
+### 3.1 — PSOperator process-separated mode — 🟡 observer done (opti3090)
 
 systemd/OpenRC units so observer, gatekeeper and executor start on boot rather
 than being launched by hand. Prerequisite for 1.3 being repeatable rather than a
@@ -227,6 +227,14 @@ one-off demonstration.
 
 **Acceptance:** a reboot leaves all three healthy; `dx doctor` sees the observer
 without manual intervention.
+
+**Done for the observer (0.14.0):** on opti3090 the observer runs as an OpenRC
+service (`psoperator-observer`, `need xvfb`, `DISPLAY=:99`), so
+`dx verify-gui --observer` binds without a hand-start, and `dx doctor` reports
+observer health when `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` is set. The
+gatekeeper and executor — the input-injection path that `dx run --gui` would
+drive — are not wired here; they belong to whichever box runs that path (the
+Orin in the original plan), not the GUI-verification host.
 
 ### 3.2 — Orchestration daemon
 

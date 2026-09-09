@@ -223,3 +223,38 @@ def test_psoperator_path_is_overridable(all_green, monkeypatch, tmp_path, capsys
     assert "run_agent script missing" in out
     assert str(tmp_path / "elsewhere") in out
     assert "PSOPERATOR_REPO" in out
+
+
+class TestObserverHealthProbe:
+    """§3.1: `dx doctor` should see the observer without manual intervention —
+    but only when the observer is configured for use (the attestation key path
+    is set), so a plain install is not nagged about a service it does not run."""
+
+    def test_healthy_observer_is_reported(self, all_green, monkeypatch, capsys):
+        monkeypatch.setenv("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH", "/x/observer.key")
+        monkeypatch.setenv("PSOPERATOR_OBSERVER_PORT", "8764")
+        monkeypatch.setattr("dx.cmd_doctor._observer_health", lambda h, p: "epoch abc123…, key k")
+        with pytest.raises(SystemExit):
+            _doctor()
+        out = capsys.readouterr().out
+        assert "observer → 127.0.0.1:8764 healthy" in out
+
+    def test_unhealthy_observer_warns_but_does_not_fail(self, all_green, monkeypatch, capsys):
+        monkeypatch.setenv("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH", "/x/observer.key")
+        def boom(h, p):
+            raise RuntimeError("observer unavailable: connection refused")
+        monkeypatch.setattr("dx.cmd_doctor._observer_health", boom)
+        with pytest.raises(SystemExit) as exc:
+            _doctor()
+        out = capsys.readouterr().out
+        assert exc.value.code == 0, out  # non-critical: still all-green
+        assert "observer" in out and "not healthy" in out
+
+    def test_unconfigured_observer_is_not_probed(self, all_green, monkeypatch, capsys):
+        monkeypatch.delenv("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH", raising=False)
+        called = []
+        monkeypatch.setattr("dx.cmd_doctor._observer_health", lambda h, p: called.append(1) or "x")
+        with pytest.raises(SystemExit):
+            _doctor()
+        assert not called
+        assert "observer →" not in capsys.readouterr().out

@@ -5,6 +5,28 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] — 2026-09-09
+
+### Added
+
+- **`dx doctor` probes observer health** — the second half of ROADMAP §3.1's
+  acceptance ("dx doctor sees the observer without manual intervention"). When
+  `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` is set — the signal that this box
+  uses `--observer` — doctor asks the running observer for its health and prints
+  its epoch and attestation key id, or a non-critical warning if it is down. An
+  install that never uses the observer sees nothing about it. The psoperator
+  import sits behind `_observer_health`, a seam the tests patch, so doctor is
+  still testable with psoperator absent.
+
+### Operational (ROADMAP §3.1, on opti3090)
+
+- The PSOperator observer now runs as an OpenRC service (`psoperator-observer`,
+  `need xvfb`, on `DISPLAY=:99`), so `dx verify-gui --observer` binds without a
+  hand-started observer and survives a reboot. Verified: service healthy,
+  `--observer` bound with `signature_verified` and `frame_hash_matches` true and
+  no manual start. §3.1 is closed for the GUI-verification topology; the
+  gatekeeper/executor services (the input-injection path) remain out of scope.
+
 ## [0.13.0] — 2026-09-09
 
 ### Added
@@ -760,6 +782,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.14.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.10.0...v0.11.0
