@@ -81,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.9.0
+dx --version    # dx 0.9.1
 pytest          # all green
 ```
 
@@ -123,7 +123,7 @@ gui_verification:
   vlm_endpoint: "http://orin.lab:11434/api/generate"
   vlm_model: "qwen2.5vl:3b"
   ssh_host: "operator@orin.lab"
-  screenshot_cmd: "import -window root -"
+  screenshot_cmd: "import -window root png:-"
 ```
 
 If your role cards live somewhere other than `~/ai/sdlc-agent-roles/skills/sdlc-role/roles`, either add a top-level `roles_path:` key to this file or set `DX_ROLES_PATH`.

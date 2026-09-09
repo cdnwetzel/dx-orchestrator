@@ -124,7 +124,7 @@ gui_verification:
   vlm_endpoint: "http://vlm-host.example:11434/api/generate"
   vlm_model: "qwen2.5vl:3b"
   ssh_host: "user@vlm-host.example"
-  screenshot_cmd: "import -window root -"          # ImageMagick
+  screenshot_cmd: "import -window root png:-"       # ImageMagick; png:- forces PNG on stdout
 
 psoperator:
   observer_port: 8764

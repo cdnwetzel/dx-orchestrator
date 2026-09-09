@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dx-orchestrator"
-version = "0.9.0"
+version = "0.9.1"
 description = "Sovereign orchestration layer for AI coding agents and GUI automation"
 readme = "README.md"
 requires-python = ">=3.11"

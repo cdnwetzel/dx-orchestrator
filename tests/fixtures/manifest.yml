@@ -21,7 +21,7 @@ gui_verification:
   vlm_endpoint: "http://vlm.invalid:11434/api/generate"
   vlm_model: "test-vl:3b"
   ssh_host: "tester@vlm.invalid"
-  screenshot_cmd: "import -window root -"
+  screenshot_cmd: "import -window root png:-"
 
 psoperator:
   observer_port: 9764

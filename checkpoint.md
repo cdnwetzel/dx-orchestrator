@@ -17,7 +17,7 @@ resuming, not for history.
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 373 passed |
+| `pytest` | 375 passed |
 | coverage | 91% (CI floor 88%) |
 | malformed input | stops the line with a message, never a traceback |
 | `ruff check .` | clean |
@@ -36,7 +36,7 @@ resuming, not for history.
 | Evidence bundle from a live run | `dx.role_task.v1` written; `sha256sum -c SHA256SUMS` passes |
 | Live `dx run` via `openai-compatible` | exit 0 — dx wires to any OpenAI-shaped stack |
 | Live `dx run` with a vendor-style `.../v1` endpoint | exit 0 — the trailing `/v1` is corrected and announced |
-| Clean clone from GitHub | 373 tests, ruff, `mypy --strict` all green cold |
+| Clean clone from GitHub | 375 tests, ruff, `mypy --strict` all green cold |
 
 **Lab topology is NOT recorded in this repo.** The live routing table is in
 `~/.config/dx/hardware_manifest.yml` on each driver box; the manifest seeded by
@@ -62,7 +62,7 @@ dx-orchestrator/
 ├── .github/workflows/ci.yml      — ruff, pytest 3.11–3.13, build
 ├── scripts/setup_dependencies.sh — idempotent installer
 ├── src/dx/                       — 14 modules (see README)
-└── tests/                        — 356 tests, hermetic fixtures + real GPG keys
+└── tests/                        — 375 tests, hermetic fixtures + real GPG keys
 ```
 
 ## Resume here
@@ -118,7 +118,7 @@ Reviewed for public peer review and cleared, with scope stated.
 
 | | |
 | --- | --- |
-| Clean clone passes cold | ruff, `mypy --strict`, 356 tests, 91% coverage — verified from a fresh `git clone` of the public repo |
+| Clean clone passes cold | ruff, `mypy --strict`, 375 tests, 92% coverage — verified from a fresh `git clone` of the public repo |
 | RL-003 gate | proved against real revoked and expired GPG keys, not captured transcripts |
 | Live run | `dx run` generated working code on lab hardware at 0.8.1, exit 0, and the generated tests pass |
 | Privacy | 0 lab addresses in the tree, now guarded tree-wide by `TestNoLabAddressesAnywhere`. **History is not clean:** commit `e066854` wrote the psoperator home range into `checkpoint.md` while documenting the fix for exactly that problem. Removed from the tree; unremovable from history without a force-push the ruleset now forbids. `psoperator` is the same shape. |
@@ -135,7 +135,10 @@ stubbed").
 **Known and stated, not blockers:**
 - `dx merge` verifies but does not merge or append to the ledger.
 - `dx merge` still verifies but does not merge or append (ROADMAP §1.2).
-- `dx verify-gui` has never run against a live desktop.
+- `dx verify-gui` has run against a live desktop once (0.9.1: SSH capture from an
+  Xvfb session, checked by a local VLM — YES on a matching expectation, NO on a
+  mismatched one), but ROADMAP 1.3 stays open: no `dx.gui_verification.v1`
+  bundle is written and PSOperator was not involved.
 - No all-green merge against a *live operational* ledger with a fresh RL-010
   signature. The gate does pass all-green against the public reference ledger
   with a real `gpg --verify` — but that ledger's rows attest to no work and its

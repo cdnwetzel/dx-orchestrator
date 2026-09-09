@@ -5,6 +5,7 @@ host to talk to, and that the verifier's verdict is reported, not trusted as a
 merge gate (dx merge still requires a GPG signature).
 """
 import json
+import subprocess
 
 import pytest
 
@@ -38,7 +39,7 @@ def test_screenshot_cmd_has_a_documented_default(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("DX_CONFIG", str(cfg))
-    assert gui_target().screenshot_cmd == "import -window root -"
+    assert gui_target().screenshot_cmd == "import -window root png:-"
 
 
 class TestNoHostDefaults:
@@ -91,6 +92,44 @@ class TestNoHostDefaults:
             lambda *a, **k: pytest.fail("ssh was invoked with no configured host"),
         )
         assert verify_gui("anything")[0] is False
+
+
+class TestCaptureMustBePng:
+    """Regression: the shipped default `import -window root -` makes ImageMagick
+    write PostScript to stdout, and nothing checked, so the VLM was handed a PS
+    document labelled as a screenshot. Found the first time verify-gui ran
+    against a live desktop (0.9.1).
+    """
+
+    @staticmethod
+    def _fake_ssh(stdout: bytes):
+        def run(cmd, **kwargs):
+            assert cmd[0] == "ssh"
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
+
+        return run
+
+    def test_postscript_capture_is_rejected_and_names_the_fix(self, monkeypatch):
+        ps = b"%!PS-Adobe-3.0\n%%Creator: ImageMagick\n"
+        monkeypatch.setattr("dx.cmd_verify.subprocess.run", self._fake_ssh(ps))
+        passed, detail = verify_gui("anything")
+        assert passed is False
+        assert "capture error" in detail
+        assert "not a PNG" in detail
+        assert "png:-" in detail
+
+    def test_png_capture_reaches_the_vlm(self, monkeypatch):
+        png = b"\x89PNG\r\n\x1a\n fake"
+        monkeypatch.setattr("dx.cmd_verify.subprocess.run", self._fake_ssh(png))
+        seen = {}
+
+        def fake_vlm(data, expected, endpoint, model):
+            seen["data"] = data
+            return (True, "YES")
+
+        monkeypatch.setattr("dx.cmd_verify._verify_with_vlm", fake_vlm)
+        assert verify_gui("anything") == (True, "YES")
+        assert seen["data"] == png
 
 
 def test_capture_error_is_reported_not_raised(monkeypatch):

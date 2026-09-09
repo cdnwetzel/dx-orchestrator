@@ -20,6 +20,8 @@ from typing import Any
 from ._argtypes import SubParsers
 from .config_loader import get_config_path, get_gui_config
 
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
 
 class GuiConfigError(RuntimeError):
     """The manifest's gui_verification section is missing or incomplete."""
@@ -56,7 +58,9 @@ def gui_target(require_ssh: bool = False) -> GuiTarget:
         vlm_endpoint=_require(cfg, "vlm_endpoint", "DX_VLM_ENDPOINT"),
         vlm_model=_require(cfg, "vlm_model", "DX_VLM_MODEL"),
         ssh_host=str(ssh_host) if ssh_host else None,
-        screenshot_cmd=str(cfg.get("screenshot_cmd") or "import -window root -"),
+        # png:- is load-bearing: with a bare "-" ImageMagick writes PostScript to
+        # stdout, and the VLM would be handed a PS document labelled as an image.
+        screenshot_cmd=str(cfg.get("screenshot_cmd") or "import -window root png:-"),
     )
 
 
@@ -91,6 +95,16 @@ def _capture_ssh(host: str, cmd: str) -> bytes:
         )
     if not result.stdout:
         raise RuntimeError(f"SSH screenshot from {host} returned no image data")
+    if not result.stdout.startswith(PNG_MAGIC):
+        # ImageMagick's `import ... -` writes PostScript to stdout, and
+        # `screencapture` on macOS refuses stdout entirely. Both were silently
+        # forwarded to the VLM as an "image" before this check existed.
+        head = result.stdout[:8]
+        raise RuntimeError(
+            f"SSH screenshot from {host} is not a PNG (starts with {head!r}); "
+            f"screenshot_cmd must write PNG to stdout — with ImageMagick use "
+            f"`import -window root png:-`"
+        )
     return result.stdout
 
 

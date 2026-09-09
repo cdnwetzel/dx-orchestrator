@@ -5,6 +5,39 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] — 2026-09-09
+
+### Fixed
+
+- **The default `screenshot_cmd` did not produce an image.** `import -window
+  root -` makes ImageMagick write **PostScript** to stdout, not PNG, and nothing
+  checked — so `dx verify-gui` base64-encoded a PS document and sent it to the
+  vision model as a screenshot. Every manifest seeded by
+  `setup_dependencies.sh`, the tutorial's example and the module default all
+  carried it. The default is now `import -window root png:-`, which forces the
+  format. **If your manifest was seeded before 0.9.1, change it** — the old
+  string is now rejected loudly rather than forwarded silently.
+
+### Added
+
+- `_capture_ssh` checks the PNG magic bytes and fails with a `capture error`
+  naming the fix. `TestCaptureMustBePng` pins both directions: PostScript is
+  rejected with the hint, and a real PNG reaches the VLM unchanged.
+
+### Verified
+
+- `dx verify-gui` has now run against a live desktop for the first time: an
+  Xvfb + Openbox session on a headless Linux box, captured over SSH, checked by
+  a local vision model. A matching expectation returned YES in under five
+  seconds; a mismatched one returned NO. That is the SSH-capture path only —
+  ROADMAP 1.3 remains open because no `dx.gui_verification.v1` bundle is
+  written and PSOperator's observer was not involved. Two operational notes
+  from that run: the VLM call is capped at 30 s, so a cold model that takes
+  longer to load fails with `Read timed out` until it is warmed; and macOS
+  refuses screen reads from SSH-spawned processes until the sshd wrapper is
+  granted Screen Recording, so a Mac needs that one-time approval before it can
+  be an `ssh_host`.
+
 ## [0.9.0] — 2026-09-08
 
 ### Added
@@ -573,6 +606,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.9.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.7.2...v0.8.0
