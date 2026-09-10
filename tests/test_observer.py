@@ -106,3 +106,53 @@ def test_a_frame_that_was_not_attested_is_refused(key):
     other.save(buf, format="PNG")
     with pytest.raises(ObserverError, match="frame hash mismatch"):
         verify_attested_frame(att, buf.getvalue(), key, now=1001.0)
+
+
+class TestFrameHashContract:
+    """The cross-repo invariant with no guard until now: dx.observer's reader and
+    psoperator's writer must agree on the frame hash. dx recomputes
+    sha256(RGB pixels) of a PNG; psoperator computes it from a PIL image at
+    capture. The day psoperator changes its RGB packing or `convert("RGB")`, this
+    fails in CI — not fails closed at a customer's desk. Same discipline as the
+    ledger's canonical-form contract test: exercise both real code paths and
+    assert byte-identical output."""
+
+    @staticmethod
+    def _png(img) -> bytes:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_rgb_image_hashes_identically_both_ways(self):
+        from psoperator.perception.capture import Frame
+
+        img = Image.new("RGB", (7, 5), (10, 20, 30))
+        img.putpixel((2, 3), (200, 100, 50))
+        # psoperator's real writer path:
+        psop_hash = Frame.from_image(0, img).sha256
+        # dx's real reader path, from the encoded PNG:
+        dx_hash = frame_rgb_sha256(self._png(img))
+        assert dx_hash == psop_hash
+
+    def test_agreement_holds_through_an_rgba_source(self):
+        """psoperator converts to RGB; dx converts to RGB. A source with alpha
+        must still land on the same digest, or the two would silently disagree on
+        any screenshot with a cursor/overlay alpha channel."""
+        from psoperator.perception.capture import Frame
+
+        rgba = Image.new("RGBA", (6, 6), (12, 34, 56, 200))
+        rgba.putpixel((1, 1), (250, 0, 0, 255))
+        psop_hash = Frame.from_image(1, rgba).sha256  # converts to RGB internally
+        dx_hash = frame_rgb_sha256(self._png(rgba))   # convert("RGB") on the PNG
+        assert dx_hash == psop_hash
+
+    def test_a_different_frame_does_not_collide(self):
+        """The guard is worthless if every image hashes the same — prove the two
+        agree on a *distinction*, not just a value."""
+        from psoperator.perception.capture import Frame
+
+        a = Image.new("RGB", (4, 4), (0, 0, 0))
+        b = Image.new("RGB", (4, 4), (0, 0, 1))
+        assert Frame.from_image(0, a).sha256 == frame_rgb_sha256(self._png(a))
+        assert Frame.from_image(0, b).sha256 == frame_rgb_sha256(self._png(b))
+        assert frame_rgb_sha256(self._png(a)) != frame_rgb_sha256(self._png(b))
