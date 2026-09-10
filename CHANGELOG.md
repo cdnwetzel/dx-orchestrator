@@ -5,6 +5,42 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] — 2026-09-10
+
+### Added
+
+- **The RL-010 approval seam for staged actions** (DevSwarmX Decision 0017;
+  sovereign HITL roadmap, Phase B). Three gates, each built tests-first,
+  because each is a thing a green checkmark could otherwise launder past:
+  - **Key residency is a discriminator, not a word.** `dx.approval_key`
+    reads `gpg --with-colons --list-secret-keys` field 15: `+` for an
+    on-disk secret, `#` for an absent one, the token serial only for a
+    smartcard stub. A real approval row claiming the RL-010 standard
+    requires the card shape; the residency check runs where the row is
+    produced, because verification holds only public keys and cannot see
+    residency. Pinned against both a real generated software key and the
+    documented card format.
+  - **The mechanism is derived by the verifier, never asserted by the
+    signer.** `approval.mechanism` is set from the key's residency; a
+    software key whose row *claims* the hardware standard is refused as
+    laundering, and the bundle writer rejects any approval whose mechanism
+    is not a verifier-derived value — the 0.15.0 unmarked-fallback lesson:
+    a weak approval must not wear a strong label.
+  - **The staleness gate is the runner's re-verification, not the
+    scenario.** `execute_approved_stage` re-observes the world at execution
+    time and re-checks all four bindings (ledger head, frame hash, payload
+    hash, bundle hash) against the approved row; if any moved it refuses,
+    names the binding, and the executor is never called. An approval means
+    this exact world-state — new head, new frame, new payload -> stale ->
+    re-review (RL-003).
+- The hermetic test double is barred by construction: doubles register
+  under `docs/keys/test-doubles/`, which the real keyring builder never
+  reads — the 0.10.0 fake_ledger lesson. A double-signed row fails
+  verification even when every policy field is green.
+
+Tests: 29 new across the seam (2 gpg-backed, collected-but-skipped without
+gpg so collection stays stable). Full suite 494 passed. Closes #2.
+
 ## [0.18.0] — 2026-09-10
 
 ### Added
@@ -866,6 +902,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.19.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.15.0...v0.16.0
