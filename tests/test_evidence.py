@@ -390,3 +390,134 @@ def test_a_fresh_merge_bundle_verifies(tmp_path):
     out = write_merge_bundle(_merge_bundle(), tmp_path)
     r = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
     assert r.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# dx.staged_action.v1
+# ---------------------------------------------------------------------------
+
+from dx.evidence import (  # noqa: E402
+    STAGED_DEFAULT_BOUNDARY,
+    STAGED_SCHEMA,
+    StagedActionBundle,
+    classify_bundle_risk,
+    write_staged_action_bundle,
+)
+
+
+class TestBundleRiskClassification:
+    """Per-action risk is a floor; the bundle is at least as risky, and aggregate
+    reach pushes it up. Tested for the case the whole rule exists for: a pile of
+    individually-trivial actions is not trivial in aggregate."""
+
+    def test_all_t1_with_no_reach_stays_t1(self):
+        cls, reasons, any_t3 = classify_bundle_risk(["T1", "T1", "T0"])
+        assert cls == "T1" and reasons == [] and any_t3 is False
+
+    def test_any_t3_hard_blocks(self):
+        cls, reasons, any_t3 = classify_bundle_risk(["T0", "T3"])
+        assert cls == "T3" and any_t3 is True and "action_class_T3" in reasons
+
+    def test_cross_application_reach_is_at_least_t2(self):
+        cls, reasons, _ = classify_bundle_risk(["T1"], cross_application=True)
+        assert cls == "T2" and "cross_application_reach" in reasons
+
+    def test_thirty_t1s_at_one_form_still_needs_t2(self):
+        """The headline aggregate case: 30 individually-T1 actions escalate."""
+        cls, reasons, _ = classify_bundle_risk(["T1"] * 30, action_count=30)
+        assert cls == "T2"
+        assert any(r.startswith("action_count") for r in reasons)
+
+    def test_aggregate_diff_over_80pct_is_at_least_t2(self):
+        cls, reasons, _ = classify_bundle_risk(["T1"], aggregate_diff_pct=85.0)
+        assert cls == "T2" and any("aggregate_diff_cap" in r for r in reasons)
+
+    def test_a_sensitive_target_is_at_least_t2(self):
+        cls, reasons, _ = classify_bundle_risk(["T0"], sensitive_targets=1)
+        assert cls == "T2" and any("sensitive_targets" in r for r in reasons)
+
+
+def _staged(**kw) -> StagedActionBundle:
+    per_action = kw.pop("per_action_risk", ["T0", "T1"])
+    cls, reasons, _ = classify_bundle_risk(per_action, action_count=len(per_action))
+    base = dict(
+        stage_id="S-0001",
+        title="Stage — invoice entry",
+        state="STAGED",
+        staged_sequence={
+            "sequence_id": "abc",
+            "actions": [
+                {"ord": 1, "type": "focus_window", "target": {"element_id": 312}, "risk": "T0"},
+                {"ord": 2, "type": "set_field", "target": {"element_id": 318}, "risk": "T1"},
+            ],
+        },
+        per_action_risk=per_action,
+        bundle_risk_class=cls,
+        risk_reasons=reasons,
+        frame_hash="f" * 64,
+        ledger_head="a" * 64,
+        trigger_rule="policy.invoice.v1#3",
+        routes_to_seat="workflow-operator",
+        checks={"element_ids_resolve": Check(ok=True, detail="2/2 resolved")},
+    )
+    base.update(kw)
+    return StagedActionBundle(**base)
+
+
+class TestStagedActionBundle:
+    def test_schema_state_and_family_tail(self, tmp_path):
+        out = write_staged_action_bundle(_staged(), tmp_path)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["schema"] == STAGED_SCHEMA
+        sa = m["staged_action"]
+        assert sa["state"] == "STAGED"
+        assert sa["routes_to_seat"] == "workflow-operator"
+        assert sa["bindings"]["frame_hash"] == "f" * 64
+        assert sa["staged_sequence"] == "artifacts/staged_sequence.json"
+        assert sa["approval"] is None
+
+    def test_the_staged_sequence_is_stored_for_the_approver(self, tmp_path):
+        out = write_staged_action_bundle(_staged(), tmp_path)
+        seq = json.loads((out / "artifacts" / "staged_sequence.json").read_text())
+        assert seq["actions"][1]["target"]["element_id"] == 318
+
+    def test_a_rejected_stage_still_gets_a_bundle(self, tmp_path):
+        out = write_staged_action_bundle(_staged(state="REJECTED", passed=False), tmp_path)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["staged_action"]["state"] == "REJECTED"
+        assert m["result"]["passed"] is False
+
+    def test_an_unknown_state_is_refused(self, tmp_path):
+        with pytest.raises(EvidenceError, match="state"):
+            write_staged_action_bundle(_staged(state="YOLO"), tmp_path)
+
+    def test_an_empty_boundary_is_refused(self, tmp_path):
+        with pytest.raises(EvidenceError):
+            write_staged_action_bundle(_staged(boundary=()), tmp_path)
+
+    def test_boundary_says_a_stage_is_a_proposal_not_an_act(self, tmp_path):
+        out = write_staged_action_bundle(_staged(), tmp_path)
+        boundary = " ".join(json.loads((out / "manifest.json").read_text())["boundary"])
+        assert "not an act" in boundary or "not prove anything executed" in boundary
+        assert "one world-state" in boundary  # staleness contract
+
+    def test_an_approved_stage_records_the_signed_binding(self, tmp_path):
+        approval = {
+            "approval_class": "human_attested",
+            "signed_message": "S-0001+bundlehash+payloadhash+framehash+head+workflow-operator",
+            "signature": "c" * 40,
+            "mechanism": "touch-sign token",
+        }
+        out = write_staged_action_bundle(_staged(state="APPROVED", approval=approval), tmp_path)
+        assert json.loads((out / "manifest.json").read_text())["staged_action"]["approval"] == approval
+
+    def test_default_boundary_is_the_staged_family_one(self, tmp_path):
+        out = write_staged_action_bundle(_staged(), tmp_path)
+        assert tuple(json.loads((out / "manifest.json").read_text())["boundary"]) == STAGED_DEFAULT_BOUNDARY
+
+
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum not on PATH")
+def test_a_fresh_staged_bundle_verifies(tmp_path):
+    out = write_staged_action_bundle(_staged(), tmp_path)
+    r = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
+    assert r.returncode == 0

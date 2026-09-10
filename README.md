@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 442 tests,
+The test suite is the part built to be evaluated from outside: 457 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -129,6 +129,8 @@ it judged stored verbatim under `artifacts/`, the model's YES/NO answer, and a
 a proof (RL-007 — `dx merge` still requires a GPG signature). Same
 `--evidence-dir` / `DX_EVIDENCE_DIR` / `--no-evidence` controls; `--task` sets
 the id it is filed under (default `verify-gui`). Add `--observer` and the bundle also carries a **verified** PSOperator observer attestation bound to the exact frame by hash (signature and freshness checked, `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` required); it fails closed if that provenance cannot be obtained.
+
+`dx.staged_action.v1` is the fourth family, for the desktop staging layer: a proposed multi-step action bound to a perceived world-state, with a bundle-level risk class and the named human seat it routes to — a draft for a human to approve, never an act. See `docs/` and the `workflow-stager` / `workflow-operator` role cards.
 
 `dx merge` writes a `dx.merge_gate.v1` bundle too: the RL-003 decision and its facts — the ledger head the signature was checked against, who signed, whether duties were separated, any advisory GUI check, and the merge commit when `--repo` is given. A refused merge gets a bundle as well, with the failure reason. The path is announced on stderr so `dx merge`'s stdout stays the pinned RL-003 transcript.
 

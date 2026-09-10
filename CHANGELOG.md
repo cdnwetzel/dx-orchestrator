@@ -5,6 +5,35 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] — 2026-09-10
+
+### Added
+
+- **`dx.staged_action.v1` — the staging-layer evidence family** (sovereign HITL
+  roadmap, Phase B.2). A staged action is a *proposal*: an ordered multi-step
+  sequence bound to a perceived world-state, filed for a human to approve. The
+  bundle stores the sequence (`artifacts/staged_sequence.json`, element-ID bound),
+  a per-action and **bundle-level** risk class, the world-state bindings (frame
+  hash, ledger head, trigger rule), the named human seat it routes to, an optional
+  approval record, and a boundary block whose lead line is that a stage is a draft
+  to approve, never an act. Same shared writer, `SHA256SUMS`, mandatory boundary;
+  a rejected or stale stage gets a bundle too. Rows carry hashes only (RL-011).
+- **`classify_bundle_risk`** — the deterministic aggregate-risk rule as testable
+  dx code: any T3 hard-blocks; cross-application reach, aggregate diff over 80%,
+  more than 25 actions, or any sensitive target each floor the bundle at T2. The
+  case the rule exists for — thirty individually-T1 edits at one form escalating to
+  T2 — is pinned by test.
+- The staging pair of role cards ships alongside in `sdlc-agent-roles`:
+  `workflow-stager` (the Anchored agent that drafts and stops) and
+  `workflow-operator` (the Anchored human seat that approves), split so the builder
+  of a proposal is never its approver. Both refuse `dx run` with exit 2.
+
+### Note
+
+- The ledger integration rides the existing `action` enum
+  (`EVIDENCE → REVIEWED → SIGNED → EXECUTED`) rather than adding row types — no
+  charter change. The cleaner six-row-type taxonomy is kept as long-term vision.
+
 ## [0.16.0] — 2026-09-09
 
 ### Changed
@@ -817,6 +846,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.17.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.13.0...v0.14.0

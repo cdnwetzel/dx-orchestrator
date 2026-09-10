@@ -103,6 +103,77 @@ MERGE_DEFAULT_BOUNDARY: tuple[str, ...] = (
 )
 
 
+STAGED_SCHEMA = "dx.staged_action.v1"
+
+#: Policy text for the staged-action family. A stage is a *proposal*, bound to a
+#: perceived world-state; it is never an act, and the model's part of it is
+#: advisory. Same standing as the other boundaries — a `compliance-privacy`
+#: judgement, so changing it is a policy change.
+STAGED_DEFAULT_BOUNDARY: tuple[str, ...] = (
+    "This bundle records that a multi-step action was assembled and bound to a "
+    "perceived world-state. It does not prove the proposal is correct, safe, or "
+    "desirable.",
+    "It does not prove anything executed. Execution is a separate, separately "
+    "receipted step that requires a human approval bound to the current head and "
+    "frame.",
+    "The model's extraction and any element targeting are advisory evidence, "
+    "never a proof. A stage is a draft for a human to approve, not an act.",
+    "`result.passed` here means the bundle is well-formed and bound — not that it "
+    "was approved. An approval is a signed row against the current world-state; "
+    "absent that, this is a proposal and nothing more.",
+    "The bundle holds hashes and redacted references, not live screen content or "
+    "extracted secrets (RL-011). What the payload actually is lives only where the "
+    "operator controls it.",
+    "An approval binds exactly one world-state: `stage_id + bundle_hash + "
+    "payload_hash + frame_hash + head + role`. If any of those moved, the approval "
+    "is stale and the stage must be re-presented, never auto-retried.",
+)
+
+#: Deterministic bundle-level risk escalation (T0–T3). Per-action classes are a
+#: floor; the bundle is at least as risky as its worst action, and reasons push it
+#: up. This is the dx-side, testable expression of the gatekeeper's aggregate rule:
+#: a hundred small edits at one form is not a small change.
+_RISK_ORDER = ("T0", "T1", "T2", "T3")
+
+
+def classify_bundle_risk(
+    per_action: list[str],
+    *,
+    cross_application: bool = False,
+    aggregate_diff_pct: float = 0.0,
+    action_count: int = 0,
+    sensitive_targets: int = 0,
+) -> tuple[str, list[str], bool]:
+    """Return (bundle_class, reasons, any_T3).
+
+    Rules (a floor, never a ceiling): any T3 → hard-block; cross-application reach
+    → at least T2; aggregate diff over 80% → at least T2; more than 25 actions →
+    at least T2; any sensitive target → at least T2. The class is the max of the
+    per-action floor and every reason's floor.
+    """
+    reasons: list[str] = []
+    floor_idx = max((_RISK_ORDER.index(a) for a in per_action), default=0)
+    any_t3 = "T3" in per_action
+    if any_t3:
+        reasons.append("action_class_T3")
+    at_least_t2 = _RISK_ORDER.index("T2")
+    if cross_application:
+        reasons.append("cross_application_reach")
+        floor_idx = max(floor_idx, at_least_t2)
+    if aggregate_diff_pct > 80.0:
+        reasons.append(f"aggregate_diff_cap:{aggregate_diff_pct:.0f}%")
+        floor_idx = max(floor_idx, at_least_t2)
+    if action_count > 25:
+        reasons.append(f"action_count:{action_count}")
+        floor_idx = max(floor_idx, at_least_t2)
+    if sensitive_targets > 0:
+        reasons.append(f"sensitive_targets:{sensitive_targets}")
+        floor_idx = max(floor_idx, at_least_t2)
+    if any_t3:
+        floor_idx = _RISK_ORDER.index("T3")
+    return _RISK_ORDER[floor_idx], reasons, any_t3
+
+
 class EvidenceError(RuntimeError):
     """A bundle could not be written, or would have been misleading if it were."""
 
@@ -192,6 +263,40 @@ class MergeGateBundle:
     checks: dict[str, Check] = field(default_factory=dict)
     source_head: str | None = None
     boundary: tuple[str, ...] = MERGE_DEFAULT_BOUNDARY
+
+
+@dataclass
+class StagedActionBundle:
+    """The inputs a ``dx.staged_action.v1`` bundle is built from.
+
+    A staged action is a *proposal*: an ordered sequence bound to a perceived
+    world-state, filed for a human to approve. The bundle stores the sequence and
+    the bindings so the approver reviews what will actually execute, not a summary.
+    """
+
+    stage_id: str
+    title: str
+    #: STAGED | APPROVED | EXECUTED | REJECTED | STALE
+    state: str
+    #: the ordered actions + parameters + element bindings (written as JSON)
+    staged_sequence: dict[str, object]
+    per_action_risk: list[str] = field(default_factory=list)
+    bundle_risk_class: str = "T0"
+    risk_reasons: list[str] = field(default_factory=list)
+    #: the world-state this stage is bound to
+    frame_hash: str | None = None
+    ledger_head: str | None = None
+    trigger_rule: str | None = None
+    #: the named human seat the stage routes to (never an agent)
+    routes_to_seat: str | None = None
+    #: observer-produced; the windows zeroed before staging (RL-011)
+    redaction_manifest: dict[str, object] | None = None
+    #: present only once APPROVED — a signed row against one world-state
+    approval: dict[str, object] | None = None
+    passed: bool = True
+    source_head: str | None = None
+    checks: dict[str, Check] = field(default_factory=dict)
+    boundary: tuple[str, ...] = STAGED_DEFAULT_BOUNDARY
 
 
 def _utc_now() -> str:
@@ -485,3 +590,116 @@ def write_merge_bundle(
         "boundary": list(bundle.boundary),
     }
     return _finalize(out, manifest, _render_merge_readme(bundle, generated_utc), {}, {})
+
+
+_STAGED_STATES = ("STAGED", "APPROVED", "EXECUTED", "REJECTED", "STALE")
+
+
+def _render_staged_readme(bundle: StagedActionBundle, generated_utc: str) -> str:
+    lines = [
+        f"# {bundle.title}",
+        "",
+        f"**Schema:** `{STAGED_SCHEMA}` · **Stage:** `{bundle.stage_id}` · "
+        f"**Generated:** {generated_utc}",
+        f"**State:** {bundle.state} · **Result:** {'PASSED' if bundle.passed else 'FAILED'}",
+        "",
+        "## Staged action",
+        "",
+        f"- **Bundle risk:** {bundle.bundle_risk_class}"
+        + (f" ({', '.join(bundle.risk_reasons)})" if bundle.risk_reasons else ""),
+        f"- **Per-action risk:** {', '.join(bundle.per_action_risk) or '—'}",
+    ]
+    if bundle.routes_to_seat:
+        lines.append(f"- **Routes to seat:** {bundle.routes_to_seat}")
+    lines += ["", "## World-state bindings", ""]
+    lines += [
+        f"- **Frame hash:** `{bundle.frame_hash}`",
+        f"- **Ledger head:** `{bundle.ledger_head}`",
+    ]
+    if bundle.trigger_rule:
+        lines.append(f"- **Trigger rule:** `{bundle.trigger_rule}`")
+    lines += ["- **Staged sequence:** `artifacts/staged_sequence.json`"]
+    if bundle.redaction_manifest is not None:
+        lines.append("- **Redaction manifest:** `artifacts/redaction_manifest.json`")
+    if bundle.approval is not None:
+        lines.append(
+            f"- **Approval:** {bundle.approval.get('approval_class')} "
+            f"(mechanism: {bundle.approval.get('mechanism')})"
+        )
+    lines.append("")
+    if bundle.checks:
+        lines += ["## Checks", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
+        for name, check in bundle.checks.items():
+            mark = "✅" if check.ok else "❌"
+            lines.append(f"| `{name}` | {mark} | {check.detail or '—'} |")
+        lines += [""]
+    lines += ["## Boundary — what this bundle does NOT prove", ""]
+    lines += [f"- {line}" for line in bundle.boundary]
+    lines += ["", "## Verify", "", "```sh", "sha256sum -c SHA256SUMS", "```", ""]
+    return "\n".join(lines)
+
+
+def write_staged_action_bundle(
+    bundle: StagedActionBundle, root: Path, *, now: str | None = None
+) -> Path:
+    """Write a ``dx.staged_action.v1`` bundle and return its directory.
+
+    Same core as the other families — directory layout, ``SHA256SUMS``, mandatory
+    boundary. A rejected or stale stage gets a bundle too; the reason a proposal
+    did not proceed is worth as much as one that did. The staged sequence and the
+    redaction manifest are stored as artifacts; the ledger only ever sees hashes.
+    """
+    _check_boundary(bundle.boundary)
+    if bundle.state not in _STAGED_STATES:
+        raise EvidenceError(
+            f"unknown staged-action state {bundle.state!r}; expected one of {_STAGED_STATES}"
+        )
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.stage_id, generated_utc)
+
+    text_artifacts = {
+        "staged_sequence.json": json.dumps(
+            bundle.staged_sequence, indent=2, sort_keys=True
+        )
+        + "\n"
+    }
+    if bundle.redaction_manifest is not None:
+        text_artifacts["redaction_manifest.json"] = (
+            json.dumps(bundle.redaction_manifest, indent=2, sort_keys=True) + "\n"
+        )
+
+    manifest: dict[str, object] = {
+        "schema": STAGED_SCHEMA,
+        "title": bundle.title,
+        "stage_id": bundle.stage_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed},
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "staged_action": {
+            "state": bundle.state,
+            "risk": {
+                "per_action": bundle.per_action_risk,
+                "bundle_class": bundle.bundle_risk_class,
+                "reasons": bundle.risk_reasons,
+                "any_T3": "T3" in bundle.per_action_risk,
+            },
+            "bindings": {
+                "frame_hash": bundle.frame_hash,
+                "ledger_head": bundle.ledger_head,
+                "trigger_rule": bundle.trigger_rule,
+            },
+            "routes_to_seat": bundle.routes_to_seat,
+            "staged_sequence": "artifacts/staged_sequence.json",
+            "redaction_manifest": (
+                "artifacts/redaction_manifest.json"
+                if bundle.redaction_manifest is not None
+                else None
+            ),
+            "approval": bundle.approval,
+        },
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(
+        out, manifest, _render_staged_readme(bundle, generated_utc), text_artifacts, {}
+    )
