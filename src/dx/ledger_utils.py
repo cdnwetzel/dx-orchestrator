@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dx.approval_key import TEST_DOUBLE_DIRNAME
+
 
 class LedgerError(RuntimeError):
     """Ledger state is inconsistent or unreachable — stop the line."""
@@ -184,11 +186,25 @@ def _gpg(
         ) from exc
 
 
+# A hermetic CI test double registers its public key one directory deeper, in
+# docs/keys/<TEST_DOUBLE_DIRNAME>/, so the real keyring below never contains it
+# and a row it signed fails verify_detached_signature by construction — the
+# 0.10.0 fake_ledger lesson (bar the fixture structurally, not by policy). The
+# glob is non-recursive AND the subdirectory is skipped explicitly, so barring
+# survives a later change to rglob.
+def _registered_key_files(keys_dir: Path) -> list[Path]:
+    return sorted(
+        asc
+        for asc in keys_dir.glob("*.asc")
+        if asc.parent.name != TEST_DOUBLE_DIRNAME
+    )
+
+
 def _import_registered_keys(ledger_repo: Path, keyring: Path) -> None:
     keys_dir = ledger_repo / "docs" / "keys"
     if not keys_dir.is_dir():
         raise LedgerError(f"docs/keys directory not found at {keys_dir}")
-    for asc in sorted(keys_dir.glob("*.asc")):
+    for asc in _registered_key_files(keys_dir):
         result = _gpg("--import", str(asc), keyring=keyring)
         if result.returncode != 0:
             raise LedgerError(
