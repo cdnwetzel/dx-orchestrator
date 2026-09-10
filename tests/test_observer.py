@@ -115,7 +115,14 @@ class TestFrameHashContract:
     capture. The day psoperator changes its RGB packing or `convert("RGB")`, this
     fails in CI — not fails closed at a customer's desk. Same discipline as the
     ledger's canonical-form contract test: exercise both real code paths and
-    assert byte-identical output."""
+    assert byte-identical output.
+
+    Scope: this binds the two *software* capture paths (dx <-> psoperator), where
+    byte-equality is the correct comparison. The hardware witness (a Mini-KVM HDMI
+    frame) is a different comparison entirely — its color pipeline guarantees the
+    bytes differ, so it is governed by perceptual-match / divergence, never by the
+    raw-hash equality asserted here. Two comparisons, two rules; do not extend
+    this one to the HDMI path."""
 
     @staticmethod
     def _png(img) -> bytes:

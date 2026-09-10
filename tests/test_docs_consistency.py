@@ -622,6 +622,21 @@ class TestUsageAndSpecTemplate:
     def test_readme_links_usage(self):
         assert "USAGE.md" in README
 
+    @pytest.mark.skipif(
+        not REAL_CARDS.is_dir(),
+        reason="sdlc-agent-roles not cloned; CI clones it, so this runs there",
+    )
+    def test_the_readme_role_card_count_matches_the_deck(self):
+        """The README cites a card count as a governance claim. The deck lives in
+        a sibling repo, so nothing checked dx's number against it — and it drifted
+        (38 stated while the deck shipped 40 after the staging pair). Now a build
+        failure, not a human noticing."""
+        deck = len(list(REAL_CARDS.glob("*.md")))
+        claimed = {int(n) for n in re.findall(r"(\d+)\s+(?:governance )?role cards", README)}
+        assert claimed == {deck}, (
+            f"README states role-card count(s) {sorted(claimed)}, but the deck has {deck}"
+        )
+
     def test_the_template_keeps_the_fields_the_workflow_needs(self):
         """These are the inputs dx wraps and the role cards expect. Dropping one
         is how results stop being consistent."""

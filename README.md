@@ -9,7 +9,7 @@ A sovereign, role-based orchestration layer for AI-driven software factories.
 `dx` integrates:
 - **pxx** — code generation engine (PyPI: `pxx-orchestrator>=2.5.4`)
 - **PSOperator** — desktop automation and GUI verification
-- **sdlc-agent-roles** — 38 governance role cards with separation-of-duties invariants
+- **sdlc-agent-roles** — 40 governance role cards with separation-of-duties invariants
 - **devswarm-ledger-reference** — hash-chained ledger format and GPG approval records
 - **Your inference hardware** — anything OpenAI-compatible, or Ollama, on your LAN or your own box
 
@@ -28,7 +28,7 @@ from PyPI rather than clone:
 | this one | control plane, all gates | `git clone` |
 | [`pxx`](https://github.com/cdnwetzel/pxx) | code-generation engine | PyPI: `pxx-orchestrator>=2.5.4` |
 | [`psoperator`](https://github.com/cdnwetzel/psoperator) | desktop automation, GUI verification | `git clone` |
-| [`sdlc-agent-roles`](https://github.com/cdnwetzel/sdlc-agent-roles) | the 38 role cards `dx` is governed by | `git clone` |
+| [`sdlc-agent-roles`](https://github.com/cdnwetzel/sdlc-agent-roles) | the 40 role cards `dx` is governed by | `git clone` |
 | [`devswarm-ledger-reference`](https://github.com/cdnwetzel/devswarm-ledger-reference) | ledger format, verifier, a signed reference trace | `git clone` |
 
 `scripts/setup_dependencies.sh` fetches all of them. No GitHub credentials are
@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 464 tests,
+The test suite is the part built to be evaluated from outside: 465 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
