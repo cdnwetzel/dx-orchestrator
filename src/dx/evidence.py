@@ -311,6 +311,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def bundle_digest(bundle_dir: Path) -> str:
+    """One digest committing to a whole bundle: sha256 of its ``SHA256SUMS``.
+
+    ``SHA256SUMS`` already lists the hash of every file in the bundle, so hashing
+    it binds the entire bundle to a single value — the value a ledger row carries
+    so the append-only chain commits to the evidence, not just to the fact that a
+    merge happened. Raises EvidenceError if the bundle has no ``SHA256SUMS``.
+    """
+    sums = bundle_dir / "SHA256SUMS"
+    if not sums.is_file():
+        raise EvidenceError(f"no SHA256SUMS in {bundle_dir}; not a bundle")
+    return _sha256(sums)
+
+
 def _render_readme(bundle: RoleTaskBundle, generated_utc: str) -> str:
     lines = [
         f"# {bundle.title}",

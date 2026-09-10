@@ -5,6 +5,26 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] — 2026-09-10
+
+### Added
+
+- **The ledger commits to its evidence, not just to the event.** After a green
+  `dx merge`, dx appends an `EVIDENCE` row whose value is `dx.merge_gate.v1
+  sha256:<digest>` — the SHA-256 of the bundle's `SHA256SUMS`, one hash that binds
+  the whole bundle. So the append-only, hash-chained ledger now commits to the
+  receipt: swap a bundle after the fact and the row that names it no longer
+  matches, and any later approval signature over the head transitively covers it.
+  Previously the chain recorded that a merge happened and said nothing about what
+  was produced. `evidence.bundle_digest(dir)` exposes the value; it is a hash, not
+  a secret (RL-011).
+- The binding rides the existing `action` enum (`EVIDENCE`) — no charter change —
+  and is announced on **stderr**, so `dx merge`'s stdout stays the pinned RL-003
+  transcript. It is best-effort: a receipt that cannot be bound warns, it never
+  undoes a completed merge. Verified live against a copy of the reference ledger —
+  the EVIDENCE row's digest matches the bundle and `verify_chain.py` passes with
+  the extra row.
+
 ## [0.17.0] — 2026-09-10
 
 ### Added
@@ -846,6 +866,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.18.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.14.0...v0.15.0

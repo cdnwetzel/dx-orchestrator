@@ -521,3 +521,40 @@ def test_a_fresh_staged_bundle_verifies(tmp_path):
     out = write_staged_action_bundle(_staged(), tmp_path)
     r = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
     assert r.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# bundle_digest — the one value a ledger row carries to commit to a bundle
+# ---------------------------------------------------------------------------
+
+from dx.evidence import bundle_digest  # noqa: E402
+
+
+def test_bundle_digest_is_the_sha256_of_sha256sums(tmp_path):
+    out = write_bundle(_bundle(), tmp_path)
+    import hashlib
+    expected = hashlib.sha256((out / "SHA256SUMS").read_bytes()).hexdigest()
+    assert bundle_digest(out) == expected
+
+
+def test_bundle_digest_changes_if_any_artifact_is_mutated(tmp_path):
+    out = write_bundle(_bundle(), tmp_path)
+    before = bundle_digest(out)
+    # mutate an artifact; SHA256SUMS still lists the old hash, so the digest of
+    # SHA256SUMS is unchanged — but `sha256sum -c` would now fail. The digest
+    # commits to SHA256SUMS, which commits to the files: rewrite the sums too.
+    (out / "artifacts" / "command.txt").write_text("tampered\n")
+    # regenerate SHA256SUMS the way a forger would, to prove the digest moves
+    import hashlib
+    files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
+    sums = "".join(
+        f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out).as_posix()}\n"
+        for p in files
+    )
+    (out / "SHA256SUMS").write_text(sums)
+    assert bundle_digest(out) != before
+
+
+def test_bundle_digest_refuses_a_non_bundle(tmp_path):
+    with pytest.raises(EvidenceError, match="not a bundle"):
+        bundle_digest(tmp_path)

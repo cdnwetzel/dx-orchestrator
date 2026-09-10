@@ -24,6 +24,7 @@ from .evidence import (
     Check,
     EvidenceError,
     MergeGateBundle,
+    bundle_digest,
     write_merge_bundle,
 )
 from .ledger_utils import (
@@ -124,9 +125,12 @@ def _evidence_root(args: argparse.Namespace) -> Path:
     return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
 
 
-def _emit_merge_evidence(args: argparse.Namespace, rec: dict[str, object], passed: bool) -> None:
+def _emit_merge_evidence(
+    args: argparse.Namespace, rec: dict[str, object], passed: bool
+) -> Path | None:
     """Write a dx.merge_gate.v1 bundle from the accumulated gate record and
-    announce it on stderr — stdout is the pinned RL-003 transcript."""
+    announce it on stderr — stdout is the pinned RL-003 transcript. Returns the
+    bundle directory, or None if it could not be written."""
     def _d(key: str) -> dict[str, object]:
         val = rec.get(key)
         return val if isinstance(val, dict) else {}
@@ -168,8 +172,51 @@ def _emit_merge_evidence(args: argparse.Namespace, rec: dict[str, object], passe
     try:
         path = write_merge_bundle(bundle, _evidence_root(args))
         print(f"🧾 Evidence: {path}", file=sys.stderr, flush=True)
+        return path
     except EvidenceError as exc:
         print(f"⚠️  merge-gate evidence bundle could not be written: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def _bind_bundle_into_ledger(
+    args: argparse.Namespace, rec: dict[str, object], bundle_path: Path
+) -> None:
+    """Append an EVIDENCE row binding the merge-gate bundle's digest into the
+    chain, so the append-only ledger — and the RL-003 signature over its head —
+    transitively commit to the evidence, not just to the fact a merge happened.
+
+    Rides the existing action enum (EVIDENCE); the digest is a hash, not a secret
+    (RL-011). Announced on stderr, so the pinned RL-003 transcript on stdout is
+    unchanged. Best-effort: a receipt that cannot be bound warns, it does not undo
+    a completed merge."""
+    ledger_repo_raw = rec.get("ledger_repo")
+    if not isinstance(ledger_repo_raw, str):
+        return
+    ledger_repo = Path(ledger_repo_raw)
+    role = rec.get("role")
+    try:
+        digest = bundle_digest(bundle_path)
+        head = read_head(ledger_repo / "ledger.jsonl")
+        row = build_row(
+            action="EVIDENCE",
+            task_id=args.task_id,
+            evidence=f"dx.merge_gate.v1 sha256:{digest}",
+            prev_hash=head,
+            reviewer_seat=role if isinstance(role, str) else None,
+        )
+        new_head = append_row(ledger_repo, row)
+        print(
+            f"🔗 EVIDENCE row binds the merge-gate bundle (sha256:{digest[:16]}…). "
+            f"Head: {new_head[:16]}…",
+            file=sys.stderr,
+            flush=True,
+        )
+    except (EvidenceError, LedgerWriteError, LedgerError, OSError) as exc:
+        print(
+            f"⚠️  could not bind the merge-gate bundle into the ledger: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def cmd_merge(args: argparse.Namespace) -> None:
@@ -185,7 +232,11 @@ def cmd_merge(args: argparse.Namespace) -> None:
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
         if rec.get("started") and not args.no_evidence:
-            _emit_merge_evidence(args, rec, passed=(code == 0))
+            bundle_path = _emit_merge_evidence(args, rec, passed=(code == 0))
+            # A successful merge appended rows; bind the bundle digest into the
+            # chain so the ledger commits to the evidence, not just the event.
+            if code == 0 and bundle_path is not None:
+                _bind_bundle_into_ledger(args, rec, bundle_path)
         raise
 
 

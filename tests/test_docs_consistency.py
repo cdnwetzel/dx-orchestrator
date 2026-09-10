@@ -414,6 +414,46 @@ class TestMergeTranscriptFidelity:
         not REF_LEDGER.is_dir(),
         reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
     )
+    @pytest.mark.skipif(
+        not REF_LEDGER.is_dir(),
+        reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
+    )
+    def test_a_green_merge_binds_its_bundle_into_the_ledger(self, tmp_path):
+        """A1: the append-only chain must commit to the evidence, not just the
+        event. A green merge appends an EVIDENCE row whose value is the bundle's
+        digest, and the chain still verifies."""
+        import json
+        import shutil
+        import subprocess
+
+        copy = tmp_path / "ledger"
+        shutil.copytree(REF_LEDGER, copy)
+        ev = tmp_path / "ev"
+        env = {
+            "PATH": _SUBPROCESS_PATH,
+            "HOME": str(Path.home()),
+            "PYTHONPATH": str(ROOT / "src"),
+            "DX_LEDGER_REPO": str(copy),
+        }
+        r = subprocess.run(
+            [sys.executable, "-m", "dx.cli", "merge", "T-0001", "--evidence-dir", str(ev)],
+            capture_output=True, text=True, env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        rows = [json.loads(x) for x in (copy / "ledger.jsonl").read_text().splitlines()]
+        last = rows[-1]
+        assert last["action"] == "EVIDENCE"
+        assert last["evidence"].startswith("dx.merge_gate.v1 sha256:")
+        # the recorded digest is the actual bundle's digest
+        from dx.evidence import bundle_digest
+        bundle = sorted((ev / "T-0001").glob("*"))[-1]
+        assert bundle_digest(bundle) in last["evidence"]
+        assert "binds the merge-gate bundle" in r.stderr
+
+    @pytest.mark.skipif(
+        not REF_LEDGER.is_dir(),
+        reason="devswarm-ledger-reference not cloned; CI clones it, so this runs there",
+    )
     def test_the_force_banner_transcript_is_reproducible(self):
         result = self._merge("T-0001", "--force")
         assert result.returncode == 0, result.stderr
