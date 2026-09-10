@@ -109,6 +109,37 @@ def signing_key_residency(fingerprint: str, *, gpg_home: Path | None = None) -> 
     return parse_secret_key_residency(result.stdout)
 
 
+def derive_mechanism(residency: str) -> str:
+    """The mechanism a row *must* record for a signing key of this residency —
+    derived from the discriminator, never taken from the signer. A card stub is
+    the RL-010 standard; a software secret is the marked, transitional fallback;
+    no secret at all cannot produce an approval."""
+    if residency == "card":
+        return MECHANISM_STANDARD
+    if residency == "software":
+        return MECHANISM_FALLBACK
+    raise ApprovalKeyError(
+        f"no signing secret present (residency {residency!r}); cannot record an approval"
+    )
+
+
+def resolve_mechanism(residency: str, *, claimed: str | None = None) -> str:
+    """The recorded mechanism, derived from residency — the verifier's call, not
+    the signer's. If the signer *claimed* a mechanism, it may not over-state what
+    the key supports: claiming the hardware standard over a software key is
+    laundering a weak approval through a strong label, and is refused. A weaker or
+    matching claim is ignored; the derived value is authoritative either way.
+    """
+    derived = derive_mechanism(residency)
+    if claimed == MECHANISM_STANDARD and derived != MECHANISM_STANDARD:
+        raise ApprovalKeyError(
+            f"mechanism laundering: the row claims {MECHANISM_STANDARD!r} (RL-010 standard) "
+            f"but the signing key is {residency!r}, which supports only {derived!r}. "
+            "The mechanism is derived from the key, never asserted by the signer."
+        )
+    return derived
+
+
 def refuse_unless_card_resident(residency: str, *, claimed_mechanism: str) -> None:
     """Gate a would-be approval row against its claimed mechanism.
 

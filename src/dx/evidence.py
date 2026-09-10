@@ -31,6 +31,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from dx.approval_key import (
+    MECHANISM_FALLBACK,
+    MECHANISM_STANDARD,
+    MECHANISM_TEST_DOUBLE,
+)
+
 SCHEMA = "dx.role_task.v1"
 
 #: Written into every bundle. This is policy text, not a docstring: what a
@@ -653,6 +659,29 @@ def _render_staged_readme(bundle: StagedActionBundle, generated_utc: str) -> str
     return "\n".join(lines)
 
 
+_DERIVED_MECHANISMS = frozenset(
+    {MECHANISM_STANDARD, MECHANISM_FALLBACK, MECHANISM_TEST_DOUBLE}
+)
+
+
+def _validate_approval(approval: dict[str, object] | None) -> None:
+    """An approval's mechanism must be a *verifier-derived* value, never an
+    arbitrary string the signing side wrote (RL-010, Decision 0017). This is the
+    wiring's teeth: a hand-asserted label like "touch-sign token" cannot reach a
+    recorded row — the mechanism comes from dx.staged_action.build_approval_record,
+    which derives it from the signing key's residency."""
+    if approval is None:
+        return
+    mechanism = approval.get("mechanism")
+    if mechanism not in _DERIVED_MECHANISMS:
+        raise EvidenceError(
+            f"approval mechanism {mechanism!r} is not a verifier-derived value "
+            f"{sorted(_DERIVED_MECHANISMS)}; build the approval with "
+            "dx.staged_action.build_approval_record so the mechanism is derived, "
+            "never asserted by the signer."
+        )
+
+
 def write_staged_action_bundle(
     bundle: StagedActionBundle, root: Path, *, now: str | None = None
 ) -> Path:
@@ -668,6 +697,7 @@ def write_staged_action_bundle(
         raise EvidenceError(
             f"unknown staged-action state {bundle.state!r}; expected one of {_STAGED_STATES}"
         )
+    _validate_approval(bundle.approval)
     generated_utc = now or _utc_now()
     out = _prepare_out(root, bundle.stage_id, generated_utc)
 

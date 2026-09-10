@@ -502,14 +502,24 @@ class TestStagedActionBundle:
         assert "one world-state" in boundary  # staleness contract
 
     def test_an_approved_stage_records_the_signed_binding(self, tmp_path):
+        # The mechanism is a verifier-derived value (RL-010, Decision 0017), not a
+        # signer-asserted string — the bundle writer refuses anything else.
+        from dx.approval_key import MECHANISM_STANDARD
+
         approval = {
             "approval_class": "human_attested",
-            "signed_message": "S-0001+bundlehash+payloadhash+framehash+head+workflow-operator",
-            "signature": "c" * 40,
-            "mechanism": "touch-sign token",
+            "signer_fingerprint": "c" * 40,
+            "signer_uid": "Rex Reviewer <rex@example.invalid>",
+            "mechanism": MECHANISM_STANDARD,
         }
         out = write_staged_action_bundle(_staged(state="APPROVED", approval=approval), tmp_path)
         assert json.loads((out / "manifest.json").read_text())["staged_action"]["approval"] == approval
+
+    def test_a_hand_asserted_mechanism_is_refused(self, tmp_path):
+        # The wiring's teeth: the old signer-asserted label cannot reach a row.
+        approval = {"approval_class": "human_attested", "mechanism": "touch-sign token"}
+        with pytest.raises(EvidenceError, match="not a verifier-derived value"):
+            write_staged_action_bundle(_staged(state="APPROVED", approval=approval), tmp_path)
 
     def test_default_boundary_is_the_staged_family_one(self, tmp_path):
         out = write_staged_action_bundle(_staged(), tmp_path)
