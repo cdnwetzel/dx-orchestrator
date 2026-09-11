@@ -135,17 +135,32 @@ Deferred **option C**: asymmetric attestation (observer signs private, gatekeepe
 verifies public, holds no secret) for full three-way isolation — a crypto
 re-architecture, out of R-205's scope, and the natural way to also isolate the
 observer from the gatekeeper if ever needed.)**
-3. ☐ **Attestation-key ACL parity on Windows.** POSIX ownership/mode checks exist;
+3. ✅ **Attestation-key ACL parity on Windows.** POSIX ownership/mode checks exist;
 Windows currently fails closed — implement ACL verification or document the
 supported topology. *Exit: key provisioning verified on all claimed platforms.*
-(See tracked item **D-01** for the Windows capture/attestation port.)
-4. ☐ **Kill-switch + audit drills.** Periodic scripted engagement of
+**(SHIPPED 2026-09-11 via the documentation exit.** A support matrix declares
+Linux + macOS supported/verified and Windows fail-closed / not-supported —
+provisioning and loading refuse rather than trust an unverified NTFS ACL, asserted
+by a test. Windows stays deferred as **D-01**: no unverifiable security path for a
+platform with no host. `docs/deployment-isolation.md`.)**
+4. ✅ **Kill-switch + audit drills.** Periodic scripted engagement of
 `psoperator kill` across the topology; verify precedence over freshness,
-policy, execution. *Exit: drill receipts in the ledger.*
-5. ☐ **Tail-hash anchoring.** Anchor audit-chain and ledger tail hashes in a
+policy, execution. *Exit: drill receipts in the ledger.* **(SHIPPED 2026-09-11.**
+`gatekeeper/drills.kill_switch_drill` + `psoperator kill-drill` engage the stop
+against a canary and require KILL_SWITCHED — proving precedence over execution,
+policy (a T3 delete canary), and freshness (a stale-frame canary) — leaving a
+hash-chained audit receipt, restoring prior switch state, and failing loud
+otherwise.)**
+5. ✅ **Tail-hash anchoring.** Anchor audit-chain and ledger tail hashes in a
 separately controlled store on a cadence (both repos state this need). This is
 the line between "tamper-evident" and "tamper-evident to a third party."
 *Exit: anchoring rows verifiable by `tools/verify_chain.py` from cold storage.*
+**(SHIPPED 2026-09-11.** `dx.tail_anchor` pins a source's tail hash into a
+separate, independently-controlled anchor log that is itself
+`verify_chain`-verifiable (the exit criterion, tested against the reference tool);
+a source rewritten after anchoring no longer matches its anchor. Source-agnostic,
+so one anchor log covers the ledger and the gatekeeper audit; a cron caller is the
+cadence.)** **Phase A is closed.**
 
 Also shipped in Phase A's spirit this session: ✅ the merge ledger row binds the
 bundle digest (evidence, not just event), and ✅ the A4 cross-repo frame-hash
