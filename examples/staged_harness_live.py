@@ -42,6 +42,7 @@ from psoperator.fixtures.invoice import (  # noqa: E402
 )
 from psoperator.perception.a11y import AtSpiA11y
 
+from dx import __version__ as DX_VERSION  # noqa: E402
 from dx.approval_key import signing_key_residency  # noqa: E402
 from dx.evidence import StagedActionBundle, bundle_digest, write_staged_action_bundle  # noqa: E402
 from dx.ledger_utils import verify_detached_signature  # noqa: E402
@@ -211,7 +212,8 @@ def main(argv: list[str] | None = None) -> int:
         got = [n for n in FIELD_NAMES if n in located["fields"]]
         print(f"ACT 1  staged {len(got)}/{len(FIELD_NAMES)} fields {got}; frame {world.frame_hash[:12]}…")
         signer, sig = gpg_approval_signer(gpg_home, repo, world, "S-ACT1", out)
-        residency = signing_key_residency(keyid, gpg_home=gpg_home)
+        def resolve_residency(fp: str) -> str:  # derived per-signer at the gate
+            return signing_key_residency(fp, gpg_home=gpg_home)
 
         # Act 1's re-verification is real: re-capture the frame at execution time
         # (head/payload/bundle held fixed so the act's own appends don't self-report
@@ -223,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         r1 = run_full_loop(stage_id="S-ACT1", role=ROLE, world=world, signer=signer,
-                          residency=residency, observe_now=observe_act1,
+                          resolve_residency=resolve_residency, observe_now=observe_act1,
                           executor=lambda a: print("       replay:", a["mechanism"]),
                           append=append)
         print("       ", r1.ledger_actions, "->", r1.outcome, f"({r1.detail})\n")
@@ -232,8 +234,12 @@ def main(argv: list[str] | None = None) -> int:
         # --- Act 2: the receipted rejection + re-proposal gate ---
         r2 = run_rejection(stage_id="S-ACT2", reason="invoice total does not match the PO", append=append)
         try:
-            refuse_reproposal_without_changed_evidence(prior_bundle_hash=world.bundle_hash,
-                                                       new_bundle_hash=world.bundle_hash)
+            # A re-proposal carrying the *same* evidence bundle as the rejected one
+            # (both hashes deliberately equal) must be refused — you cannot re-ask
+            # without changing what you're asking about.
+            rejected_bundle = world.bundle_hash
+            refuse_reproposal_without_changed_evidence(prior_bundle_hash=rejected_bundle,
+                                                       new_bundle_hash=rejected_bundle)
             gate = "NOT REFUSED (bug)"
         except Exception as exc:  # noqa: BLE001
             gate = f"re-proposal refused ({type(exc).__name__})"
@@ -252,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
                               payload_hash=world3.payload_hash, bundle_hash=world3.bundle_hash)
 
         r3 = run_stale_refusal(stage_id="S-ACT3", role=ROLE, world=world3, signer=signer3,
-                              residency=residency, observe_now=observe_now,
+                              resolve_residency=resolve_residency, observe_now=observe_now,
                               executor=lambda a: print("       EXECUTED (should not happen)"),
                               append=append)
         print("       ", r3.ledger_actions, "->", r3.outcome, f"({r3.detail[:60]}…)\n")
@@ -266,8 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     for row in lines:
         print(f"  {row['action']:<10} {row['evidence'][:70]}")
     (out / "receipts.json").write_text(json.dumps(
-        {"produced_by": "dx 0.19.0", "acts": receipts, "ledger_rows": len(lines)}, indent=2) + "\n")
-    print(f"\nreceipts + ledger written under {out}  (produced by dx 0.19.0)")
+        {"produced_by": f"dx {DX_VERSION}", "acts": receipts, "ledger_rows": len(lines)}, indent=2) + "\n")
+    print(f"\nreceipts + ledger written under {out}  (produced by dx {DX_VERSION})")
     return 0
 
 

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 from dx.ledger_utils import SignerIdentity
 from dx.staged_action import (
+    ResidencyResolver,
     StaleStageError,
     WorldState,
     build_approval_record,
@@ -87,7 +88,7 @@ def run_full_loop(
     role: str,
     world: WorldState,
     signer: SignerIdentity,
-    residency: str,
+    resolve_residency: ResidencyResolver,
     observe_now: Observe,
     executor: Executor,
     append: LedgerAppend,
@@ -105,7 +106,8 @@ def run_full_loop(
     _stage_and_review(stage_id, append, actions)
 
     approval = build_approval_record(
-        world=world, stage_id=stage_id, role=role, signer=signer, residency=residency
+        world=world, stage_id=stage_id, role=role, signer=signer,
+        resolve_residency=resolve_residency,
     )
     append("SIGNED", f"approval mechanism={approval['mechanism']} signer={signer.fingerprint[:12]}")
     actions.append("SIGNED")
@@ -170,7 +172,7 @@ def run_stale_refusal(
     role: str,
     world: WorldState,
     signer: SignerIdentity,
-    residency: str,
+    resolve_residency: ResidencyResolver,
     observe_now: Observe,
     executor: Executor,
     append: LedgerAppend,
@@ -188,7 +190,8 @@ def run_stale_refusal(
     _stage_and_review(stage_id, append, actions)
 
     approval = build_approval_record(
-        world=world, stage_id=stage_id, role=role, signer=signer, residency=residency
+        world=world, stage_id=stage_id, role=role, signer=signer,
+        resolve_residency=resolve_residency,
     )
     append("SIGNED", f"approval mechanism={approval['mechanism']} signer={signer.fingerprint[:12]}")
     actions.append("SIGNED")
