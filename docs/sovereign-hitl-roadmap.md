@@ -103,14 +103,20 @@ the self-contained appliance profile is Phase G, deliberately last.
 These are already named in your own repos' known-limits sections. For
 regulated deployment they move from hardening to requirements.
 
-1. ◑ **R-203: authenticate observer envelopes at the gatekeeper.** Gatekeeper
+1. ✅ **R-203: authenticate observer envelopes at the gatekeeper.** Gatekeeper
 verifies HMAC signature, epoch, key ID, nonce, expiry; rejects rollback and
-replay. Until this lands, the compromised-planner boundary is incomplete and
-the hardware witness (Phase E) is load-bearing. *Exit: adversarial tests —
-fabricated envelope, replayed envelope, stale epoch — all fail closed, each
-receipted.* **(dx-side `dx.observer` verifies signature + freshness + frame-hash
-binding, fail-closed; the gatekeeper-side verification and full adversarial
-suite are the remaining part.)**
+replay. *Exit: adversarial tests — fabricated envelope, replayed envelope, stale
+epoch — all fail closed, each receipted.* **(SHIPPED 2026-09-11.** PSOperator
+`gatekeeper/attestation_gate.py` is the stateful gate — the six attacks
+(unknown-key, bad-signature, stale-epoch, not-yet-valid, expired, replayed-nonce)
+each fail closed, adversary-first tested. It is **wired into the live path**:
+`GatekeeperService.handle` authenticates every planner-supplied envelope before
+`request_action`, fail-closed, and receipts each verdict into the hash-chained
+audit; the service refuses to start without the observer's key. The compromised-
+planner boundary is now closed, so the hardware witness (Phase E) is defense-in-
+depth rather than load-bearing. Note where it meets R-205: the gate needs the
+observer's key, so observer/gatekeeper key-sharing under isolated accounts is an
+R-205 decision.)**
 2. ☐ **R-205: deployment isolation.** Observer under restricted OS account;
 loopback IPC access controls; document the account topology. *Exit: deployment
 guide + tests demonstrating the planner account cannot reach observer signing
