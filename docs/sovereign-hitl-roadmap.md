@@ -62,6 +62,40 @@ Mapping today's work onto the phases and invariants below. Everything here is on
 | Away mode / 24×7 unattended | absent by design | **Non-goal** (violates I-7) |
 | (Ours, absent in Violoop) witness chain, ledger, receipts, governance deck | — | Moat, not gap |
 
+## 2.5 Architecture stance — the device is never the brain
+
+Violoop's headline choice is the one to **reject**: it carries an on-device 8B
+(Qwen-2.5 Q4 on an RK3576 NPU) as the perception + GUI-navigation + traffic-control
+brain, with fine-tuned coordinate→HID navigators and a continuous memory graph,
+falling back to cloud (BYO API) for hard reasoning. That design exists because
+Violoop has no fleet — an appliance must carry its own brain — and it is the direct
+cause of its two weaknesses: the ~70% GUI ceiling (a small vision model doing
+coordinate navigation) and a cloud fallback that breaks sovereignty the moment a
+task is hard.
+
+We do not share the constraint, so we reject the premise:
+
+- **The device is a witness and an actuator, never the brain.** The Mini-KVM is a
+  dumb HDMI capture + HID injector with no NPU and no model. Compute is the
+  sovereign LAN fleet.
+- **No on-device inference; no cloud fallback.** Fleet-class models on hardware we
+  control are both more capable than an edge 8B *and* sovereign — Violoop had to
+  choose one; we get both (§6 keeps cloud fallback a non-goal).
+- **Accessibility-first grounding, not pixel→coordinate navigation.** We reject the
+  vision-coordinate pipeline that ceilings at 70% in favour of AT-SPI/element
+  locators with vision as fallback (Phase D.4).
+- **Human-gated skills, not an auto-learned memory graph.** An opaque "artificial
+  intuition" graph is a liability in a regulated setting; receipted, human-promoted
+  skills are the auditable form (Phase D.3).
+
+What we keep from Violoop is the **body, not the brain**: the HDMI-witness + HID
+topology and the physical-approval instinct. The on-device model's real benefits —
+portability and a fast local perception loop — do not apply here: we are a
+human-gated *staging* system, not a fast autonomous vision loop, so a local
+perception brain buys nothing the fleet doesn't. The accepted cost is a hard
+dependency on reachable sovereign inference — right for regulated on-prem, and why
+the self-contained appliance profile is Phase G, deliberately last.
+
 ## 3. Phase plan
 
 ### Phase A — Close the sovereign known-limits (hardening; no new capability)
