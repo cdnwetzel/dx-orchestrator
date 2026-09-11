@@ -121,10 +121,20 @@ planner boundary is now closed, so the hardware witness (Phase E) is defense-in-
 depth rather than load-bearing. Note where it meets R-205: the gate needs the
 observer's key, so observer/gatekeeper key-sharing under isolated accounts is an
 R-205 decision.)**
-2. ☐ **R-205: deployment isolation.** Observer under restricted OS account;
+2. ✅ **R-205: deployment isolation.** Observer under restricted OS account;
 loopback IPC access controls; document the account topology. *Exit: deployment
 guide + tests demonstrating the planner account cannot reach observer signing
-material.*
+material.* **(SHIPPED 2026-09-11.** Two-account topology — a trusted *governance*
+account runs observer + gatekeeper and owns the owner-only attestation key; an
+untrusted *planner* account holds nothing security-critical and reaches the
+gatekeeper only over loopback IPC. Observer and gatekeeper share one account
+because symmetric HMAC + the key loader's owner-uid/mode-0600 checks make
+cross-account key sharing impossible — the planner-vs-governance boundary is fully
+cut, fail-closed. `docs/deployment-isolation.md` + `tests/test_deployment_isolation.py`.
+Deferred **option C**: asymmetric attestation (observer signs private, gatekeeper
+verifies public, holds no secret) for full three-way isolation — a crypto
+re-architecture, out of R-205's scope, and the natural way to also isolate the
+observer from the gatekeeper if ever needed.)**
 3. ☐ **Attestation-key ACL parity on Windows.** POSIX ownership/mode checks exist;
 Windows currently fails closed — implement ACL verification or document the
 supported topology. *Exit: key provisioning verified on all claimed platforms.*
