@@ -5,6 +5,44 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Tail-hash anchoring (`dx.tail_anchor`, Phase A / A5) — the line between
+  tamper-evident and tamper-evident *to a third party*.** A hash-chained log is
+  only tamper-evident to someone holding an earlier copy; an attacker who owns the
+  whole file can rewrite it end to end and recompute every hash. Anchoring reads a
+  source chain's current tail and appends it to a **separate**, independently-held
+  anchor log that is itself `verify_chain`-verifiable — so an examiner with only
+  the cold-storage copy can prove a source was rewritten after it was anchored. The
+  anchor log verifies with the reference `tools/verify_chain.py`, the same contract
+  dx treats as the ledger.
+
+### Changed
+
+- **The RL-010 mechanism is now derived from the *actual* signer at the harness
+  boundary, never from a caller string.** `build_approval_record`,
+  `run_full_loop`, and `run_stale_refusal` take a `resolve_residency` resolver
+  (called with the verified signer's fingerprint) instead of a `residency:` string
+  — closing a laundering hole where a caller could have paired a software signer
+  with `residency="card"` and produced a hardware-standard receipt. Synthetic tests
+  inject a resolver; the live runner resolves each signer against gpg.
+- The three-act harness re-observes the world in Act 1 (execution-time
+  re-verification is real, not vacuous) and the stale-refusal path records the
+  executor being *reached* without delegating to it and appends no `EXECUTED` row
+  on a setup error.
+
+### Fixed
+
+- `tail_anchor` matches a source by exact identity (not a string prefix) and
+  rejects a `tail_hash` that is not a 64-char sha256 hex digest, so a source whose
+  name shares a prefix with another, or a non-hex tail, cannot poison a comparison.
+- A single moved binding now reads `1 binding moved` rather than the ungrammatical
+  `1 binding(s) moved`.
+- The role-card count guard's docstring no longer overstates its coverage — it
+  checks README.md and TUTORIAL.md, and says so.
+
 ## [0.19.0] — 2026-09-10
 
 ### Added

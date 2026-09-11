@@ -99,6 +99,24 @@ def test_reanchoring_a_source_records_the_new_tail_without_losing_history(tmp_pa
     assert len(anchors) == 2 and _chain_is_intact(ledger)
 
 
+def test_a_source_is_matched_by_exact_identity_not_a_prefix(tmp_path):
+    # "ledger" must not read "ledger-audit"'s anchor: a prefix match here would
+    # let one source's tail be mistaken for another's.
+    repo = _new_anchor_repo(tmp_path)
+    ledger = repo / "ledger.jsonl"
+    anchor_tail(repo, source="ledger-audit", tail_hash="a" * 64)
+    assert latest_anchored_tail(ledger, "ledger") is None
+    assert latest_anchored_tail(ledger, "ledger-audit") == "a" * 64
+
+
+def test_anchoring_a_non_hex_tail_is_refused(tmp_path):
+    from dx.ledger_writer import LedgerWriteError
+
+    repo = _new_anchor_repo(tmp_path)
+    with pytest.raises(LedgerWriteError, match="sha256"):
+        anchor_tail(repo, source="ledger", tail_hash="not-a-hash")
+
+
 @pytest.mark.skipif(not _VERIFY_CHAIN.is_file(), reason="reference verify_chain.py not present")
 def test_the_anchor_log_verifies_with_the_reference_verify_chain(tmp_path):
     # The A5 exit criterion: anchoring rows verifiable by tools/verify_chain.py
