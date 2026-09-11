@@ -212,8 +212,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ACT 1  staged {len(got)}/{len(FIELD_NAMES)} fields {got}; frame {world.frame_hash[:12]}…")
         signer, sig = gpg_approval_signer(gpg_home, repo, world, "S-ACT1", out)
         residency = signing_key_residency(keyid, gpg_home=gpg_home)
+
+        # Act 1's re-verification is real: re-capture the frame at execution time
+        # (head/payload/bundle held fixed so the act's own appends don't self-report
+        # STALE — the gate here watches the frame). Nothing moved, so it executes.
+        def observe_act1() -> WorldState:
+            return WorldState(
+                ledger_head=world.ledger_head, frame_hash=capture_frame_hash(),
+                payload_hash=world.payload_hash, bundle_hash=world.bundle_hash,
+            )
+
         r1 = run_full_loop(stage_id="S-ACT1", role=ROLE, world=world, signer=signer,
-                          residency=residency, executor=lambda a: print("       replay:", a["mechanism"]),
+                          residency=residency, observe_now=observe_act1,
+                          executor=lambda a: print("       replay:", a["mechanism"]),
                           append=append)
         print("       ", r1.ledger_actions, "->", r1.outcome, f"({r1.detail})\n")
         receipts.append(r1.as_json())
