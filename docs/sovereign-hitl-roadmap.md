@@ -28,10 +28,10 @@ Mapping today's work onto the phases and invariants below. Everything here is on
   - **Mechanism derived by the verifier, never asserted by the signer** (`dx.staged_action.build_approval_record`): a software key claiming the hardware standard is refused as laundering; the bundle writer rejects any non-derived mechanism. → **I-5**
   - **Four-binding staleness gate** (`dx.staged_action.reverify_bindings` / `execute_approved_stage`): re-verifies ledger head + frame hash + payload hash + bundle hash at execution time; the executor is provably never called when any moved. → **I-4, I-6, Phase C.3**
   - The hermetic **test double is barred by construction** (`docs/keys/test-doubles/`, which the real keyring builder never reads — the 0.10.0 fake_ledger lesson). → **I-5**
-- **Phase B staging layer — B.1–B.3 shipped, B.4 seam shipped:** `workflow-stager` + `workflow-operator` Anchored cards; the `dx.staged_action.v1` bundle family; `classify_bundle_risk` (per-action and aggregate). B.4's *governance seam* (the three gates above) is done; the live end-to-end demo is the remaining Phase B item.
+- **Phase B staging layer — shipped, B.1 through B.4:** `workflow-stager` + `workflow-operator` Anchored cards; the `dx.staged_action.v1` bundle family; `classify_bundle_risk` (per-action and aggregate); and B.4's full loop — the three-act harness (`dx.staged_harness`, CI-proven) plus the live runner (`examples/staged_harness_live.py`).
 - **AT-SPI + reference fixture** (PSOperator): the Linux AT-SPI provider walk (**R-303**, previously a `NotImplementedError` stub) and a GTK invoice fixture (**R-304**) with a shared, importable field-spec. **This resolves Open Question 3 for the Phase B demo** — AT-SPI on a GTK fixture, with the Windows/UIA port deferred as tracked item **D-01** (attestation leads, coverage follows).
 - **A1/A4 (earlier this session):** the merge ledger row binds the bundle digest; a cross-repo contract test pins that `dx.observer` and PSOperator agree on the frame hash (the A4 doctrine — test against the real writer, not the re-implementation — which caught the field-15 bug before it could be a false green).
-- **The remaining Phase B work — the three-act harness** (next session): full loop → receipted rejection → stale refusal, on the invoice fixture, running under dx so its own acts produce bundles and ledger rows; act three's frame move scripted against Xvfb on opti3090; ending in the first live `EVIDENCE → REVIEWED → SIGNED → EXECUTED` ledger recorded as a repo artifact stamped "produced by dx 0.19.0".
+- **The three-act harness — SHIPPED and run live (2026-09-11).** The full loop → receipted rejection → stale refusal ran on opti3090 against the invoice fixture over live AT-SPI + Xvfb: 4/4 fields staged, a real GPG signature, a real hash-chained ledger, and act three's refusal triggered by a real Xvfb window move. The first live `EVIDENCE → REVIEWED → SIGNED → EXECUTED` ledger (12 rows) is committed at `docs/artifacts/first-live-staged-ledger.jsonl`, verifies with `tools/verify_chain.py` (head `0c461c73…`), and is stamped "produced by dx 0.19.0". **This closes Phase B.**
 - **Open dx follow-ups:** #3 (StaleStageError malformed-vs-stale), #4 (reverify report all moved bindings), #6 (tutorial count fix + widen the count guard to any tracked file — the 0.7.2 lesson).
 - **The single parked decision:** order the touch-sign token and register a second backup key in the same sitting (Phase C.1 hardware).
 
@@ -155,17 +155,21 @@ target-app sensitivity, action-count ceilings. A sequence of 100 T1s at a
 billing form is T2 in aggregate. Deterministic, fail-closed, keyword policy
 is a floor not a ceiling. *Exit: classifier tests incl. aggregate-escalation
 cases.*
-4. ◑ **Staged skill replay** (the reliability play). Trigger fires on a known
+4. ✅ **Staged skill replay** (the reliability play). Trigger fires on a known
 workflow → planner extracts parameters (vendor, total, date) → stages a
 recorded-trajectory replay with parameters → approval card shows field-level
 diff → one gesture commits → executor replays layered locators. Locator-based
 replay sidesteps the ~70% click-accuracy ceiling of pure-vision agents.
 *Exit: end-to-end demo — invoice email → billing form — fully receipted.*
-**(The governance seam is shipped in 0.19.0: verifier-derived mechanism, the
-four-binding staleness gate, and the runner's `execute_approved_stage`. The
-AT-SPI provider and the GTK invoice fixture are built. The remaining work is the
-live three-act harness that ties them together and produces the first receipted
-run — the next session.)**
+**(SHIPPED and run live, 2026-09-11.** The seam (0.19.0: verifier-derived
+mechanism + four-binding staleness gate + `execute_approved_stage`), the AT-SPI
+provider, and the GTK fixture are tied together by `dx.staged_harness`
+(CI-proven) and `examples/staged_harness_live.py`. The receipted end-to-end run
+happened on opti3090 against the **invoice fixture** — stage → field-level
+preview → sign → re-verify → execute — producing the first live ledger
+(`docs/artifacts/first-live-staged-ledger.jsonl`). The richer **invoice email →
+billing form** cross-app scenario named in the exit line runs on the same
+machinery and is the natural next demo; the loop itself is proven.)**
 5. ◑ **Redaction at capture** (observer, before signing). Window-class rules
 (password managers, banking tabs, designated private windows) zeroed/blurred
 before the envelope is signed, so redaction itself is attested. The pxx-side
