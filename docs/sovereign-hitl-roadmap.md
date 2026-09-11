@@ -157,6 +157,47 @@ notification — the ntfy receiver correctly denies by default today): staged
 actions highlighted on the observed frame, field-level granular edits,
 single-keystroke commit bound to the token touch. Host-side only; the target
 monitor needs the software path for overlays (hardware can't draw).
+
+   **Candidate form factor — a tablet approval console.** A dedicated, cheap
+   tablet as a *thin* approval-and-display surface: it renders the staged action
+   and the field-level diff and the operator approves with one tap. Android is
+   preferred over iPadOS, which is too locked down for anything past a web-app
+   approval pane; a Samsung A-class or similar is ample as pure display (confirm
+   NFC on the exact unit — it varies).
+
+   **Interaction model — the glanceable multi-stage console.** The reference is
+   AgentMax (agentmax.dev): a local-first, at-a-glance surface showing every
+   agent session as working / waiting / needs-you, grouped by project, that
+   catches the "waiting for your approval" moment and lets the operator jump
+   straight to the one that needs them. Our console is the same *shape* — pending
+   stages across seats/projects, each flagged by state (an
+   `EVIDENCE → REVIEWED` stage awaiting `SIGNED` is a "needs-you" row) — and
+   local-first is shared DNA with the sovereignty posture (nothing leaves the
+   machine). One decisive difference: AgentMax *surfaces* the approval moment and
+   sends you back to the terminal to act; ours makes the console the **signing
+   surface itself** — the approval is a token-bound cryptographic act that writes
+   a ledger row, not a jump-back-and-type. It is glanceable status *plus* the gate,
+   not status alone.
+
+   **The RL-010 line this must not cross:** the tablet is the display and the
+   *gesture*, never the signer. The signature must still come from a
+   non-exportable OpenPGP key (Decision 0017). Two paths:
+   - *Recommended:* pair a USB-C / NFC OpenPGP token — the operator taps it to
+     the tablet to sign. The tablet never holds signing material, so a
+     compromised tablet still cannot mint an approval, and the examiner story
+     (verify against the public keyring) is unchanged.
+   - *Alternative:* use the tablet's own secure element (Secure Enclave /
+     StrongBox), gesture-gated by biometrics. Those keys are non-exportable, but
+     they are platform keys, not OpenPGP — adopting them means widening the
+     approval contract to a WebAuthn/FIDO-style attested key. A real decision
+     (see §7), not a free swap, and it must preserve third-party verifiability.
+
+   **Separation of duties:** the approver tablet must not also be the actuator.
+   OpenTerface can drive the Mini-KVM from a phone/tablet over USB-C, but that
+   device is *injecting HID* — the executor path. If both a KVM-control console
+   and an approval console are used, they are different devices; one tablet that
+   both actuates and approves collapses the planner/executor/approver boundaries
+   the whole design rests on.
 3. ✅ **Stale-approval semantics.** Approval valid for exactly one world-state:
 new frame, new head, or edited payload → stale → re-present, never
 auto-retry. Kills the TOCTOU class on the approval barrier. **(Shipped as
@@ -279,6 +320,12 @@ provider now shipped); the Windows/UIA breadth port is deferred as tracked item
 **D-01**, whose rule is that the Windows capture path must re-prove the
 frame-hash contract *before* any breadth demo — attestation leads, coverage
 follows. macOS AX completeness remains open.
+- ☐ Approval-console key model: if a tablet approval console (Phase C.2) uses
+its own secure element (Secure Enclave / StrongBox, WebAuthn/FIDO-style)
+instead of a paired OpenPGP token, does the approval contract widen to accept
+a platform-attested non-exportable key — and can that still be verified by an
+external examiner against a public keyring? Default answer for now: pair an
+OpenPGP token; the tablet is display + gesture only.
 - ☐ Bundle retention clock: per-jurisdiction defaults, or operator policy file?
 
 ---
