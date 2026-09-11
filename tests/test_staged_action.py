@@ -21,6 +21,7 @@ import pytest
 from dx.approval_key import MECHANISM_FALLBACK, MECHANISM_STANDARD, ApprovalKeyError
 from dx.ledger_utils import SignerIdentity
 from dx.staged_action import (
+    MalformedApprovalError,
     StaleStageError,
     WorldState,
     build_approval_record,
@@ -120,9 +121,35 @@ def test_reverify_refuses_and_names_each_moved_binding(moved_field, label):
         reverify_bindings(approval, observed)
 
 
-def test_reverify_refuses_an_approval_with_no_bindings():
-    with pytest.raises(StaleStageError, match="no bindings"):
+def test_reverify_refuses_an_approval_with_no_bindings_as_malformed():
+    # A record with no bindings is *malformed*, not stale — the world did not
+    # move, the record is broken (dx #3). It must not read as a staleness refusal.
+    with pytest.raises(MalformedApprovalError, match="no bindings"):
         reverify_bindings({"mechanism": MECHANISM_STANDARD}, _world())
+
+
+def test_reverify_refuses_an_approval_missing_a_binding_key_as_malformed():
+    approval = build_approval_record(
+        world=_world(), stage_id="S-1", role="r", signer=_SIGNER, residency="card"
+    )
+    del approval["bindings"]["frame_hash"]  # a broken record, not a moved world
+    with pytest.raises(MalformedApprovalError, match="frame_hash"):
+        reverify_bindings(approval, _world())
+
+
+def test_reverify_reports_every_moved_binding_at_once():
+    # dx #4: when more than one binding moved, one refusal names them all — the
+    # operator is not made to fix them one re-run at a time.
+    approval = build_approval_record(
+        world=_world(), stage_id="S-1", role="r", signer=_SIGNER, residency="card"
+    )
+    observed = _world(frame_hash="z" * 64, payload_hash="y" * 64)
+    with pytest.raises(StaleStageError) as exc:
+        reverify_bindings(approval, observed)
+    msg = str(exc.value)
+    assert "frame hash" in msg and "payload hash" in msg  # both named
+    assert "2 binding(s) moved" in msg
+    assert "ledger head" not in msg and "bundle hash" not in msg  # the unmoved are not named
 
 
 # --- spec 2: the runner's execute step --------------------------------------

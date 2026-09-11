@@ -235,6 +235,24 @@ def test_documented_files_exist(doc):
 TUTORIAL = (ROOT / "TUTORIAL.md").read_text(encoding="utf-8")
 REAL_CARDS = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 
+# A role-card count is a governance claim wherever it appears, in whatever
+# phrasing. These patterns catch the forms the docs actually use so a count can
+# be policed in ANY tracked file, not just the README (dx #6).
+_CARD_COUNT_PATTERNS = (
+    r"(\d+)\s+(?:governance\s+)?role cards",   # "40 role cards"
+    r"role cards?\s*\(one of (\d+)",            # "role card (one of 40"
+    r"\ball (\d+) cards\b",                      # "all 40 cards"
+    r"(\d+)\s+files at\b[^\n]*roles",          # doctor sample: "40 files at .../roles"
+)
+
+
+def _role_card_counts(text: str) -> set[int]:
+    counts: set[int] = set()
+    for pat in _CARD_COUNT_PATTERNS:
+        for m in re.finditer(pat, text):
+            counts.add(int(next(g for g in m.groups() if g)))
+    return counts
+
 
 def _subprocess_path() -> str:
     """System dirs only — plus wherever gpg lives, since `dx merge` shells out to
@@ -626,15 +644,23 @@ class TestUsageAndSpecTemplate:
         not REAL_CARDS.is_dir(),
         reason="sdlc-agent-roles not cloned; CI clones it, so this runs there",
     )
-    def test_the_readme_role_card_count_matches_the_deck(self):
-        """The README cites a card count as a governance claim. The deck lives in
-        a sibling repo, so nothing checked dx's number against it — and it drifted
-        (38 stated while the deck shipped 40 after the staging pair). Now a build
-        failure, not a human noticing."""
+    def test_role_card_counts_match_the_deck_in_every_doc(self):
+        """A card count is a governance claim wherever it appears. This guard used
+        to check only the README, and the count drifted in TUTORIAL.md unnoticed
+        (dx #6) — the 0.7.2 lesson: a check on one file reads as enforced and is
+        not. Now every tracked doc that states a count is checked against the deck,
+        in every phrasing the docs use ('40 role cards', 'one of 40', 'all 40
+        cards', 'N files at .../roles')."""
         deck = len(list(REAL_CARDS.glob("*.md")))
-        claimed = {int(n) for n in re.findall(r"(\d+)\s+(?:governance )?role cards", README)}
-        assert claimed == {deck}, (
-            f"README states role-card count(s) {sorted(claimed)}, but the deck has {deck}"
+        for label, text in (("README.md", README), ("TUTORIAL.md", TUTORIAL)):
+            counts = _role_card_counts(text)
+            assert counts <= {deck}, (
+                f"{label} states role-card count(s) {sorted(counts)}, but the deck has {deck}"
+            )
+        # and the README must still state the count in a recognized form, so a
+        # phrasing change cannot make the guard silently find nothing.
+        assert deck in _role_card_counts(README), (
+            f"README no longer states the deck count {deck} in a form the guard recognizes"
         )
 
     def test_the_template_keeps_the_fields_the_workflow_needs(self):

@@ -32,8 +32,16 @@ T = TypeVar("T")
 
 
 class StaleStageError(Exception):
-    """A staged action's world-state moved since it was approved. Names the
+    """A staged action's world-state moved since it was approved. Names every
     binding that moved so the refusal is legible, never a bare "stale"."""
+
+
+class MalformedApprovalError(Exception):
+    """An approval record is structurally invalid — it carries no bindings, or a
+    binding is missing — so it cannot be re-verified at all. Distinct from
+    :class:`StaleStageError`: the world did not move, the record is broken. An
+    examiner reading the receipt should see "malformed", not "stale".
+    """
 
 
 def canonical_staged_message(
@@ -93,7 +101,7 @@ def build_approval_record(
 def _approved_world(approval: dict[str, object]) -> WorldState:
     b = approval.get("bindings")
     if not isinstance(b, dict):
-        raise StaleStageError("approval carries no bindings; it cannot be re-verified")
+        raise MalformedApprovalError("approval carries no bindings; it cannot be re-verified")
     try:
         return WorldState(
             ledger_head=str(b["signed_head"]),
@@ -102,25 +110,32 @@ def _approved_world(approval: dict[str, object]) -> WorldState:
             bundle_hash=str(b["bundle_hash"]),
         )
     except KeyError as exc:
-        raise StaleStageError(f"approval bindings missing {exc.args[0]!r}") from exc
+        raise MalformedApprovalError(f"approval bindings missing {exc.args[0]!r}") from exc
 
 
 def reverify_bindings(approval: dict[str, object], observed: WorldState) -> None:
     """Refuse unless every binding the approval signed still matches the observed
-    world. Raises :class:`StaleStageError` naming the first binding that moved.
-    This is the check the runner runs at execute time — the staleness gate."""
+    world. Raises :class:`StaleStageError` naming **every** binding that moved —
+    not just the first — so one refusal is the whole story and an operator is not
+    made to fix them one re-run at a time. This is the check the runner runs at
+    execute time: the staleness gate. (An approval too malformed to re-verify
+    raises :class:`MalformedApprovalError` instead — a different failure.)"""
     approved = _approved_world(approval)
-    for name, was, now in (
-        ("ledger head", approved.ledger_head, observed.ledger_head),
-        ("frame hash", approved.frame_hash, observed.frame_hash),
-        ("payload hash", approved.payload_hash, observed.payload_hash),
-        ("bundle hash", approved.bundle_hash, observed.bundle_hash),
-    ):
-        if was != now:
-            raise StaleStageError(
-                f"{name} moved since approval ({was[:12]}… → {now[:12]}…); "
-                "re-review required (RL-003). The stage is not executed."
-            )
+    moved = [
+        f"{name} ({was[:12]}… → {now[:12]}…)"
+        for name, was, now in (
+            ("ledger head", approved.ledger_head, observed.ledger_head),
+            ("frame hash", approved.frame_hash, observed.frame_hash),
+            ("payload hash", approved.payload_hash, observed.payload_hash),
+            ("bundle hash", approved.bundle_hash, observed.bundle_hash),
+        )
+        if was != now
+    ]
+    if moved:
+        raise StaleStageError(
+            f"{len(moved)} binding(s) moved since approval: {'; '.join(moved)}. "
+            "Re-review required (RL-003). The stage is not executed."
+        )
 
 
 def execute_approved_stage(

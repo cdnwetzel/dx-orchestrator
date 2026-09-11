@@ -22,7 +22,7 @@ you → dx CLI → role card (governance) → hardware manifest (routing) → px
 
 `dx` is a thin control plane. It does three things on top of raw `pxx`:
 
-- **Governance** — every task must be run under a named role card (one of 38, shipped in `sdlc-agent-roles`). The card's *Mandate* and *Must not* sections are injected into the agent prompt.
+- **Governance** — every task must be run under a named role card (one of 40, shipped in `sdlc-agent-roles`). The card's *Mandate* and *Must not* sections are injected into the agent prompt.
 - **Hardware routing** — a manifest maps each role to an inference endpoint and model, so heavy roles hit the T5810 vLLM and light ones hit an Ollama box.
 - **Merge gate** — `dx merge` verifies a GPG-signed approval against `devswarm-ledger/SCHEMA.md` before allowing a merge. Currently enforces the RL-003 signature contract; **does not yet** perform the actual git merge or ledger append (deliberately stubbed until Gate 1 unpauses).
 
@@ -147,7 +147,7 @@ Actual observed output on this box:
 ✅ pxx installed (/home/cwe/ai/dx-orchestrator/.venv/bin/pxx)
 ✅ PSOperator importable
 ✅ PSOperator run_agent script at /home/cwe/ai/psoperator/examples/run_agent.py
-✅ Role cards parse cleanly (38 files at /home/cwe/ai/sdlc-agent-roles/skills/sdlc-role/roles)
+✅ Role cards parse cleanly (40 files at /home/cwe/ai/sdlc-agent-roles/skills/sdlc-role/roles)
 ✅ devswarm-ledger at /home/cwe/ai/devswarm-ledger-reference
 ✅ gpg installed (/usr/bin/gpg)
 ✅ Hardware manifest at /home/cwe/.config/dx/hardware_manifest.yml
@@ -193,10 +193,10 @@ sdet                  High  S8
 technical-writer      High  S6 / S7 / S9 split        
 ```
 
-Fit distribution across all 38 cards:
+Fit distribution across all 40 cards:
 - **High** (11): fully delegable to an agent
 - **Partial** (20): agent drafts, human decides
-- **Anchored** (7): requires a named accountable human; `dx run` refuses to execute autonomously
+- **Anchored** (9): requires a named accountable human; `dx run` refuses to execute autonomously
 
 Inspect one card:
 
@@ -212,7 +212,7 @@ Validate structural integrity:
 dx roles validate
 ```
 
-Runs six mechanical checks per card (fit/anchored consistency, seat present, non-empty mandate + must_not, anchored roles have handoff, slug format). Expected: `✅ PASS: 38 role cards validated.`
+Runs six mechanical checks per card (fit/anchored consistency, seat present, non-empty mandate + must_not, anchored roles have handoff, slug format). Expected: `✅ PASS: 40 role cards validated.`
 
 ---
 
