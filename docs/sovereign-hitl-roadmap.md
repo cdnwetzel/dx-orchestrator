@@ -94,7 +94,11 @@ portability and a fast local perception loop — do not apply here: we are a
 human-gated *staging* system, not a fast autonomous vision loop, so a local
 perception brain buys nothing the fleet doesn't. The accepted cost is a hard
 dependency on reachable sovereign inference — right for regulated on-prem, and why
-the self-contained appliance profile is Phase G, deliberately last.
+the self-contained appliance profile is Phase G, deliberately last. A **Mac
+Studio (M4 Max, 36 GB)** is a candidate node for that sovereign fleet — it runs
+~30B-class quantized models on-device — but note the stance: it would be a *fleet
+brain* the KVM device dispatches perception/reasoning to, never the witness/actuator
+itself. The compute can be a Mac Studio; the device driving the target stays dumb.
 
 ## 3. Phase plan
 
@@ -222,6 +226,21 @@ monitor needs the software path for overlays (hardware can't draw).
    surface itself** — the approval is a token-bound cryptographic act that writes
    a ledger row, not a jump-back-and-type. It is glanceable status *plus* the gate,
    not status alone.
+
+   **Existing prior art we already own — `ai_macropad`.** An Elgato Stream Deck
+   control surface (`~/ai/ai_macropad`) already drives a fleet of terminal agents
+   with literal **APPROVE / REJECT / STOP** keys: each agent's hooks report state
+   into a flat-file registry, a daemon paints the deck (who is working / waiting /
+   needs-you), and a key press becomes `tmux send-keys` to the focused session.
+   That is the AgentMax pattern in *physical, local-first* form, already built —
+   the strongest existing model for this console. It has the same governance gap
+   as the tablet: its APPROVE press is convenience routing (it *types* the
+   approval), not an RL-010 signature. So the sovereign version is the same key
+   press wired to a **token tap** — the Stream Deck is the glanceable gesture
+   surface, the OpenPGP token produces the signature and the ledger row. A
+   physical, at-a-glance, sovereign approval console is a small step from what
+   `ai_macropad` already does (and the `mcp__streamdeck-agents__*` tools already
+   bind keys and labels programmatically).
 
    **The RL-010 line this must not cross:** the tablet is the display and the
    *gesture*, never the signer. The signature must still come from a
