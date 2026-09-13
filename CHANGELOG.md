@@ -11,8 +11,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`dx doctor` probes model availability, not just TCP reachability**
   (`dx.model_probe`). A node answers its port while the model bound to it is on
-  disk but not resident, so every task on that tier fails `MODEL_UNAVAILABLE` — a
-  green doctor over an unusable tier. Doctor now asks each node what it actually
+  disk but not resident, so the tier's tasks pay a cold-load — a delay that stalls
+  or fails outright on a constrained node — even though the port reads reachable.
+  Doctor now asks each node what it actually
   serves and classifies the bound model: **resident** (ollama `/api/ps`),
   **on-disk-cold** (in `/api/tags`, not `/api/ps` — will cold-load, may stall),
   **not-served** (absent from `/api/tags` or the OpenAI `/v1/models` list —

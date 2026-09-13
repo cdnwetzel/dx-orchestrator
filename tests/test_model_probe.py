@@ -114,6 +114,15 @@ def test_a_non_object_json_body_is_unreachable_not_a_crash(monkeypatch):
     assert probe_model("http://n:11434", "ollama", "x").status == mp.UNREACHABLE
 
 
+def test_a_non_list_collection_is_unreachable_not_not_served(monkeypatch):
+    # {"models": {}} / {"data": {}} are broken responses (the contracts are lists);
+    # they must read unreachable, not misclassify a served model as absent.
+    monkeypatch.setattr(mp.requests, "get", lambda url, timeout, headers=None: _Resp({"models": {}}))
+    assert probe_model("http://n:11434", "ollama", "x").status == mp.UNREACHABLE
+    monkeypatch.setattr(mp.requests, "get", lambda url, timeout, headers=None: _Resp({"data": {}}))
+    assert probe_model("http://r:8888", "openai-compatible", "x").status == mp.UNREACHABLE
+
+
 def test_pxx_api_key_is_sent_when_set(monkeypatch):
     monkeypatch.setenv("PXX_API_KEY", "secret-xyz")
     captured = {}

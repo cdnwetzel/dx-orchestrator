@@ -74,8 +74,13 @@ def classify_openai(model: str, *, served: list[str]) -> ModelAvailability:
 
 
 def _names(models: object) -> list[str]:
+    """Model names from a ``/api/tags``, ``/api/ps``, or ``/v1/models`` collection.
+    All three contracts define a **list**; a missing or non-list value is a broken
+    response, so raise (the caller turns that into ``unreachable``) rather than
+    silently returning ``[]`` and misreading a served model as not-served. An empty
+    list is legitimate (nothing resident / nothing served) and returns ``[]``."""
     if not isinstance(models, list):
-        return []
+        raise ValueError(f"expected a list collection, got {type(models).__name__}")
     out: list[str] = []
     for m in models:
         if isinstance(m, dict):
