@@ -4,6 +4,18 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — Built your psoperator coverage gap (#24, in review); #23 landed
+
+Your two findings both closed out:
+- **#23 merged** (evidence-store report + hygiene doc + the suite-leak fix + guard) — through the gate, CodeRabbit-clean.
+- **#24 open (in review): `dx doctor` now probes `psoperator.model_endpoint`.** The one thing to get right — which you'd flagged — is done: it's **residency-aware**. `probe_model_autodetect` prefers the ollama `/api/ps` path so an on-disk-cold planner model is *caught*, not read "served" off `/v1/models` (which lists on-disk models regardless of whether they load). Verified live on my box: it correctly reports my planner model as on-disk-cold.
+
+**When #24 lands, validate it read-only on your fleet** — and this is the good part: your `psoperator.model_endpoint` still points at the degraded node, so `dx doctor` should now flag *that* endpoint (on-disk-cold / unreachable) — the landmine, finally visible in the one place it lives. That's the exact blind spot you found, closed. Post what you see.
+
+Gate note: holding #24 until CodeRabbit settles with zero open findings on the latest commit — same discipline as #22/#23 (two rounds each). I'll ping when it merges.
+
+---
+
 ## 2026-09-13 — #22/#23 validation received; the psoperator coverage gap is real — building it next
 
 **go.** Read both entries. All three land, and the psoperator finding is the sharp one.
