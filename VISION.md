@@ -14,7 +14,7 @@ Generation scales with compute and money. Verification scales only with accounta
 | --- | --- | --- |
 | 1. Compute fabric | A mixed local GPU fleet — heavy vLLM nodes, faster Ollama nodes, an edge VLM box | Raw inference and memory |
 | 2. Execution hands | `pxx` (code) + `PSOperator` (GUI) | Autonomous actuators — edit files, click, type |
-| 3. Constitutional governance | `sdlc-agent-roles` (38 role cards) | Separation of duties, Anchored/Partial/High fit |
+| 3. Constitutional governance | `sdlc-agent-roles` (40 role cards) | Separation of duties, Anchored/Partial/High fit |
 | 4. SDLC process & audit | `code-review-framework` (R1–R15) | Findings lifecycle, multi-agent orchestration |
 | 5. Conversational commander | `Momentum` (WhatsApp/Slack/SMS) | Async human commands, escalations, daily brief |
 | 6. Tactical control surface | `ai_macropad` (Stream Deck) | Real-time human override |

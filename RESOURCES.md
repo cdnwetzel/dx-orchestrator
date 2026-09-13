@@ -12,7 +12,7 @@ and opens short-lived TCP connections. It runs no model and holds no state.
 | Resource | Requirement | Notes |
 | --- | --- | --- |
 | CPU | Any x86-64 or arm64 | No inference happens here |
-| RAM | ~100 MB resident | Peak is the role registry (38 cards ≈ 400 KB of text) |
+| RAM | ~100 MB resident | Peak is the role registry (40 cards ≈ 420 KB of text) |
 | Disk — source | ~200 KB | 21 tracked files |
 | Disk — venv | ~130 MB | Dominated by `pxx-orchestrator` and its deps |
 | Disk — sibling clones | ~30 MB | `psoperator`, `sdlc-agent-roles`, `devswarm-ledger-reference` |
