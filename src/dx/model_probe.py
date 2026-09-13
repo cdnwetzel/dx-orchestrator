@@ -149,11 +149,18 @@ def probe_model_autodetect(endpoint: str, model: str, *, timeout: float = 4.0) -
     base = endpoint.rstrip("/")
     if base.endswith("/v1"):
         base = base[: -len("/v1")].rstrip("/")
+    # Step 1: is this an ollama node? /api/tags answering is the tell. Only a
+    # failure HERE means "not ollama" and justifies the /v1/models fallback.
     try:
         tags = _names(_json_object(requests.get(f"{base}/api/tags", timeout=timeout)).get("models"))
-        resident = _names(_json_object(requests.get(f"{base}/api/ps", timeout=timeout)).get("models"))
-        return classify_ollama(model, tags=tags, resident=resident)
     except (requests.RequestException, ValueError):
-        # Not an ollama node (or its API did not answer cleanly) — treat it as
-        # OpenAI-compatible, which also covers the genuinely-unreachable case.
         return probe_model(endpoint, "openai-compatible", model, timeout=timeout)
+    # Step 2: it IS ollama, so residency is the authoritative check. A /api/ps
+    # failure now is UNREACHABLE — never fall back to /v1/models, which cannot see
+    # residency and would read an on-disk-cold model as "served" (the exact blind
+    # spot this probe exists to close).
+    try:
+        resident = _names(_json_object(requests.get(f"{base}/api/ps", timeout=timeout)).get("models"))
+    except (requests.RequestException, ValueError) as exc:
+        return ModelAvailability(UNREACHABLE, f"{endpoint} /api/ps did not answer ({type(exc).__name__})")
+    return classify_ollama(model, tags=tags, resident=resident)

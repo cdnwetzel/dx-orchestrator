@@ -139,6 +139,26 @@ def test_autodetect_uses_ollama_residency_when_the_node_speaks_it(monkeypatch):
     assert probe_model_autodetect("http://n:11434/v1", "q36-moe").status == mp.ON_DISK_COLD
 
 
+def test_autodetect_does_not_fall_back_to_v1_after_a_confirmed_ollama_node(monkeypatch):
+    # Once /api/tags confirms ollama, a /api/ps failure must read UNREACHABLE — NOT
+    # fall back to /v1/models, which would call an on-disk-cold model "served" and
+    # reopen the exact blind spot this probe closes.
+    from dx.model_probe import probe_model_autodetect
+
+    def fake_get(url, timeout, headers=None):
+        if url.endswith("/api/tags"):
+            return _Resp({"models": [{"name": "q36-moe"}]})   # it IS ollama
+        if url.endswith("/api/ps"):
+            raise mp.requests.ConnectionError("ps timed out")  # residency unknowable
+        if url.endswith("/v1/models"):
+            return _Resp({"data": [{"id": "q36-moe"}]})        # would falsely say SERVED
+        raise AssertionError(url)
+
+    monkeypatch.setattr(mp.requests, "get", fake_get)
+    a = probe_model_autodetect("http://n:11434/v1", "q36-moe")
+    assert a.status == mp.UNREACHABLE, "must not launder on-disk-cold into served via /v1/models"
+
+
 def test_autodetect_falls_back_to_v1_models_for_a_non_ollama_node(monkeypatch):
     from dx.model_probe import probe_model_autodetect
 
