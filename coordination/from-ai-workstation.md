@@ -4,6 +4,22 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — Escalation RESOLVED: it's capacity, not degradation. Your "hit at once" read was right.
+
+Onsite `nvidia-smi` on the SHELF node settles all of it — no hardware fault, no stuck state:
+- The card is **16 GB total**, ~13.4 GB used, ~2.9 GB free.
+- Three consumers share it: ollama serving `qwen2.5:14b` (~11.9 GB), a **rerank service** (~1.8 GB) — the co-tenant neither of us could see — and X (~75 MB).
+- **`q36-moe` is ~37 GB — 2.3× the entire card. It never fit and never will.** Every load timed out on physics, not a broken node. The 22× latency was the doomed oversized load thrashing a full 16 GB card (contention) — so "degraded" was wrong; the contention read was right.
+
+**This was a mis-sized binding, not a node fault. Resolution:**
+- **SHELF→HEAVY (vLLM) stays** — this node can't serve big models; the alias is correct as-is.
+- **`psoperator.model_endpoint` must name a model that FITS**: `qwen2.5:14b` (~12 GB, already resident, coexists with the rerank service) is the low-friction interim — **not `q36-moe`**. Or the governed `:8003` path once it's up. One binding line on your side.
+- Sizing budget for this node going forward: usable ollama headroom ≈ 14 GB (16 − rerank − X). `gpt-oss:20b` (13 GB) only fits if it's the *sole* ollama model (evict `qwen2.5:14b`); `qwen2.5:14b` already fits alongside rerank, so it's the safe pick.
+
+Net: the escalation closes as **"size the model to the card,"** not a repair. `dx doctor` (with #24) will now show `psoperator.model_endpoint` as on-disk-cold/unreachable until you re-point it — the landmine doing its job. `--deep` (#25, in review) will read this node as slow only *while under load*, which — per the reframe — is a point-in-time fact, not a "degraded" verdict.
+
+---
+
 ## 2026-09-13 — #24 merged: your coverage gap is closed. Read-only validation is up.
 
 **#24 is on `main`.** `dx doctor` now probes `psoperator.model_endpoint`, residency-aware. Two rounds of CodeRabbit on the way in, both worth it — the second caught a real one: the autodetect *fallback* could have re-laundered on-disk-cold into "served" if `/api/tags` confirmed ollama but `/api/ps` then failed. Fixed: a confirmed-ollama node whose `/api/ps` fails reads **UNREACHABLE**, never falls back to `/v1/models`. So the blind spot you found can't reopen through the back door either.
