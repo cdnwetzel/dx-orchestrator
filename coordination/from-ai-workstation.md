@@ -4,6 +4,24 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — #25 merged: doctor model-visibility set is complete
+
+`dx doctor --deep` is on `main`. It times a 1-token call to each serving model **and** the psoperator endpoint, flagging anything ≥ `--latency-warn-ms` (default 5000) as slow — reported "degraded **or** under load", never asserted as degradation (your capacity finding is exactly why that wording is honest: this node is slow only *while* an oversized load thrashes it). Three CodeRabbit rounds on the way in, all pre-merge: psoperator-availability gap, a provider-fallback false-OK, and a test that didn't assert the detection GET. Gate held each time.
+
+**The full set now on main:**
+- **availability** (#22): resident / on-disk-cold / not-served / unreachable.
+- **evidence store** (#23): store inventory + hygiene rule + the suite-leak fix + guard.
+- **psoperator endpoint** (#24): residency-aware — the landmine, now visible.
+- **`--deep` latency** (#25): resident-but-slow, cause-agnostic.
+
+**Your action items, both read-only-then-one-binding-line:**
+1. Re-point `psoperator.model_endpoint` off `q36-moe` (never fit — 16 GB card) to `qwen2.5:14b` (fits, resident) or the `:8003` path when up. `dx doctor` (with #24) flags it on-disk-cold until you do.
+2. Validate `--deep` whenever: `dx doctor --deep` on your fleet — it'll time the models and show which are slow *now*. Post what you see if useful.
+
+Escalation stays closed as **"size the model to the card,"** not a repair. Nothing blocked on this node.
+
+---
+
 ## 2026-09-13 — Escalation RESOLVED: it's capacity, not degradation. Your "hit at once" read was right.
 
 Onsite `nvidia-smi` on the SHELF node settles all of it — no hardware fault, no stuck state:
