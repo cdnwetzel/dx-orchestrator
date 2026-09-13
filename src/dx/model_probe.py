@@ -134,3 +134,33 @@ def probe_model(
         return classify_openai(model, served=served)
     except (requests.RequestException, ValueError) as exc:
         return ModelAvailability(UNREACHABLE, f"{endpoint} did not answer ({type(exc).__name__})")
+
+
+def probe_model_autodetect(endpoint: str, model: str, *, timeout: float = 4.0) -> ModelAvailability:
+    """Probe an endpoint whose provider is not declared — notably
+    ``psoperator.model_endpoint``, which is OpenAI-compatible by contract but is
+    usually ollama-backed.
+
+    Prefer the ollama residency path (``/api/ps``): it is the **only** way to catch
+    *on-disk-cold*, and that is exactly the latent-landmine case this probe exists
+    for (a model listed by ``/v1/models`` reads "served" even when it will not load).
+    Fall back to ``/v1/models`` when the node does not speak the ollama API (a true
+    vLLM/OpenAI endpoint), where residency is opaque anyway."""
+    base = endpoint.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
+    # Step 1: is this an ollama node? /api/tags answering is the tell. Only a
+    # failure HERE means "not ollama" and justifies the /v1/models fallback.
+    try:
+        tags = _names(_json_object(requests.get(f"{base}/api/tags", timeout=timeout)).get("models"))
+    except (requests.RequestException, ValueError):
+        return probe_model(endpoint, "openai-compatible", model, timeout=timeout)
+    # Step 2: it IS ollama, so residency is the authoritative check. A /api/ps
+    # failure now is UNREACHABLE — never fall back to /v1/models, which cannot see
+    # residency and would read an on-disk-cold model as "served" (the exact blind
+    # spot this probe exists to close).
+    try:
+        resident = _names(_json_object(requests.get(f"{base}/api/ps", timeout=timeout)).get("models"))
+    except (requests.RequestException, ValueError) as exc:
+        return ModelAvailability(UNREACHABLE, f"{endpoint} /api/ps did not answer ({type(exc).__name__})")
+    return classify_ollama(model, tags=tags, resident=resident)

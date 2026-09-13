@@ -17,13 +17,14 @@ from .config_loader import (
     get_config_path,
     get_gui_config,
     get_ledger_repo_path,
+    get_psoperator_config,
     get_psoperator_repo,
     get_roles_path,
     load_config,
     validate_manifest,
 )
 from .evidence import MERGE_SCHEMA, default_evidence_root, summarize_store
-from .model_probe import NOT_SERVED, probe_model
+from .model_probe import NOT_SERVED, probe_model, probe_model_autodetect
 from .role_registry import get_parse_failures, load_registry
 
 # doctor asks tools for their version; none of them should take longer.
@@ -250,6 +251,21 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 print(f"{icon} model {model} @ {ep}: {avail.detail}")
         except Exception as exc:
             print(f"⚠️  could not probe model availability: {exc}")
+
+        # The psoperator planner endpoint is not a role route, so the loop above
+        # never sees it — yet it is the one endpoint that can be a latent landmine
+        # (a model that will not load, surfacing only when the desktop agent first
+        # runs). Probe it explicitly, provider-autodetected so an ollama-backed
+        # endpoint is checked for residency (on-disk-cold), not just listing.
+        try:
+            psop = get_psoperator_config()
+            ep, model = psop.get("model_endpoint"), psop.get("model_name")
+            if ep and model:
+                avail = probe_model_autodetect(str(ep), str(model))
+                icon = "✅" if avail.ok else ("❌" if avail.status == NOT_SERVED else "⚠️")
+                print(f"{icon} psoperator model {model} @ {ep}: {avail.detail}")
+        except Exception as exc:
+            print(f"⚠️  could not probe the psoperator model endpoint: {exc}")
 
         # Observer health (non-critical). Probed only when the observer is
         # configured for use — the attestation key path is the intent signal —

@@ -9,6 +9,13 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`dx doctor` probes the psoperator planner endpoint too.** The role-availability
+  loop only sees role routes and `gui_verification`; `psoperator.model_endpoint` was
+  unprobed — the one endpoint that can be a latent landmine (a model that will not
+  load, surfacing only when the desktop agent first runs). Doctor now probes it,
+  provider-**autodetected**: an ollama-backed endpoint is checked for *residency*
+  (`/api/ps`) so an on-disk-cold model is caught, rather than read "served" off
+  `/v1/models` (which lists on-disk models regardless of whether they will load).
 - **`dx doctor` reports the evidence store, and a prune rule is documented.**
   Doctor now inventories the default store (`~/.local/state/dx/evidence`) by family
   and count, so it is never an unwatched pile, and flags `dx.merge_gate.v1` bundles
