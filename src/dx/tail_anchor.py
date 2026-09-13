@@ -34,11 +34,30 @@ def _evidence(source: str, tail_hash: str) -> str:
     return f"{source}{_EVIDENCE_PREFIX}{tail_hash}"
 
 
+def _split_evidence(evidence: str) -> tuple[str, str] | None:
+    """Split an anchor row's evidence back into ``(source, tail_hash)`` on the
+    last ``_EVIDENCE_PREFIX``, so a source name that itself contains the separator
+    still round-trips. Returns None if the evidence is not an anchor evidence."""
+    marker = evidence.rfind(_EVIDENCE_PREFIX)
+    if marker < 0:
+        return None
+    return evidence[:marker], evidence[marker + len(_EVIDENCE_PREFIX):]
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
 def anchor_tail(anchor_repo: Path, *, source: str, tail_hash: str) -> str:
     """Append an anchor row pinning ``source``'s current ``tail_hash`` to the
     anchor log in ``anchor_repo`` (a ledger repo with a genesis row). Returns the
     new anchor-log head. The row chains onto the anchor log, so the anchor history
-    is itself append-only and independently verifiable."""
+    is itself append-only and independently verifiable.
+
+    ``tail_hash`` must be a 64-char lowercase sha256 hex digest — anchoring a
+    non-hex value is a caller bug that would silently poison later comparisons."""
+    if not _is_sha256(tail_hash):
+        raise LedgerWriteError(f"tail_hash is not a sha256 hex digest: {tail_hash!r}")
     ledger = anchor_repo / "ledger.jsonl"
     row = build_row(
         action=ANCHOR_ACTION,
@@ -54,14 +73,16 @@ def latest_anchored_tail(anchor_ledger: Path, source: str) -> str | None:
     log has never anchored it."""
     if not anchor_ledger.exists():
         raise LedgerWriteError(f"anchor ledger not found: {anchor_ledger}")
-    prefix = _evidence(source, "")
     found: str | None = None
     for line in anchor_ledger.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
-        if row.get("action") == ANCHOR_ACTION and str(row.get("evidence", "")).startswith(prefix):
-            found = str(row["evidence"])[len(prefix):]
+        if row.get("action") != ANCHOR_ACTION:
+            continue
+        split = _split_evidence(str(row.get("evidence", "")))
+        if split is not None and split[0] == source:  # exact source identity, not a prefix
+            found = split[1]
     return found
 
 

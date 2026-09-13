@@ -45,7 +45,7 @@ def _record(residency: str, claimed: str | None = None) -> dict:
         stage_id="S-1",
         role="workflow-operator",
         signer=_SIGNER,
-        residency=residency,
+        resolve_residency=lambda _fp: residency,
         claimed_mechanism=claimed,
     )
 
@@ -86,6 +86,24 @@ def test_the_signer_identity_is_carried_from_the_verified_signature():
 def test_a_keyless_residency_cannot_produce_an_approval():
     with pytest.raises(ApprovalKeyError, match="no signing secret"):
         _record("absent")
+
+
+def test_the_resolver_is_called_with_the_verified_signer_fingerprint():
+    # The whole point of the resolver seam: residency is derived from *this*
+    # signer's key. A resolver that ignored its argument (as the other synthetic
+    # resolvers do) would keep the suite green even if the wrong fingerprint were
+    # passed — so pin that build_approval_record hands it signer.fingerprint.
+    seen: list[str] = []
+
+    def _recording_resolver(fp: str) -> str:
+        seen.append(fp)
+        return "card"
+
+    build_approval_record(
+        world=_world(), stage_id="S-1", role="r", signer=_SIGNER,
+        resolve_residency=_recording_resolver,
+    )
+    assert seen == [_SIGNER.fingerprint]
 
 
 # --- the canonical message --------------------------------------------------
@@ -130,25 +148,32 @@ def test_reverify_refuses_an_approval_with_no_bindings_as_malformed():
 
 def test_reverify_refuses_an_approval_missing_a_binding_key_as_malformed():
     approval = build_approval_record(
-        world=_world(), stage_id="S-1", role="r", signer=_SIGNER, residency="card"
+        world=_world(), stage_id="S-1", role="r", signer=_SIGNER, resolve_residency=lambda _fp: "card"
     )
     del approval["bindings"]["frame_hash"]  # a broken record, not a moved world
     with pytest.raises(MalformedApprovalError, match="frame_hash"):
         reverify_bindings(approval, _world())
 
 
+def test_a_single_moved_binding_reads_grammatically_singular():
+    # "1 binding moved", not "1 binding(s) moved" — the refusal is operator-facing.
+    approval = _record("card")
+    with pytest.raises(StaleStageError, match=r"1 binding moved"):
+        reverify_bindings(approval, _world(frame_hash="z" * 64))
+
+
 def test_reverify_reports_every_moved_binding_at_once():
     # dx #4: when more than one binding moved, one refusal names them all — the
     # operator is not made to fix them one re-run at a time.
     approval = build_approval_record(
-        world=_world(), stage_id="S-1", role="r", signer=_SIGNER, residency="card"
+        world=_world(), stage_id="S-1", role="r", signer=_SIGNER, resolve_residency=lambda _fp: "card"
     )
     observed = _world(frame_hash="z" * 64, payload_hash="y" * 64)
     with pytest.raises(StaleStageError) as exc:
         reverify_bindings(approval, observed)
     msg = str(exc.value)
     assert "frame hash" in msg and "payload hash" in msg  # both named
-    assert "2 binding(s) moved" in msg
+    assert "2 bindings moved" in msg
     assert "ledger head" not in msg and "bundle hash" not in msg  # the unmoved are not named
 
 

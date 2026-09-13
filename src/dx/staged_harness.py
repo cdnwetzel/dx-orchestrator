@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 from dx.ledger_utils import SignerIdentity
 from dx.staged_action import (
+    ResidencyResolver,
     StaleStageError,
     WorldState,
     build_approval_record,
@@ -87,14 +88,15 @@ def run_full_loop(
     role: str,
     world: WorldState,
     signer: SignerIdentity,
-    residency: str,
+    resolve_residency: ResidencyResolver,
     observe_now: Observe,
     executor: Executor,
     append: LedgerAppend,
 ) -> ActReceipt:
     """Act 1. Stage → review → sign → re-verify → execute, fully receipted.
 
-    The mechanism is derived from ``residency`` (never asserted). ``observe_now``
+    The mechanism is derived from the signer's key via ``resolve_residency`` —
+    ``resolve_residency(signer.fingerprint)`` — never asserted. ``observe_now``
     reads the world *at execution time* — the happy path is that nothing moved, so
     it matches the signed world and execution proceeds. But the re-verification is
     real, not vacuous: if a binding moved between signing and execution,
@@ -105,7 +107,8 @@ def run_full_loop(
     _stage_and_review(stage_id, append, actions)
 
     approval = build_approval_record(
-        world=world, stage_id=stage_id, role=role, signer=signer, residency=residency
+        world=world, stage_id=stage_id, role=role, signer=signer,
+        resolve_residency=resolve_residency,
     )
     append("SIGNED", f"approval mechanism={approval['mechanism']} signer={signer.fingerprint[:12]}")
     actions.append("SIGNED")
@@ -170,7 +173,7 @@ def run_stale_refusal(
     role: str,
     world: WorldState,
     signer: SignerIdentity,
-    residency: str,
+    resolve_residency: ResidencyResolver,
     observe_now: Observe,
     executor: Executor,
     append: LedgerAppend,
@@ -188,7 +191,8 @@ def run_stale_refusal(
     _stage_and_review(stage_id, append, actions)
 
     approval = build_approval_record(
-        world=world, stage_id=stage_id, role=role, signer=signer, residency=residency
+        world=world, stage_id=stage_id, role=role, signer=signer,
+        resolve_residency=resolve_residency,
     )
     append("SIGNED", f"approval mechanism={approval['mechanism']} signer={signer.fingerprint[:12]}")
     actions.append("SIGNED")

@@ -648,9 +648,10 @@ class TestUsageAndSpecTemplate:
         """A card count is a governance claim wherever it appears. This guard used
         to check only the README, and the count drifted in TUTORIAL.md unnoticed
         (dx #6) — the 0.7.2 lesson: a check on one file reads as enforced and is
-        not. Now every tracked doc that states a count is checked against the deck,
-        in every phrasing the docs use ('40 role cards', 'one of 40', 'all 40
-        cards', 'N files at .../roles')."""
+        not. Now the two docs that state a count — README.md and TUTORIAL.md — are
+        each checked against the deck, in every phrasing they use ('40 role cards',
+        'one of 40', 'all 40 cards', 'N files at .../roles'). Extend the tuple below
+        when another doc starts stating the count."""
         deck = len(list(REAL_CARDS.glob("*.md")))
         for label, text in (("README.md", README), ("TUTORIAL.md", TUTORIAL)):
             counts = _role_card_counts(text)

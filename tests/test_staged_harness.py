@@ -61,7 +61,7 @@ def test_full_loop_appends_the_lifecycle_and_executes():
         role="workflow-operator",
         world=_world(),
         signer=_SIGNER,
-        residency="software",
+        resolve_residency=lambda _fp: "software",
         observe_now=_world,  # the world is unchanged at execution time
         executor=lambda a: ran.append(a) or "replayed",
         append=led.append,
@@ -79,7 +79,7 @@ def test_full_loop_refuses_and_does_not_execute_if_the_world_moved():
     called: list[bool] = []
     with pytest.raises(StaleStageError):
         run_full_loop(
-            stage_id="S-1", role="r", world=_world(), signer=_SIGNER, residency="card",
+            stage_id="S-1", role="r", world=_world(), signer=_SIGNER, resolve_residency=lambda _fp: "card",
             observe_now=lambda: _world(frame_hash="moved" + "0" * 59),
             executor=lambda a: called.append(True), append=led.append,
         )
@@ -89,14 +89,14 @@ def test_full_loop_refuses_and_does_not_execute_if_the_world_moved():
 def test_full_loop_mechanism_is_derived_from_the_key():
     led = _Ledger()
     soft = run_full_loop(
-        stage_id="S-1", role="r", world=_world(), signer=_SIGNER, residency="software",
+        stage_id="S-1", role="r", world=_world(), signer=_SIGNER, resolve_residency=lambda _fp: "software",
         observe_now=_world, executor=lambda a: None, append=led.append,
     )
     assert MECHANISM_FALLBACK in soft.detail  # software key -> marked fallback
 
     led2 = _Ledger()
     card = run_full_loop(
-        stage_id="S-2", role="r", world=_world(), signer=_SIGNER, residency="card",
+        stage_id="S-2", role="r", world=_world(), signer=_SIGNER, resolve_residency=lambda _fp: "card",
         observe_now=_world, executor=lambda a: None, append=led2.append,
     )
     assert MECHANISM_STANDARD in card.detail  # card key -> the RL-010 standard
@@ -143,7 +143,7 @@ def test_stale_refusal_never_calls_the_executor():
         role="workflow-operator",
         world=_world(),
         signer=_SIGNER,
-        residency="software",
+        resolve_residency=lambda _fp: "software",
         observe_now=lambda: _world(frame_hash="moved" + "0" * 59),
         executor=executor,
         append=led.append,
@@ -159,7 +159,7 @@ def test_stale_refusal_catches_every_moved_binding(moved_field):
     led = _Ledger()
     called: list[bool] = []
     receipt = run_stale_refusal(
-        stage_id="S-4", role="r", world=_world(), signer=_SIGNER, residency="software",
+        stage_id="S-4", role="r", world=_world(), signer=_SIGNER, resolve_residency=lambda _fp: "software",
         observe_now=lambda: _world(**{moved_field: "z" * 64}),
         executor=lambda a: called.append(True),
         append=led.append,
@@ -175,7 +175,7 @@ def test_act3_setup_error_if_the_world_did_not_move():
     called: list[bool] = []
     with pytest.raises(HarnessError, match="staleness gate was not exercised"):
         run_stale_refusal(
-            stage_id="S-5", role="r", world=_world(), signer=_SIGNER, residency="software",
+            stage_id="S-5", role="r", world=_world(), signer=_SIGNER, resolve_residency=lambda _fp: "software",
             observe_now=lambda: _world(),  # unchanged -> setup error
             executor=lambda a: called.append(True),  # must NOT be delegated to
             append=led.append,

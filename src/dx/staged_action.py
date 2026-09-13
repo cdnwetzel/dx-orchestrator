@@ -30,6 +30,10 @@ from dx.ledger_utils import SignerIdentity
 
 T = TypeVar("T")
 
+#: Resolves a signer fingerprint to its key residency ("card"/"software"/"absent").
+#: Production passes dx.approval_key.signing_key_residency; tests inject a fake.
+ResidencyResolver = Callable[[str], str]
+
 
 class StaleStageError(Exception):
     """A staged action's world-state moved since it was approved. Names every
@@ -70,17 +74,21 @@ def build_approval_record(
     stage_id: str,
     role: str,
     signer: SignerIdentity,
-    residency: str,
+    resolve_residency: ResidencyResolver,
     claimed_mechanism: str | None = None,
 ) -> dict[str, object]:
     """Assemble the ``approval`` block for an APPROVED staged bundle.
 
-    The mechanism is *derived* from ``residency`` via
-    :func:`dx.approval_key.resolve_mechanism`; a ``claimed_mechanism`` that
-    over-states the key (a software key claiming the hardware standard) is refused
-    there. The signer identity comes from a verified detached signature, never
-    from self-report.
+    Residency is **derived from the signer's own key** —
+    ``resolve_residency(signer.fingerprint)`` — never taken as a caller string, so
+    a software signer cannot be passed off as a card and mint an ``openpgp-card``
+    receipt. The mechanism is then derived from that residency
+    (:func:`dx.approval_key.resolve_mechanism`); a ``claimed_mechanism`` that
+    over-states the key is refused there. Production passes
+    :func:`dx.approval_key.signing_key_residency`; synthetic tests inject a fake
+    resolver. The signer identity itself comes from a verified detached signature.
     """
+    residency = resolve_residency(signer.fingerprint)
     mechanism = resolve_mechanism(residency, claimed=claimed_mechanism)
     return {
         "approval_class": "human_attested",
@@ -132,8 +140,9 @@ def reverify_bindings(approval: dict[str, object], observed: WorldState) -> None
         if was != now
     ]
     if moved:
+        noun = "binding" if len(moved) == 1 else "bindings"
         raise StaleStageError(
-            f"{len(moved)} binding(s) moved since approval: {'; '.join(moved)}. "
+            f"{len(moved)} {noun} moved since approval: {'; '.join(moved)}. "
             "Re-review required (RL-003). The stage is not executed."
         )
 
