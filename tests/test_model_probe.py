@@ -192,3 +192,50 @@ def test_ok_is_only_resident_or_served():
     assert not ModelAvailability(mp.ON_DISK_COLD, "").ok
     assert not ModelAvailability(mp.NOT_SERVED, "").ok
     assert not ModelAvailability(mp.UNREACHABLE, "").ok
+
+
+# --- --deep latency probe -------------------------------------------------
+
+
+def test_latency_fast_call_is_not_slow(monkeypatch):
+    from dx.model_probe import measure_latency
+
+    monkeypatch.setattr(mp.requests, "post", lambda url, json, timeout, headers=None: _Resp({"ok": True}))
+    lat = measure_latency("http://n:11434", "ollama", "m", warn_ms=5000.0)
+    assert lat.ok and not lat.slow and lat.elapsed_ms is not None
+
+
+def test_latency_over_threshold_is_flagged_slow(monkeypatch):
+    import dx.model_probe as m
+
+    # freeze a big elapsed by advancing the module's monotonic clock between calls
+    ticks = iter([100.0, 106.0])  # 6 s elapsed
+    monkeypatch.setattr(m.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(m.requests, "post", lambda url, json, timeout, headers=None: _Resp({"ok": True}))
+    lat = m.measure_latency("http://n:11434", "ollama", "m", warn_ms=5000.0)
+    assert lat.ok and lat.slow and "degraded or under load" in lat.detail
+
+
+def test_latency_failed_call_is_not_ok(monkeypatch):
+    from dx.model_probe import measure_latency
+
+    def boom(url, json, timeout, headers=None):
+        raise mp.requests.ConnectionError("refused")
+
+    monkeypatch.setattr(mp.requests, "post", boom)
+    lat = measure_latency("http://n:11434", "ollama", "m")
+    assert not lat.ok and lat.slow and lat.elapsed_ms is None
+
+
+def test_latency_openai_uses_chat_completions(monkeypatch):
+    from dx.model_probe import measure_latency
+
+    seen = {}
+
+    def fake_post(url, json, timeout, headers=None):
+        seen["url"] = url
+        return _Resp({"ok": True})
+
+    monkeypatch.setattr(mp.requests, "post", fake_post)
+    measure_latency("http://r:8888/v1", "openai-compatible", "m")
+    assert seen["url"] == "http://r:8888/v1/chat/completions"

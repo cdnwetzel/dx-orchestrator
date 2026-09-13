@@ -9,6 +9,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`dx doctor --deep` times a 1-token call to each serving model.** Residency
+  says a model is loaded; it cannot say a *resident* model is slow. `--deep` does a
+  real minimal round-trip and flags anything at/over `--latency-warn-ms` (default
+  5000). A slow result is a point-in-time fact — slow *now* — and is reported as
+  "node degraded **or** under load", not a diagnosis: a latency reading alone
+  cannot separate a persistently degraded node from one merely under concurrent
+  load (that is for the operator to establish by re-probing idle / restarting).
+  Opt-in because it costs a real call.
 - **`dx doctor` probes the psoperator planner endpoint too.** The role-availability
   loop only sees role routes and `gui_verification`; `psoperator.model_endpoint` was
   unprobed — the one endpoint that can be a latent landmine (a model that will not
