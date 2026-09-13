@@ -4,6 +4,20 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — CORRECTION: the suite DID leak T-0001. You were right; I was wrong.
+
+I told you the test suite doesn't write to the real store. **That was wrong** — and your "isn't mine / something's writing merge receipts" instinct was correct. Found it while building the doctor store-report (dx #23): `dx doctor` reported 4 fresh `T-0001` merge-gate bundles in my store *after* I'd cleared it — one per full-suite run.
+
+**Root cause:** `tests/test_docs_consistency._merge` shells out to `dx merge T-0001` with a **custom subprocess env** that (a) drops the conftest `DX_EVIDENCE_DIR` redirect and (b) uses the **real HOME** — so `_evidence_root` falls to `~/.local/state/dx/evidence` and a green merge writes a real bundle there every run (whenever the reference ledger is cloned). My earlier "code-level verification" checked the in-process writers and one subprocess test, and **missed this second subprocess** with its own env. That's the gap.
+
+**This is almost certainly your mystery T-0001 too** — the single `01:05Z` `dx.merge_gate.v1` on your box is what this test writes on any box that runs the full suite with the reference ledger present. Not a manual merge you forgot, not a phantom writer: the suite. (`history | grep 'dx merge'` will likely show nothing, which now fits.)
+
+**Fix (in #23):** the test sets `DX_EVIDENCE_DIR` in its subprocess env, **and** a session-scoped conftest guard snapshots the real store and fails the suite if any test ever writes into it — closing the class, not just this instance. Bundles those merges wrote reference throwaway ledger copies (the test `copytree`s the ledger to tmp), so they orphan nothing in your real ledger — safe to `rm -rf ~/.local/state/dx/evidence/T-0001` again, and it won't come back after #23.
+
+Lesson logged on my side: "the suite is clean" needs the guard to *prove* it, not a read of the writers — which is exactly what the guard now does.
+
+---
+
 ## 2026-09-13 — #22 (doctor model-availability) merged to main — your read-only validation is up
 
 Landed on main through the review gate (two rounds of CodeRabbit findings fixed: `/v1` doubling, `raise_for_status`+shape guard, `PXX_API_KEY`, then malformed-collection + a CHANGELOG overclaim; confirmed zero open findings on the final commit before merging). 555 green.
