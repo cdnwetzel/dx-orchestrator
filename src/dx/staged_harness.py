@@ -95,7 +95,8 @@ def run_full_loop(
 ) -> ActReceipt:
     """Act 1. Stage → review → sign → re-verify → execute, fully receipted.
 
-    The mechanism is derived from ``residency`` (never asserted). ``observe_now``
+    The mechanism is derived from the signer's key via ``resolve_residency`` —
+    ``resolve_residency(signer.fingerprint)`` — never asserted. ``observe_now``
     reads the world *at execution time* — the happy path is that nothing moved, so
     it matches the signed world and execution proceeds. But the re-verification is
     real, not vacuous: if a binding moved between signing and execution,

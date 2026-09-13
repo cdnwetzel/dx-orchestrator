@@ -88,6 +88,24 @@ def test_a_keyless_residency_cannot_produce_an_approval():
         _record("absent")
 
 
+def test_the_resolver_is_called_with_the_verified_signer_fingerprint():
+    # The whole point of the resolver seam: residency is derived from *this*
+    # signer's key. A resolver that ignored its argument (as the other synthetic
+    # resolvers do) would keep the suite green even if the wrong fingerprint were
+    # passed — so pin that build_approval_record hands it signer.fingerprint.
+    seen: list[str] = []
+
+    def _recording_resolver(fp: str) -> str:
+        seen.append(fp)
+        return "card"
+
+    build_approval_record(
+        world=_world(), stage_id="S-1", role="r", signer=_SIGNER,
+        resolve_residency=_recording_resolver,
+    )
+    assert seen == [_SIGNER.fingerprint]
+
+
 # --- the canonical message --------------------------------------------------
 
 
