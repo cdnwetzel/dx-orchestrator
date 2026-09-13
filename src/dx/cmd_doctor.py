@@ -22,6 +22,7 @@ from .config_loader import (
     load_config,
     validate_manifest,
 )
+from .model_probe import NOT_SERVED, probe_model
 from .role_registry import get_parse_failures, load_registry
 
 # doctor asks tools for their version; none of them should take longer.
@@ -226,6 +227,28 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                     print(f"⚠️  {label} → {key} not reachable")
         except Exception as exc:
             print(f"⚠️  could not derive probes from manifest: {exc}")
+
+        # Model availability (non-critical). TCP "reachable" above says nothing
+        # about whether the bound MODEL can serve: a node answers the port while
+        # its model is on disk but not resident, and every task on that tier fails
+        # MODEL_UNAVAILABLE. Ask each node what it actually serves so a green
+        # doctor cannot coexist with an unusable tier.
+        try:
+            cfg = load_config()
+            probed: set[tuple[str, str]] = set()
+            for _slug, role in (cfg.get("roles") or {}).items():
+                role = role or {}
+                ep, provider, model = role.get("endpoint"), role.get("provider"), role.get("model")
+                if not (ep and provider and model):
+                    continue
+                if (ep, model) in probed:
+                    continue
+                probed.add((ep, model))
+                avail = probe_model(ep, provider, model)
+                icon = "✅" if avail.ok else ("❌" if avail.status == NOT_SERVED else "⚠️")
+                print(f"{icon} model {model} @ {ep}: {avail.detail}")
+        except Exception as exc:
+            print(f"⚠️  could not probe model availability: {exc}")
 
         # Observer health (non-critical). Probed only when the observer is
         # configured for use — the attestation key path is the intent signal —
