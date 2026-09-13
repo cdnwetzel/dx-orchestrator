@@ -15,6 +15,33 @@ ROLES_DIR = FIXTURES / "roles"
 MANIFEST = FIXTURES / "manifest.yml"
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _no_writes_to_the_real_evidence_store():
+    """Fail the session if any test writes a bundle into the REAL default store.
+
+    The per-test fixture redirects DX_EVIDENCE_DIR, but a subprocess launched with
+    a *custom* env (not inheriting it) and the real HOME slips past that and writes
+    into ~/.local/state/dx/evidence — which is exactly how a `dx merge T-0001`
+    transcript test leaked a bundle there on every run. This guard catches that
+    class outright: it snapshots the real store and asserts nothing new appeared.
+    """
+    from dx.evidence import DEFAULT_EVIDENCE_ROOT
+
+    def snapshot() -> set[str]:
+        if not DEFAULT_EVIDENCE_ROOT.exists():
+            return set()
+        return {str(p) for p in DEFAULT_EVIDENCE_ROOT.glob("*/*")}
+
+    before = snapshot()
+    yield
+    leaked = snapshot() - before
+    assert not leaked, (
+        f"a test wrote into the REAL evidence store {DEFAULT_EVIDENCE_ROOT} — a "
+        "subprocess dropped DX_EVIDENCE_DIR? Set it in the subprocess env. "
+        f"Leaked: {sorted(leaked)}"
+    )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_dx_env(monkeypatch, tmp_path_factory):
     """Point dx at fixtures and drop any inherited dx env for every test."""

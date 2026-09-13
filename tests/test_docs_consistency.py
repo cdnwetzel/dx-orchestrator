@@ -359,6 +359,11 @@ class TestMergeTranscriptFidelity:
             copy = Path(tmp) / "ledger"
             shutil.copytree(ledger or REF_LEDGER, copy)
             env["DX_LEDGER_REPO"] = str(copy)
+            # The subprocess gets a custom env, so it does NOT inherit the conftest
+            # DX_EVIDENCE_DIR redirect and HOME is the real home — without this a
+            # green `dx merge T-0001` writes a real bundle into ~/.local/state/dx/
+            # evidence every suite run. Confine it to the throwaway dir.
+            env["DX_EVIDENCE_DIR"] = str(Path(tmp) / "evidence")
             return subprocess.run(
                 [sys.executable, "-m", "dx.cli", "merge", task_id, *extra],
                 capture_output=True, text=True, env=env,

@@ -9,6 +9,13 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`dx doctor` reports the evidence store, and a prune rule is documented.**
+  Doctor now inventories the default store (`~/.local/state/dx/evidence`) by family
+  and count, so it is never an unwatched pile, and flags `dx.merge_gate.v1` bundles
+  as ledger-referenceable. `docs/evidence-store-hygiene.md` states the type-based
+  prune rule: role-task and gui-verification bundles are unreferenceable and prune
+  freely; a merge-gate bundle may be bound by a ledger `EVIDENCE` row (0.18.0/A1),
+  so check the ledger before deleting one — never orphan an append-only reference.
 - **`dx doctor` probes model availability, not just TCP reachability**
   (`dx.model_probe`). A node answers its port while the model bound to it is on
   disk but not resident, so the tier's tasks pay a cold-load — a delay that stalls
@@ -67,6 +74,12 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A `dx merge T-0001` transcript test leaked a real bundle into
+  `~/.local/state/dx/evidence` on every run.** It shelled out to `dx merge` with a
+  custom subprocess env that dropped the conftest `DX_EVIDENCE_DIR` redirect (and
+  used the real `HOME`), so a green merge wrote to the default store. The test now
+  sets `DX_EVIDENCE_DIR` in the subprocess env, and a session-scoped conftest guard
+  fails the suite if any test ever writes into the real store again.
 - `tail_anchor` matches a source by exact identity (not a string prefix) and
   rejects a `tail_hash` that is not a 64-char sha256 hex digest, so a source whose
   name shares a prefix with another, or a non-hex tail, cannot poison a comparison.
