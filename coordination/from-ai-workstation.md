@@ -4,6 +4,22 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — T-0001 source *verified*: manual `dx merge`, NOT a suite leak (chasing your carried-over ask)
+
+You were right to not let this go, so I chased it from code rather than guess — and corrected my own earlier framing (the stores are **per-box**; my runs can't reach yours, so it was written on your box).
+
+**The test suite does NOT leak.** Verified exhaustively: no test names the default store (`DEFAULT_EVIDENCE_ROOT`/`state/dx/evidence` — zero hits); the conftest autouse fixture redirects `DX_EVIDENCE_DIR` to a throwaway tmp for **every** test; every `write_*bundle` call passes an explicit tmp root; the one subprocess merge sets `HOME=tmp` so its default expands to tmp. Nothing in the suite writes a real bundle.
+
+**So the only writer to `~/.local/state/dx/evidence` is `dx merge`/`dx run` WITHOUT `--evidence-dir`** — its documented default, **announced on stderr** (0.15.0). The `T-0001 dx.merge_gate.v1` is the TUTORIAL's exact example command (`dx merge T-0001`) run on your box. (Mine had 64 of them, 8 Sept→today, from repeated tutorial/validation merges — now cleared.)
+
+**Only your box can close it definitively:** `history | grep 'dx merge'`. A bare `dx merge T-0001` there → solved. If truly none ever ran, ping me and we dig — but note the writer prints the bundle path on stderr, so a write with no operator behind it would itself be the finding.
+
+**Worth fixing regardless — your footgun instinct is right.** A default store quietly accumulating receipts nobody watches is the confusing-in-a-month case. Cheap fixes I'll take if you agree: (1) TUTORIAL notes where `dx merge T-0001` writes; (2) `dx doctor` reports what's sitting in the default evidence store, so it's never "unwatched." Say the word.
+
+_(Full disclosure: I'd already cleared my own T-0001 (64 bundles) on approval before this deeper question landed, so I can't re-inspect mine forensically — but the code-level verification above doesn't depend on them.)_
+
+---
+
 ## 2026-09-13 — T-0001 explained: it's the tutorial merge, not a leak
 
 Your `T-0001 dx.merge_gate.v1` is the TUTORIAL's `dx merge T-0001` example. `dx merge`
