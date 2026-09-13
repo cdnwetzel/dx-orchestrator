@@ -107,6 +107,38 @@ def test_an_ungoverned_tier_is_surfaced_with_its_reason():
     assert "ungoverned: interim direct vLLM" in manifest["roles"]["solution-architect"]["description"]
 
 
+# --- role overrides: a box re-tiers a role, declared not silent -------------
+
+
+def test_a_role_override_re_tiers_that_role_and_is_surfaced():
+    # SP9's case: on a fleet whose CODE lane is a general model, put frontend on a
+    # different node than backend — declared, not a silent per-box template fork.
+    b = _binding(SHELF={"endpoint": "http://shelf.invalid:11434", "provider": "ollama", "model": "shelf-m"})
+    b["role_overrides"] = {"frontend-engineer": "SHELF"}
+    manifest = gen.generate(_template(), b)
+    assert manifest["roles"]["frontend-engineer"]["model"] == "shelf-m"
+    assert manifest["roles"]["backend-engineer"]["model"] == "code-m"  # not overridden
+    assert manifest["_generated"]["role_overrides"] == {"frontend-engineer": "SHELF"}
+    assert "override of CODE" in manifest["roles"]["frontend-engineer"]["description"]
+
+
+def test_an_override_naming_a_role_not_in_the_template_fails_loud():
+    b = _binding()
+    b["role_overrides"] = {"not-a-real-role": "HEAVY"}
+    with pytest.raises(gen.BindingError, match="not in the template"):
+        gen.generate(_template(), b)
+
+
+def test_a_routerless_binding_with_every_tier_explicit_is_valid():
+    # Home is multi-node with no router; every tier carries its own endpoint.
+    tiers = {
+        t: {"endpoint": f"http://node.invalid/{t}", "provider": "ollama", "model": f"{t}-m"}
+        for t in ("HEAVY", "CODE", "FAST", "VISION", "LEGAL_DEEP", "LEGAL_GEN", "DEFAULT")
+    }
+    manifest = gen.generate(_template(), {"version": 1, "tiers": tiers})  # no 'router'
+    assert manifest["roles"]["backend-engineer"]["endpoint"] == "http://node.invalid/CODE"
+
+
 # --- the stamped digest -----------------------------------------------------
 
 

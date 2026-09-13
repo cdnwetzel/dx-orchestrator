@@ -46,7 +46,11 @@ roles:
   dba: CODE
 
   # LEGAL — a fleet may not have a legal model; its binding then marks the tier
-  # unmapped (declared, not silent). Both roles are Anchored regardless.
+  # unmapped (declared, not silent), and the role falls to `default`. This is
+  # SAFE not because `default` is an acceptable legal model, but because both
+  # roles are Anchored: `dx run` exits 2 at the anchor gate BEFORE routing is ever
+  # read, so the mapping is unreachable config. If Anchored enforcement ever
+  # changed, the unmapped declaration would become a liability, not a disclosure.
   legal-contracts: LEGAL_DEEP
   compliance-privacy: LEGAL_GEN
 

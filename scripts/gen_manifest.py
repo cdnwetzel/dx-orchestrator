@@ -79,16 +79,21 @@ def _resolve_tier(tier: str, binding: dict[str, Any]) -> dict[str, Any] | None:
         )
     if cfg.get("unmapped"):
         return None  # declared, not silent — the caller records the reason
-    router = binding.get("router")
-    if not isinstance(router, dict):
-        raise BindingError("binding has no 'router' mapping (needed unless every tier overrides endpoint)")
-    endpoint = cfg.get("endpoint") or router.get("url")
-    provider = cfg.get("provider") or router.get("provider")
+    # A tier inherits the router only for fields it does not set itself, so a
+    # routerless multi-node fleet (every tier explicit) is valid, and a
+    # single-router fleet stays terse.
+    endpoint = cfg.get("endpoint")
+    provider = cfg.get("provider")
+    if not endpoint or not provider:
+        router = binding.get("router")
+        if isinstance(router, dict):
+            endpoint = endpoint or router.get("url")
+            provider = provider or router.get("provider")
     model = cfg.get("model")
     if not endpoint:
-        raise BindingError(f"tier {tier!r} has no endpoint and router.url is unset")
+        raise BindingError(f"tier {tier!r} has no endpoint and no router.url to inherit")
     if not provider:
-        raise BindingError(f"tier {tier!r} has no provider and router.provider is unset")
+        raise BindingError(f"tier {tier!r} has no provider and no router.provider to inherit")
     if not model:
         raise BindingError(f"tier {tier!r} is mapped but has no model")
     return {
@@ -111,6 +116,16 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
     if not default_tier:
         raise BindingError("template has no 'default_tier'")
 
+    # A box may deliberately re-tier a role for its hardware — declared here, never
+    # silent. The override tier must exist in the binding, and the role must be a
+    # real template role (a typo cannot re-route a card into oblivion).
+    overrides = binding.get("role_overrides") or {}
+    if not isinstance(overrides, dict):
+        raise BindingError("role_overrides must be a mapping of role -> tier")
+    unknown = set(overrides) - set(roles_tiers)
+    if unknown:
+        raise BindingError(f"role_overrides names roles not in the template: {sorted(unknown)}")
+
     resolved: dict[str, dict[str, Any]] = {}
     unmapped: dict[str, str] = {}       # role -> reason (declared fall-through to default)
     ungoverned: dict[str, str] = {}     # tier -> reason (interim unaudited)
@@ -126,13 +141,14 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
                 ungoverned[tier] = r.get("reason") or "ungoverned route (no reason given)"
         return tier_cache[tier]
 
-    for role, tier in roles_tiers.items():
-        route = route_for(str(tier))
+    for role, template_tier in roles_tiers.items():
+        tier = str(overrides.get(role, template_tier))
+        route = route_for(tier)
         if route is None:
             reason = binding["tiers"][tier].get("reason") or "tier unmapped in this fleet"
             unmapped[role] = reason
             continue
-        note = str(tier)
+        note = tier if tier == str(template_tier) else f"{tier} (override of {template_tier})"
         if route["force_only"]:
             note += " [--force-only: Anchored gate is the control, not the model]"
         if not route["governed"]:
@@ -160,6 +176,7 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
             "binding_sha256": binding_digest(binding),
             "ungoverned_tiers": ungoverned,          # tier -> reason (dx doctor surfaces these)
             "unmapped_roles": unmapped,              # role -> reason (fell to default, declared)
+            "role_overrides": {r: str(t) for r, t in overrides.items()},  # deliberate re-tiering
         },
         "roles": resolved,
     }
@@ -185,6 +202,8 @@ def _governance_header(manifest: dict[str, Any]) -> str:
         lines.append(f"#   UNGOVERNED tier {tier}: {reason}")
     for role, reason in g["unmapped_roles"].items():
         lines.append(f"#   unmapped -> default: {role} ({reason})")
+    for role, tier in g.get("role_overrides", {}).items():
+        lines.append(f"#   re-tiered: {role} -> {tier} (override of template)")
     return ("\n".join(lines) + "\n") if lines else ""
 
 
