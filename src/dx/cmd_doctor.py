@@ -24,7 +24,13 @@ from .config_loader import (
     validate_manifest,
 )
 from .evidence import MERGE_SCHEMA, default_evidence_root, summarize_store
-from .model_probe import NOT_SERVED, measure_latency, probe_model, probe_model_autodetect
+from .model_probe import (
+    NOT_SERVED,
+    measure_latency,
+    measure_latency_autodetect,
+    probe_model,
+    probe_model_autodetect,
+)
 from .role_registry import get_parse_failures, load_registry
 
 # doctor asks tools for their version; none of them should take longer.
@@ -283,6 +289,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 avail = probe_model_autodetect(str(ep), str(model))
                 icon = "✅" if avail.ok else ("❌" if avail.status == NOT_SERVED else "⚠️")
                 print(f"{icon} psoperator model {model} @ {ep}: {avail.detail}")
+                if args.deep and avail.ok:
+                    lat = measure_latency_autodetect(str(ep), str(model), warn_ms=args.latency_warn_ms)
+                    print(f"   {'⚠️' if (lat.slow or not lat.ok) else '✅'} latency: {lat.detail}")
         except Exception as exc:
             print(f"⚠️  could not probe the psoperator model endpoint: {exc}")
 

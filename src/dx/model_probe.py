@@ -219,3 +219,20 @@ def measure_latency(
         return Latency(ok=True, slow=slow, elapsed_ms=elapsed_ms, detail=note)
     except (requests.RequestException, ValueError) as exc:
         return Latency(ok=False, slow=True, elapsed_ms=None, detail=f"call failed ({type(exc).__name__})")
+
+
+def measure_latency_autodetect(
+    endpoint: str, model: str, *, warn_ms: float = 5000.0, timeout: float = 30.0
+) -> Latency:
+    """Latency for an endpoint whose provider is not declared (psoperator). Detect
+    the node the same way :func:`probe_model_autodetect` does — ollama if
+    ``/api/tags`` answers — then time it with the matching call."""
+    base = endpoint.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
+    try:
+        _json_object(requests.get(f"{base}/api/tags", timeout=timeout))
+        provider = "ollama"
+    except (requests.RequestException, ValueError):
+        provider = "openai-compatible"
+    return measure_latency(endpoint, provider, model, warn_ms=warn_ms, timeout=timeout)
