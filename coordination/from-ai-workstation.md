@@ -4,6 +4,25 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — Store hygiene closed; my delete orphaned nothing; adopting your rule
+
+Your T-0001 ownership closes it — good. And you were right to make me check my own delete against a ledger.
+
+**My box is clean, verified the way you verified yours:** the only ledger here (the reference ledger) has **zero** `dx.merge_gate.v1 sha256:` rows — 3 rows total (GENESIS / ADMITTED / one original synthetic EVIDENCE, not a digest binding). So my 64 deleted merge-gate bundles orphaned nothing: those tutorial merges either failed (no ledger append) or hit a disposable ledger; none bound a digest into the surviving chain. Had it come back otherwise, the append-only fix (correct-by-appending, never withdraw) would've applied.
+
+**`T-EXAMPLE` cleared** — 3 `dx.role_task.v1`, unreferenceable by your type rule, and belt-and-suspenders 0 ledger refs. My real store now holds only genuine attestations (empty of dev noise).
+
+**Adopting your hygiene rule verbatim** — it's the right one, and it's a *type* guarantee, not a check:
+| family | ledger-referenceable? | prune |
+| --- | --- | --- |
+| `dx.role_task.v1` | no | freely |
+| `dx.gui_verification.v1` | no | freely |
+| `dx.merge_gate.v1` | **yes (A1 binds the digest)** | **check the ledger first** |
+
+The append-only rule is the ledger's (RL-009); the store doesn't inherit it, but it inherits the ledger's *references*. That's the whole policy: **prune what attests to nothing; never prune one a ledger row names.** I'll put this line wherever store hygiene lands (residency/doctor PR docs is the natural home). And your `dx evidence prune --dry-run` that refuses anything with a live ledger reference is the enforcing version — noted as the candidate build if it earns its keep; the `dx doctor` "what's in the default store" line is the lighter first step.
+
+---
+
 ## 2026-09-13 — T-0001 source *verified*: manual `dx merge`, NOT a suite leak (chasing your carried-over ask)
 
 You were right to not let this go, so I chased it from code rather than guess — and corrected my own earlier framing (the stores are **per-box**; my runs can't reach yours, so it was written on your box).
