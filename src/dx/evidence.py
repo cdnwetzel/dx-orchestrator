@@ -29,9 +29,11 @@ import hashlib
 import json
 import os
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from dx.approval_key import (
     MECHANISM_FALLBACK,
@@ -776,26 +778,30 @@ class StoreSummary:
 
     root: Path
     total: int
-    by_family: dict[str, int]
+    by_family: Mapping[str, int]  # read-only; mutating it would desync total/referenceable
     referenceable: int
 
 
 def summarize_store(root: Path) -> StoreSummary:
     """Inventory the bundles under ``root`` (``<task>/<timestamp>/manifest.json``)
     by schema family, so a default store never becomes an unwatched pile. Pure and
-    read-only; a missing store summarizes as empty and an unreadable manifest is
-    counted under ``"unreadable"`` rather than raising."""
+    read-only; a missing store summarizes as empty. A manifest that will not read
+    is counted ``"unreadable"``, and one that is valid JSON but not an object (a
+    list, ``null``, a string) is counted ``"malformed"`` — never raising, so a
+    single odd file cannot blank the whole inventory."""
     by_family: Counter[str] = Counter()
     if root.is_dir():
         for manifest in root.glob("*/*/manifest.json"):
             try:
-                schema = json.loads(manifest.read_text(encoding="utf-8")).get("schema", "unknown")
+                decoded = json.loads(manifest.read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                schema = "unreadable"
+                by_family["unreadable"] += 1
+                continue
+            schema = decoded.get("schema", "unknown") if isinstance(decoded, dict) else "malformed"
             by_family[str(schema)] += 1
     return StoreSummary(
         root=root,
         total=sum(by_family.values()),
-        by_family=dict(by_family),
+        by_family=MappingProxyType(dict(by_family)),
         referenceable=by_family.get(MERGE_SCHEMA, 0),
     )

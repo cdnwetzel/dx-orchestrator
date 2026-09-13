@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from dx.evidence import (
     GUI_SCHEMA,
     MERGE_SCHEMA,
@@ -48,6 +50,25 @@ def test_an_unreadable_manifest_is_counted_not_raised(tmp_path):
     (d / "manifest.json").write_text("{not json", encoding="utf-8")
     s = summarize_store(tmp_path)
     assert s.total == 1 and s.by_family == {"unreadable": 1}
+
+
+def test_valid_json_that_is_not_an_object_is_malformed_not_a_crash(tmp_path):
+    # json.loads can return a list/null/string — none has .get(). One odd file must
+    # not raise AttributeError and blank the whole inventory.
+    for i, body in enumerate(("[]", "null", '"a string"')):
+        d = tmp_path / f"T-{i}" / "ts"
+        d.mkdir(parents=True)
+        (d / "manifest.json").write_text(body, encoding="utf-8")
+    s = summarize_store(tmp_path)
+    assert s.total == 3 and s.by_family == {"malformed": 3}
+
+
+def test_by_family_is_read_only(tmp_path):
+    # A frozen summary whose dict could be cleared would desync total/referenceable.
+    _bundle(tmp_path, "T-1", "ts", SCHEMA)
+    s = summarize_store(tmp_path)
+    with pytest.raises(TypeError):
+        s.by_family["x"] = 1  # type: ignore[index]
 
 
 def test_default_root_honors_dx_evidence_dir(monkeypatch, tmp_path):
