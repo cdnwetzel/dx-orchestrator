@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -746,4 +748,54 @@ def write_staged_action_bundle(
     }
     return _finalize(
         out, manifest, _render_staged_readme(bundle, generated_utc), text_artifacts, {}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Evidence-store location and inventory
+# ---------------------------------------------------------------------------
+
+#: Where dx writes bundles when neither ``--evidence-dir`` nor ``DX_EVIDENCE_DIR``
+#: is given. Deliberately outside any repo under edit.
+DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+
+
+def default_evidence_root() -> Path:
+    """The store dx would write to with no per-command override: ``DX_EVIDENCE_DIR``
+    if set, else :data:`DEFAULT_EVIDENCE_ROOT`. (Per-command ``--evidence-dir`` wins
+    over both, but that is the command's concern, not the ambient store's.)"""
+    env = os.environ.get("DX_EVIDENCE_DIR")
+    return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
+
+
+@dataclass(frozen=True)
+class StoreSummary:
+    """What is sitting in an evidence store, by family. ``referenceable`` counts
+    the one family a ledger row can bind (``dx.merge_gate.v1`` — A1/0.18.0): those
+    must not be pruned while a ledger row names their digest."""
+
+    root: Path
+    total: int
+    by_family: dict[str, int]
+    referenceable: int
+
+
+def summarize_store(root: Path) -> StoreSummary:
+    """Inventory the bundles under ``root`` (``<task>/<timestamp>/manifest.json``)
+    by schema family, so a default store never becomes an unwatched pile. Pure and
+    read-only; a missing store summarizes as empty and an unreadable manifest is
+    counted under ``"unreadable"`` rather than raising."""
+    by_family: Counter[str] = Counter()
+    if root.is_dir():
+        for manifest in root.glob("*/*/manifest.json"):
+            try:
+                schema = json.loads(manifest.read_text(encoding="utf-8")).get("schema", "unknown")
+            except (OSError, ValueError):
+                schema = "unreadable"
+            by_family[str(schema)] += 1
+    return StoreSummary(
+        root=root,
+        total=sum(by_family.values()),
+        by_family=dict(by_family),
+        referenceable=by_family.get(MERGE_SCHEMA, 0),
     )

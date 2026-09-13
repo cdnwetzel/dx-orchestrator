@@ -22,6 +22,7 @@ from .config_loader import (
     load_config,
     validate_manifest,
 )
+from .evidence import MERGE_SCHEMA, default_evidence_root, summarize_store
 from .model_probe import NOT_SERVED, probe_model
 from .role_registry import get_parse_failures, load_registry
 
@@ -262,6 +263,26 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 print(f"✅ observer → {obs_host}:{obs_port} healthy ({summary})")
             except Exception as exc:
                 print(f"⚠️  observer → {obs_host}:{obs_port} not healthy: {exc}")
+
+    # Evidence store (non-critical, always — it is a filesystem read, not network).
+    # Report what has accumulated in the default store so it is never an unwatched
+    # pile. merge_gate bundles are the one family a ledger row can bind, so they are
+    # flagged: never prune one a ledger row names.
+    try:
+        store = summarize_store(default_evidence_root())
+        if store.total == 0:
+            print(f"\n📂 Evidence store empty ({store.root})")
+        else:
+            families = ", ".join(f"{fam}×{n}" for fam, n in sorted(store.by_family.items()))
+            print(f"\n📂 Evidence store: {store.total} bundle(s) at {store.root}")
+            print(f"   {families}")
+            if store.referenceable:
+                print(
+                    f"   ⚠️  {store.referenceable} {MERGE_SCHEMA} bundle(s) are ledger-referenceable "
+                    "— check the ledger before pruning (role_task/gui_verification prune freely)"
+                )
+    except Exception as exc:
+        print(f"⚠️  could not read the evidence store: {exc}")
 
     print("")
     if all_ok:
