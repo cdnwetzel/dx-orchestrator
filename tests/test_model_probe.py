@@ -44,8 +44,13 @@ def test_an_openai_model_absent_from_the_list_is_not_served():
 
 
 class _Resp:
-    def __init__(self, payload):
+    def __init__(self, payload, status=200):
         self._payload = payload
+        self._status = status
+
+    def raise_for_status(self):
+        if self._status >= 400:
+            raise mp.requests.HTTPError(f"{self._status}")
 
     def json(self):
         return self._payload
@@ -66,19 +71,60 @@ def test_probe_ollama_reads_tags_and_ps(monkeypatch):
 
 def test_probe_openai_reads_v1_models(monkeypatch):
     monkeypatch.setattr(
-        mp.requests, "get", lambda url, timeout: _Resp({"data": [{"id": "Qwen3-Coder"}]})
+        mp.requests, "get", lambda url, timeout, headers=None: _Resp({"data": [{"id": "Qwen3-Coder"}]})
     )
     assert probe_model("http://r:8888", "openai-compatible", "Qwen3-Coder").status == mp.SERVED
     assert probe_model("http://r:8888", "openai-compatible", "Nemotron-3.5").status == mp.NOT_SERVED
 
 
 def test_a_dead_endpoint_is_unreachable_not_an_exception(monkeypatch):
-    def boom(url, timeout):
+    def boom(url, timeout, headers=None):
         raise mp.requests.ConnectionError("refused")
 
     monkeypatch.setattr(mp.requests, "get", boom)
     a = probe_model("http://down:11434", "ollama", "x")
     assert a.status == mp.UNREACHABLE and not a.ok
+
+
+def test_a_trailing_v1_is_normalized_not_doubled(monkeypatch):
+    # config_loader strips /v1 for the runtime route; the probe must too, or an
+    # endpoint written with /v1 probes /v1/v1/models and misclassifies.
+    seen = {}
+
+    def fake_get(url, timeout, headers=None):
+        seen["url"] = url
+        return _Resp({"data": [{"id": "Qwen3-Coder"}]})
+
+    monkeypatch.setattr(mp.requests, "get", fake_get)
+    assert probe_model("http://r:8888/v1", "openai-compatible", "Qwen3-Coder").status == mp.SERVED
+    assert seen["url"] == "http://r:8888/v1/models"  # not /v1/v1/models
+
+
+def test_a_4xx_with_a_json_body_is_unreachable_not_not_served(monkeypatch):
+    # An auth/error response carrying JSON must not read as "model absent".
+    monkeypatch.setattr(mp.requests, "get", lambda url, timeout, headers=None: _Resp({"error": "unauthorized"}, status=401))
+    a = probe_model("http://r:8888", "openai-compatible", "Qwen3-Coder")
+    assert a.status == mp.UNREACHABLE
+
+
+def test_a_non_object_json_body_is_unreachable_not_a_crash(monkeypatch):
+    # A list/str payload must not raise AttributeError out of probe_model (which
+    # would abort every later probe in dx doctor).
+    monkeypatch.setattr(mp.requests, "get", lambda url, timeout, headers=None: _Resp(["not", "a", "map"]))
+    assert probe_model("http://n:11434", "ollama", "x").status == mp.UNREACHABLE
+
+
+def test_pxx_api_key_is_sent_when_set(monkeypatch):
+    monkeypatch.setenv("PXX_API_KEY", "secret-xyz")
+    captured = {}
+
+    def fake_get(url, timeout, headers=None):
+        captured["headers"] = headers or {}
+        return _Resp({"data": [{"id": "m"}]})
+
+    monkeypatch.setattr(mp.requests, "get", fake_get)
+    probe_model("http://r:8888", "openai-compatible", "m")
+    assert captured["headers"].get("Authorization") == "Bearer secret-xyz"
 
 
 def test_ok_is_only_resident_or_served():

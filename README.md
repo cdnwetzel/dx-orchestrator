@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 550 tests,
+The test suite is the part built to be evaluated from outside: 554 tests,
 including real-GPG signature checks against committed keys, all runnable with no
 lab hardware, no keyring, no network and none of the sibling clones. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
@@ -199,6 +199,7 @@ file ends up saying what actually runs.
 | `DX_VLM_ENDPOINT` / `DX_VLM_MODEL` | GUI verification model endpoint and name |
 | `DX_VLM_TIMEOUT` | Seconds to wait on the VLM (default 30; manifest: `gui_verification.timeout_s`) |
 | `DX_GUI_SSH_HOST` | Host to capture screenshots from |
+| `PXX_API_KEY` | Credential for an OpenAI-compatible endpoint — the same key `pxx` uses; `dx doctor` sends it when probing model availability |
 | `PSOPERATOR_REPO` / `PSOPERATOR_SNAPSHOT_DIR` | PSOperator clone and snapshot locations |
 | `PSOPERATOR_OBSERVER_PORT` / `PSOPERATOR_GATEKEEPER_PORT` / `PSOPERATOR_EXECUTOR_PORT` | PSOperator service ports (manifest: `psoperator.*_port`) |
 | `PSOPERATOR_OBSERVER_HOST` | Observer host for `dx verify-gui --observer` (default `127.0.0.1`) |

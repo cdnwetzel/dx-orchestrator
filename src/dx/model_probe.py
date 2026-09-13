@@ -24,6 +24,7 @@ can tell us.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import requests
@@ -84,21 +85,47 @@ def _names(models: object) -> list[str]:
     return out
 
 
+def _auth_headers() -> dict[str, str]:
+    """The credential `dx run` already passes to pxx. An OpenAI-compatible endpoint
+    that requires it would 401 an unauthenticated probe, and an error body with no
+    ``data`` would misclassify a served model as not-served — so carry it here too."""
+    key = os.environ.get("PXX_API_KEY")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _json_object(resp: requests.Response) -> dict[str, object]:
+    """A probe response is only usable if it is a 2xx carrying a JSON object.
+    A 4xx/5xx (even with a JSON body) or a non-object payload is a failed probe,
+    not a served/absent verdict — raise so the caller reports it unreachable."""
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+    return data
+
+
 def probe_model(
     endpoint: str, provider: str, model: str, *, timeout: float = 4.0
 ) -> ModelAvailability:
     """Ask ``endpoint`` what it serves and classify ``model`` against the answer.
-    Any transport or decode error is reported as ``unreachable`` — this is a
-    non-critical diagnostic and must never raise into the caller."""
+    Any transport, status, or decode error is reported as ``unreachable`` — this is
+    a non-critical diagnostic and must never raise into the caller (a raise here
+    would abort every later model probe in ``dx doctor``)."""
     base = endpoint.rstrip("/")
+    # dx's runtime route strips a trailing /v1 (config_loader.normalize_endpoint);
+    # match it, or an endpoint written with /v1 would probe /v1/v1/models.
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
     try:
         if provider == "ollama":
-            tags = _names(requests.get(f"{base}/api/tags", timeout=timeout).json().get("models"))
-            resident = _names(requests.get(f"{base}/api/ps", timeout=timeout).json().get("models"))
+            tags = _names(_json_object(requests.get(f"{base}/api/tags", timeout=timeout)).get("models"))
+            resident = _names(_json_object(requests.get(f"{base}/api/ps", timeout=timeout)).get("models"))
             return classify_ollama(model, tags=tags, resident=resident)
-        # openai-compatible / vllm and anything else that speaks /v1/models
-        data = requests.get(f"{base}/v1/models", timeout=timeout).json().get("data")
-        served = _names(data)
+        # openai-compatible / vllm and anything else that speaks /v1/models. The
+        # endpoint is operator-controlled manifest config, not request input, so the
+        # static-analysis SSRF note does not apply.
+        resp = requests.get(f"{base}/v1/models", timeout=timeout, headers=_auth_headers())
+        served = _names(_json_object(resp).get("data"))
         return classify_openai(model, served=served)
     except (requests.RequestException, ValueError) as exc:
         return ModelAvailability(UNREACHABLE, f"{endpoint} did not answer ({type(exc).__name__})")

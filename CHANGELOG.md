@@ -9,6 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`dx doctor` probes model availability, not just TCP reachability**
+  (`dx.model_probe`). A node answers its port while the model bound to it is on
+  disk but not resident, so every task on that tier fails `MODEL_UNAVAILABLE` — a
+  green doctor over an unusable tier. Doctor now asks each node what it actually
+  serves and classifies the bound model: **resident** (ollama `/api/ps`),
+  **on-disk-cold** (in `/api/tags`, not `/api/ps` — will cold-load, may stall),
+  **not-served** (absent from `/api/tags` or the OpenAI `/v1/models` list —
+  misconfigured), or **unreachable**. OpenAI-compatible/vLLM report *served*
+  (residency is opaque). It normalizes a trailing `/v1`, carries `PXX_API_KEY`,
+  treats any non-2xx/non-object response as unreachable, and never raises into the
+  doctor loop.
 - **Tail-hash anchoring (`dx.tail_anchor`, Phase A / A5) — the line between
   tamper-evident and tamper-evident *to a third party*.** A hash-chained log is
   only tamper-evident to someone holding an earlier copy; an attacker who owns the
