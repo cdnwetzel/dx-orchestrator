@@ -157,11 +157,15 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
         overrides = {}
     if not isinstance(overrides, dict):  # a falsey [] / "" must fail, not become {}
         raise BindingError("role_overrides must be a mapping of role -> tier")
+    # Validate key and value types BEFORE the set difference below — a non-string
+    # key (e.g. {1: HEAVY}) would make sorted(unknown) compare int with str and
+    # raise TypeError, escaping the exit-2 fail-closed path.
+    for role, tier in overrides.items():
+        _req_str(role, "role_overrides role key")
+        _req_str(tier, f"role_overrides[{role!r}] tier")
     unknown = set(overrides) - set(roles_tiers)
     if unknown:
         raise BindingError(f"role_overrides names roles not in the template: {sorted(unknown)}")
-    for role, tier in overrides.items():
-        _req_str(tier, f"role_overrides[{role!r}] tier")
 
     resolved: dict[str, dict[str, Any]] = {}
     unmapped: dict[str, str] = {}       # role -> reason (declared fall-through to default)

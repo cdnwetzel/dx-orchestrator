@@ -222,6 +222,13 @@ def test_a_falsey_role_overrides_value_fails_rather_than_becoming_empty():
         gen.generate(_template(), b)
 
 
+def test_a_non_string_override_key_fails_loud_not_typeerror():
+    b = _binding()
+    b["role_overrides"] = {1: "HEAVY"}  # int key -> sorted() would TypeError
+    with pytest.raises(gen.BindingError, match="role key"):
+        gen.generate(_template(), b)
+
+
 def test_an_unserialisable_binding_fails_as_a_binding_error():
     # A set is not JSON-serialisable; binding_digest must raise BindingError, not
     # let a TypeError escape main()'s BindingError-only catch as an exit-1 traceback.
