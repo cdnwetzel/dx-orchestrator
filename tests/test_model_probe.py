@@ -247,16 +247,18 @@ def test_measure_latency_autodetect_uses_ollama_generate_when_node_is_ollama(mon
     seen = {}
 
     def fake_get(url, timeout, headers=None):
+        seen["get"] = url
         return _Resp({"models": []})  # /api/tags answers -> it's ollama
 
     def fake_post(url, json, timeout, headers=None):
-        seen["url"] = url
+        seen["post"] = url
         return _Resp({"ok": True})
 
     monkeypatch.setattr(mp.requests, "get", fake_get)
     monkeypatch.setattr(mp.requests, "post", fake_post)
     lat = measure_latency_autodetect("http://n:11434/v1", "m")
-    assert lat.ok and seen["url"] == "http://n:11434/api/generate"  # ollama path, not /v1/chat
+    assert seen["get"] == "http://n:11434/api/tags"  # detection actually probed /api/tags
+    assert lat.ok and seen["post"] == "http://n:11434/api/generate"  # ollama path, not /v1/chat
 
 
 def test_measure_latency_autodetect_falls_back_to_chat_for_non_ollama(monkeypatch):
@@ -265,13 +267,15 @@ def test_measure_latency_autodetect_falls_back_to_chat_for_non_ollama(monkeypatc
     seen = {}
 
     def fake_get(url, timeout, headers=None):
+        seen["get"] = url
         raise mp.requests.HTTPError("404")  # not ollama
 
     def fake_post(url, json, timeout, headers=None):
-        seen["url"] = url
+        seen["post"] = url
         return _Resp({"ok": True})
 
     monkeypatch.setattr(mp.requests, "get", fake_get)
     monkeypatch.setattr(mp.requests, "post", fake_post)
     lat = measure_latency_autodetect("http://r:8888/v1", "m")
-    assert lat.ok and seen["url"] == "http://r:8888/v1/chat/completions"
+    assert seen["get"] == "http://r:8888/api/tags"  # detection probed /api/tags first
+    assert lat.ok and seen["post"] == "http://r:8888/v1/chat/completions"
