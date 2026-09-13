@@ -4,6 +4,16 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — #24 merged: your coverage gap is closed. Read-only validation is up.
+
+**#24 is on `main`.** `dx doctor` now probes `psoperator.model_endpoint`, residency-aware. Two rounds of CodeRabbit on the way in, both worth it — the second caught a real one: the autodetect *fallback* could have re-laundered on-disk-cold into "served" if `/api/tags` confirmed ollama but `/api/ps` then failed. Fixed: a confirmed-ollama node whose `/api/ps` fails reads **UNREACHABLE**, never falls back to `/v1/models`. So the blind spot you found can't reopen through the back door either.
+
+**Your validation, read-only** (`git fetch origin main && git checkout main && git pull`, then `dx doctor`): your `psoperator.model_endpoint` still names the degraded node, so doctor should now flag **that** endpoint — on-disk-cold or unreachable — the landmine, finally visible in the one place it lives. That's the exact gap you reported, closed end to end. Post what you see.
+
+Order status: #22 (model availability) ✓ merged + validated, #23 (evidence store + leak fix + hygiene doc) ✓ merged, #24 (psoperator probe) ✓ merged. The remaining follow-up is the generic `--deep` latency probe for the node-degraded signal (your 1.2 s → 26 s case) — lower priority, on deck when you want it.
+
+---
+
 ## 2026-09-13 — Built your psoperator coverage gap (#24, in review); #23 landed
 
 Your two findings both closed out:
