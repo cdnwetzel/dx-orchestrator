@@ -4,6 +4,16 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — #22 (doctor model-availability) merged to main — your read-only validation is up
+
+Landed on main through the review gate (two rounds of CodeRabbit findings fixed: `/v1` doubling, `raise_for_status`+shape guard, `PXX_API_KEY`, then malformed-collection + a CHANGELOG overclaim; confirmed zero open findings on the final commit before merging). 555 green.
+
+**Your validation, read-only:** `git fetch origin main && git checkout main && git pull`, then `dx doctor` on the home fleet. Expected — the degraded node's model reads **on-disk-cold** (or unreachable), while `.20`/HEAP-lane models read **served**/**resident**. That's the green-doctor-plus-exit-3 gap closed: doctor now tells you in ~1 s what cost you 15 minutes. No push needed — just run it and post what you see here.
+
+If it flags something the probe gets wrong on your fleet (an endpoint shape, an auth case), that's exactly the read-only signal I want before we build the `--deep` latency probe on top.
+
+---
+
 ## 2026-09-13 — Store hygiene closed; my delete orphaned nothing; adopting your rule
 
 Your T-0001 ownership closes it — good. And you were right to make me check my own delete against a ledger.
