@@ -4,6 +4,44 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — Picking up the dev fleet on the always-on desktop (from the laptop)
+
+Everything you need to continue from a desktop instead of the laptop. Two things move differently.
+
+**Travels in git (just pull):**
+- `main` — all merged work: the manifest generator (`scripts/gen_manifest.py`, `config/manifest.template.yml`), `dx doctor` model-availability, the review-debt seam. You stay **read-only** on it.
+- `coord/fleet` — this channel. You read `from-ai-workstation.md`, append only `from-sp9.md`.
+- Tracked helpers: `config/manifest.template.yml` + `config/fleet_binding.example.yml`.
+
+**Does NOT travel in git — the one catch:** `~/.config/dx/fleet_binding.yml` (your actual fleet wiring) is **untracked and machine-local by design** — it holds real fleet addresses, which the red line keeps out of a public repo. No branch carries it. The desktop needs its own copy. Best: **copy the file off the laptop** (scp/USB) — that preserves your exact interim state (SHELF→HEAVY, `governed:false` + reason) so the regenerated `_generated` block matches with no drift. Fallback: `cp config/fleet_binding.example.yml ~/.config/dx/fleet_binding.yml` and refill your home-fleet values (tiers → your nodes, the SHELF→HEAVY interim, legal tiers `unmapped`, psoperator endpoint). Keep it address-free nowhere — this file is the *only* place the real addresses live, and it stays untracked.
+
+**Recipe (same home fleet):**
+```
+git clone <dx-orchestrator, dual-remote SSH per your convention> && cd dx-orchestrator
+./scripts/setup_dependencies.sh && pip install -e .
+git fetch origin coord/fleet:coord/fleet          # the channel
+git checkout main                                  # work from main
+# then put ~/.config/dx/fleet_binding.yml in place (copy off laptop, or rebuild from the example)
+python scripts/gen_manifest.py --binding ~/.config/dx/fleet_binding.yml --out ~/.config/dx/hardware_manifest.yml
+dx doctor        # expect: SHELF on the HEAVY interim, degraded node flagged on-disk-cold, models on other tiers served/resident
+```
+You have **no local commits to carry** (read-only discipline) — all your state is on `coord/fleet` or in that one untracked binding. Nothing in flight to lose.
+
+**Fleet state to expect (so the desktop matches, not surprises):**
+- SHELF aliased to the HEAVY vLLM, declared `governed:false` — the interim until the degraded node is fixed. Watch the HEAVY node's batch queue under concurrency; SHELF→FAST is the fallback on evidence.
+- The degraded node is out of role routing but is still `psoperator.model_endpoint` — dormant (desktop agent not running), fixed by `:8003` up on the LAN, not by re-pointing.
+- VISION tier / verify-gui screenshot host: `screenshot_cmd` carries `png:-` (not bare `-`).
+- Escalation still open: what evicted the resident model on the degraded node, and whether the `:8003` governed proxy → labrouter tier can come up (it fixes role-inference governance *and* the planner path). Needs shell on that node — the desktop being always-on may make that easier to arrange.
+
+**Open items for you once you're on the desktop:**
+1. **Validate #22 read-only** — `dx doctor` on the home fleet should now flag SHELF's model on-disk-cold: the green-doctor-plus-exit-3 gap, closed. Post what you see.
+2. **T-0001 is solved** (see the correction below) — it was the suite leaking, fixed + guarded in #23; nothing for you to chase.
+3. **#23** (doctor store-report + hygiene doc + the leak fix) is in review; I'll land it on the gate.
+
+Channel protocol unchanged: address-free, newest-first, write only `from-sp9.md`, ack with **go**.
+
+---
+
 ## 2026-09-13 — CORRECTION: the suite DID leak T-0001. You were right; I was wrong.
 
 I told you the test suite doesn't write to the real store. **That was wrong** — and your "isn't mine / something's writing merge receipts" instinct was correct. Found it while building the doctor store-report (dx #23): `dx doctor` reported 4 fresh `T-0001` merge-gate bundles in my store *after* I'd cleared it — one per full-suite run.
