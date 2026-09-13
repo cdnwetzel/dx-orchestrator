@@ -1,0 +1,77 @@
+# Address-free role -> tier contract. Tracked, shared by every node: the single
+# source of truth for WHICH tier each role belongs to. No endpoints, no model
+# names, no hosts live here — those are per-box (the untracked fleet binding).
+#
+# A node's hardware manifest is GENERATED: template (this file) x binding (per
+# box) -> ~/.config/dx/hardware_manifest.yml, via scripts/gen_manifest.py.
+#
+# Every role card in the deck MUST appear here. tests/test_manifest_generator.py
+# fails if a card falls through with no tier — the guard against the drift that
+# once left 6 of 40 roles mapped and the rest silently on default.
+#
+# Tiers are capability lanes, not endpoints. Each binding maps a tier to whatever
+# its fleet's router serves for that lane (work: psrouter; home: labrouter/:8003).
+
+version: 1
+
+# The tier the generated `default` entry resolves to. Its own bindable tier so a
+# box can point its fallback wherever it wants (e.g. a local model that still
+# works if the fleet router is down) independent of the FAST role tier.
+default_tier: DEFAULT
+
+roles:
+
+  # HEAVY — reasoning / architecture / security / deep analysis
+  solution-architect: HEAVY
+  data-architect: HEAVY
+  security-architect: HEAVY
+  appsec-engineer: HEAVY
+  tech-lead: HEAVY
+  sre: HEAVY
+  code-reviewer: HEAVY
+  ml-engineer: HEAVY
+  performance-engineer: HEAVY
+  finops: HEAVY
+  product-analyst: HEAVY
+  incident-commander: HEAVY        # Anchored (from the card, not here)
+  workflow-stager: HEAVY           # Anchored — drafts and stops
+
+  # CODE — build-heavy generation
+  backend-engineer: CODE
+  data-engineer: CODE
+  platform-engineer: CODE
+  frontend-engineer: CODE
+  mobile-engineer: CODE
+  sdet: CODE
+  dba: CODE
+
+  # LEGAL — a fleet may not have a legal model; its binding then marks the tier
+  # unmapped (declared, not silent), and the role falls to `default`. This is
+  # SAFE not because `default` is an acceptable legal model, but because both
+  # roles are Anchored: `dx run` exits 2 at the anchor gate BEFORE routing is ever
+  # read, so the mapping is unreachable config. If Anchored enforcement ever
+  # changed, the unmapped declaration would become a liability, not a disclosure.
+  legal-contracts: LEGAL_DEEP
+  compliance-privacy: LEGAL_GEN
+
+  # FAST — general drafting / coordination / support (instruct-shaped)
+  product-manager: FAST
+  business-analyst: FAST
+  technical-writer: FAST
+  localization-specialist: FAST
+  qa-analyst: FAST
+  scrum-master: FAST
+  release-manager: FAST
+  change-manager: FAST
+  support-engineer: FAST
+  delivery-manager: FAST
+  domain-sme: FAST                 # Anchored
+  engineering-manager: FAST        # Anchored
+  customer-success: FAST           # Anchored
+  uat-coordinator: FAST            # Anchored
+  workflow-operator: FAST          # Anchored — human console seat
+
+  # VISION — visual / accessibility review
+  ux-designer: VISION
+  ux-researcher: VISION
+  accessibility-specialist: VISION

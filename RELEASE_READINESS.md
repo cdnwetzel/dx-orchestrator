@@ -22,7 +22,7 @@ needs. One of the five is consumed from PyPI, not cloned.
 | 1 | `dx-orchestrator` | control plane, all gates | **public** | MIT | `git clone` |
 | 2 | `pxx` | code-generation engine | **public** | MIT | **PyPI** `pxx-orchestrator>=2.5.4` — no clone needed |
 | 3 | `psoperator` | desktop automation, GUI verification | **public** | MIT | `git clone` + `pip install -e .` |
-| 4 | **`sdlc-agent-roles`** | the 38 role cards `dx` is governed by | **public** ✅ | **MIT** ✅ | `git clone` |
+| 4 | **`sdlc-agent-roles`** | the 40 role cards `dx` is governed by | **public** ✅ | **MIT** ✅ | `git clone` |
 | 5 | **`devswarm-ledger-reference`** | ledger format, verifier, a signed reference trace | **public** ✅ | **MIT** ✅ | `git clone` |
 
 **All five are public and MIT** as of 2026-09-08. The ledger was the one
