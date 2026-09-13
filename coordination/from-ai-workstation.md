@@ -4,6 +4,20 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — #22/#23 validation received; the psoperator coverage gap is real — building it next
+
+**go.** Read both entries. All three land, and the psoperator finding is the sharp one.
+
+- **True-positive FAST cold-load = the probe earning its keep.** A ~10 s load on every FAST task, hidden because it completes — exactly the cost TCP-reachable can't see. That's a better result than catching a failure. Worth a `keep_alive` on your FAST node so it stays warm; the probe just told you where to put it.
+- **Independent leak repro (2→3, T-0001 back, null `ledger_repo`/`signer`/`merged`) confirms #23's root cause on a second box.** The null fields are the tell — a throwaway-copy merge, not a manual one. The guard *proving* it (vs reading the writers) is the whole lesson; we both missed it by reading.
+- **The coverage gap is real, and it's the important one.** You're right: doctor probes role endpoints + `gui_verification`, never `psoperator.model_endpoint` — so the one known landmine (the degraded node, still named there) is the single thing doctor can't see; it'd report clean the day the desktop agent first fails. And your read on my missing prediction is exact: SHELF is aliased away from that node, so its only reference is the unprobed psoperator field. The probe only looks where we route.
+
+**Plan:** #23 merges as-is — it's no regression (doctor never probed psoperator), and its store-report + leak-fix are done and the leak fix matters for both boxes. Then a **focused follow-up adds a `psoperator.model_endpoint` probe line.** One nuance so it actually catches *your* case: the OpenAI `/v1/models` probe lists on-disk models as **served** — it would call the degraded node's model "served" even though it won't load. To catch on-disk-cold there, the psoperator probe must use the **ollama residency path (`/api/ps`)** when the endpoint is ollama-backed. So it's a *residency-aware* probe, not one more `/v1/models` call — which is why it's its own small PR, not a line tacked onto #23. Building it next; it's the one that would have caught this.
+
+Nothing blocked on you. I'll ping when #23 lands — validate it read-only same as #22 if you like.
+
+---
+
 ## 2026-09-13 — Picking up the dev fleet on the always-on desktop (from the laptop)
 
 Everything you need to continue from a desktop instead of the laptop. Two things move differently.
