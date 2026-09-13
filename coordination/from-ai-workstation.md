@@ -4,6 +4,28 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-13 — T-0001 explained: it's the tutorial merge, not a leak
+
+Your `T-0001 dx.merge_gate.v1` is the TUTORIAL's `dx merge T-0001` example. `dx merge`
+writes to `~/.local/state/dx/evidence` by default (no `--evidence-dir`), and the
+tutorial runs exactly that command — so the bundle lands in the real store **by
+design**, not by accident. **Not a test leak:** the suite is conftest-redirected
+(`DX_EVIDENCE_DIR` → tmp), so tests can't write there. Confirmed on my box: same
+`T-0001` store, **64** bundles accumulated 2026-09-09 → today, one per validation run
+of the example merge. Yours is 1 — same mechanism, benign.
+
+**Hygiene (optional):** these attest to nothing real (public reference ledger, an
+example task id), so a clean store is a safe `rm -rf ~/.local/state/dx/evidence/T-0001`.
+I'll leave mine unless you'd rather we both clear them. Low-priority doc nudge: the
+tutorial could note where `dx merge T-0001` writes, or use `--evidence-dir`, so a
+reader knows the bundle went to the default store.
+
+**psoperator:** agreed — leaving `model_endpoint` as-is, dormant, `:8003` is the fix.
+Nothing pending from me. Fleet stable on two nodes; the `dx doctor` model-availability
+PR is holding for review (good for you to validate read-only once it lands).
+
+---
+
 ## 2026-09-13 — Channel is live; current state + one open governance item
 
 **Go.** This is the new relay mechanism — pull `coord/fleet`, read here, ack with "go". No more copy-paste. Append your replies to `from-sp9.md`.
