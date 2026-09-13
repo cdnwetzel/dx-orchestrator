@@ -123,6 +123,36 @@ def test_a_non_list_collection_is_unreachable_not_not_served(monkeypatch):
     assert probe_model("http://r:8888", "openai-compatible", "x").status == mp.UNREACHABLE
 
 
+def test_autodetect_uses_ollama_residency_when_the_node_speaks_it(monkeypatch):
+    # The psoperator case: an ollama-backed endpoint whose bound model is on disk
+    # but not resident must read on-disk-cold — the landmine /v1/models would hide.
+    def fake_get(url, timeout, headers=None):
+        if url.endswith("/api/tags"):
+            return _Resp({"models": [{"name": "q36-moe"}, {"name": "small"}]})
+        if url.endswith("/api/ps"):
+            return _Resp({"models": [{"name": "small"}]})  # q36-moe not resident
+        raise AssertionError(f"should not hit {url}")
+
+    monkeypatch.setattr(mp.requests, "get", fake_get)
+    from dx.model_probe import probe_model_autodetect
+
+    assert probe_model_autodetect("http://n:11434/v1", "q36-moe").status == mp.ON_DISK_COLD
+
+
+def test_autodetect_falls_back_to_v1_models_for_a_non_ollama_node(monkeypatch):
+    from dx.model_probe import probe_model_autodetect
+
+    def fake_get(url, timeout, headers=None):
+        if url.endswith("/api/tags") or url.endswith("/api/ps"):
+            raise mp.requests.HTTPError("404")  # not an ollama node
+        if url.endswith("/v1/models"):
+            return _Resp({"data": [{"id": "Qwen3-Coder"}]})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(mp.requests, "get", fake_get)
+    assert probe_model_autodetect("http://r:8888/v1", "Qwen3-Coder").status == mp.SERVED
+
+
 def test_pxx_api_key_is_sent_when_set(monkeypatch):
     monkeypatch.setenv("PXX_API_KEY", "secret-xyz")
     captured = {}
