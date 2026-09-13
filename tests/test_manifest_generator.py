@@ -166,7 +166,7 @@ def test_a_tier_a_role_needs_but_the_binding_omits_is_an_error():
 
 def test_a_mapped_tier_with_no_model_is_an_error():
     b = _binding(HEAVY={"governed": True})  # no model
-    with pytest.raises(gen.BindingError, match="no model"):
+    with pytest.raises(gen.BindingError, match="model must be a non-empty string"):
         gen.generate(_template(), b)
 
 
@@ -177,6 +177,56 @@ def test_malformed_binding_writes_nothing_and_exits_2(tmp_path):
     rc = gen.main(["--binding", str(bad), "--template", str(TEMPLATE), "--out", str(out)])
     assert rc == 2
     assert not out.exists(), "a malformed binding must not leave a half-written manifest"
+
+
+def test_a_quoted_boolean_is_refused_not_coerced():
+    # governed: "false" is a truthy string — it must NOT silently mark the tier
+    # governed. Real booleans only (CodeRabbit/Copilot #21).
+    b = _binding(HEAVY={"model": "h", "governed": "false", "reason": "x"})
+    with pytest.raises(gen.BindingError, match="real boolean"):
+        gen.generate(_template(), b)
+    b2 = _binding(LEGAL_DEEP={"unmapped": "false"})  # truthy string would unmap
+    with pytest.raises(gen.BindingError, match="real boolean"):
+        gen.generate(_template(), b2)
+
+
+def test_governed_false_without_a_reason_is_refused():
+    b = _binding(HEAVY={"model": "h", "governed": False})  # no reason
+    with pytest.raises(gen.BindingError, match="reason"):
+        gen.generate(_template(), b)
+
+
+def test_unmapped_without_a_reason_is_refused():
+    b = _binding(LEGAL_DEEP={"unmapped": True})  # no reason
+    with pytest.raises(gen.BindingError, match="reason"):
+        gen.generate(_template(), b)
+
+
+def test_a_non_string_endpoint_is_refused():
+    b = _binding(HEAVY={"endpoint": 123, "provider": "vllm", "model": "h"})
+    with pytest.raises(gen.BindingError, match="non-empty string"):
+        gen.generate(_template(), b)
+
+
+def test_a_non_mapping_passthrough_section_is_refused():
+    b = _binding()
+    b["gui_verification"] = []  # would pass generation but fail config_loader later
+    with pytest.raises(gen.BindingError, match="gui_verification"):
+        gen.generate(_template(), b)
+
+
+def test_a_falsey_role_overrides_value_fails_rather_than_becoming_empty():
+    b = _binding()
+    b["role_overrides"] = []  # not None -> must raise, not coerce to {}
+    with pytest.raises(gen.BindingError, match="role_overrides"):
+        gen.generate(_template(), b)
+
+
+def test_an_unserialisable_binding_fails_as_a_binding_error():
+    # A set is not JSON-serialisable; binding_digest must raise BindingError, not
+    # let a TypeError escape main()'s BindingError-only catch as an exit-1 traceback.
+    with pytest.raises(gen.BindingError, match="serialisable"):
+        gen.binding_digest({"tiers": {}, "note": {1, 2, 3}})
 
 
 def test_round_trip_generates_a_manifest_dx_can_load(tmp_path, monkeypatch):

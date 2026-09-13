@@ -59,15 +59,39 @@ def _load_yaml(path: Path, what: str) -> dict[str, Any]:
 
 def binding_digest(binding: dict[str, Any]) -> str:
     """A stable sha256 over the binding's content — order-independent — so a
-    generated manifest can be checked against the binding it claims to come from."""
-    canonical = json.dumps(binding, sort_keys=True, separators=(",", ":"))
+    generated manifest can be checked against the binding it claims to come from.
+    A binding that will not canonicalise (mixed-type keys, an unquoted YAML date)
+    is a malformed binding, raised as such rather than an uncaught TypeError."""
+    try:
+        canonical = json.dumps(binding, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise BindingError(f"binding is not serialisable (mixed-type keys or an unquoted date?): {exc}") from exc
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _req_str(value: Any, what: str) -> str:
+    """A value that MUST be a non-empty string. An int endpoint like ``123`` would
+    otherwise stringify and reach PXX_BASE_URL as ``"123"``; refuse it here."""
+    if not isinstance(value, str) or not value.strip():
+        raise BindingError(f"{what} must be a non-empty string, got {value!r}")
+    return value
+
+
+def _opt_bool(value: Any, what: str, default: bool) -> bool:
+    """A boolean control that, if present, must be a REAL bool — never a quoted
+    string. ``governed: \"false\"`` is truthy and would silently mark a tier
+    governed; ``unmapped: \"false\"`` would silently unmap it. Refuse the coercion."""
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise BindingError(f"{what} must be a real boolean (unquoted true/false), got {value!r}")
+    return value
 
 
 def _resolve_tier(tier: str, binding: dict[str, Any]) -> dict[str, Any] | None:
     """Resolve one tier to a concrete route, or None if the binding declares the
-    tier ``unmapped``. Raises :class:`BindingError` if the tier is undefined or
-    missing a model."""
+    tier ``unmapped``. Every field is validated before it can reach the manifest;
+    a malformed tier raises :class:`BindingError` rather than emitting bad routing."""
     tiers = binding.get("tiers")
     if not isinstance(tiers, dict):
         raise BindingError("binding has no 'tiers' mapping")
@@ -77,32 +101,41 @@ def _resolve_tier(tier: str, binding: dict[str, Any]) -> dict[str, Any] | None:
             f"binding does not define tier {tier!r}; every tier the template uses "
             "must be bound (or explicitly marked unmapped)"
         )
-    if cfg.get("unmapped"):
-        return None  # declared, not silent — the caller records the reason
+    if _opt_bool(cfg.get("unmapped"), f"tier {tier!r} 'unmapped'", False):
+        # Declared, not silent: an unmapped tier MUST say why (it becomes the
+        # disclosure an examiner reads). A blank reason is not a disclosure.
+        _req_str(cfg.get("reason"), f"tier {tier!r} is unmapped and must give a 'reason'")
+        return None
     # A tier inherits the router only for fields it does not set itself, so a
     # routerless multi-node fleet (every tier explicit) is valid, and a
-    # single-router fleet stays terse.
-    endpoint = cfg.get("endpoint")
-    provider = cfg.get("provider")
-    if not endpoint or not provider:
+    # single-router fleet stays terse. Local values are validated before
+    # inheritance, inherited values after.
+    endpoint = _req_str(cfg["endpoint"], f"tier {tier!r} endpoint") if cfg.get("endpoint") is not None else None
+    provider = _req_str(cfg["provider"], f"tier {tier!r} provider") if cfg.get("provider") is not None else None
+    if endpoint is None or provider is None:
         router = binding.get("router")
         if isinstance(router, dict):
-            endpoint = endpoint or router.get("url")
-            provider = provider or router.get("provider")
-    model = cfg.get("model")
-    if not endpoint:
+            if endpoint is None and router.get("url") is not None:
+                endpoint = _req_str(router["url"], "router.url")
+            if provider is None and router.get("provider") is not None:
+                provider = _req_str(router["provider"], "router.provider")
+    if endpoint is None:
         raise BindingError(f"tier {tier!r} has no endpoint and no router.url to inherit")
-    if not provider:
+    if provider is None:
         raise BindingError(f"tier {tier!r} has no provider and no router.provider to inherit")
-    if not model:
-        raise BindingError(f"tier {tier!r} is mapped but has no model")
+    model = _req_str(cfg.get("model"), f"tier {tier!r} model")
+    governed = _opt_bool(cfg.get("governed"), f"tier {tier!r} 'governed'", True)
+    reason = cfg.get("reason")
+    if not governed:
+        # An ungoverned route names itself; "no reason given" is not a name.
+        reason = _req_str(reason, f"tier {tier!r} is governed:false and must give a 'reason'")
     return {
-        "endpoint": str(endpoint),
-        "provider": str(provider),
-        "model": str(model),
-        "governed": bool(cfg.get("governed", True)),
-        "reason": cfg.get("reason"),
-        "force_only": bool(cfg.get("force_only", False)),
+        "endpoint": endpoint,
+        "provider": provider,
+        "model": model,
+        "governed": governed,
+        "reason": reason,
+        "force_only": _opt_bool(cfg.get("force_only"), f"tier {tier!r} 'force_only'", False),
     }
 
 
@@ -119,12 +152,16 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
     # A box may deliberately re-tier a role for its hardware — declared here, never
     # silent. The override tier must exist in the binding, and the role must be a
     # real template role (a typo cannot re-route a card into oblivion).
-    overrides = binding.get("role_overrides") or {}
-    if not isinstance(overrides, dict):
+    overrides = binding.get("role_overrides")
+    if overrides is None:
+        overrides = {}
+    if not isinstance(overrides, dict):  # a falsey [] / "" must fail, not become {}
         raise BindingError("role_overrides must be a mapping of role -> tier")
     unknown = set(overrides) - set(roles_tiers)
     if unknown:
         raise BindingError(f"role_overrides names roles not in the template: {sorted(unknown)}")
+    for role, tier in overrides.items():
+        _req_str(tier, f"role_overrides[{role!r}] tier")
 
     resolved: dict[str, dict[str, Any]] = {}
     unmapped: dict[str, str] = {}       # role -> reason (declared fall-through to default)
@@ -138,15 +175,16 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
             r = _resolve_tier(tier, binding)
             tier_cache[tier] = r
             if r is not None and not r["governed"]:
-                ungoverned[tier] = r.get("reason") or "ungoverned route (no reason given)"
+                ungoverned[tier] = r["reason"]  # guaranteed non-empty by _resolve_tier
         return tier_cache[tier]
 
     for role, template_tier in roles_tiers.items():
         tier = str(overrides.get(role, template_tier))
         route = route_for(tier)
         if route is None:
-            reason = binding["tiers"][tier].get("reason") or "tier unmapped in this fleet"
-            unmapped[role] = reason
+            unmapped[role] = _req_str(  # guaranteed present, re-read for the record
+                binding["tiers"][tier].get("reason"), f"tier {tier!r} unmapped reason"
+            )
             continue
         note = tier if tier == str(template_tier) else f"{tier} (override of {template_tier})"
         if route["force_only"]:
@@ -182,7 +220,12 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
     }
     for section in ("gui_verification", "psoperator"):
         if section in binding:
-            manifest[section] = binding[section]
+            value = binding[section]
+            if not isinstance(value, dict):
+                # config_loader/_as_mapping would reject a scalar or list later;
+                # fail here so a malformed binding never becomes a written manifest.
+                raise BindingError(f"binding {section!r} must be a mapping, got {type(value).__name__}")
+            manifest[section] = value
     return manifest
 
 
@@ -190,8 +233,9 @@ _HEADER = """\
 # GENERATED by scripts/gen_manifest.py — do NOT hand-edit.
 # manifest = config/manifest.template.yml (role->tier)  x  fleet binding (this box).
 # binding-sha256: {digest}
-# To change routing: edit the binding and regenerate. dx doctor warns if this
-# file no longer matches the binding it was generated from.
+# To change routing: edit the binding and regenerate. The digest above identifies
+# the binding this file came from; a future dx doctor check will use it to flag a
+# hand-edit (drift detection not yet enforced).
 {governance}"""
 
 

@@ -5,6 +5,31 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The hardware manifest is generated, not hand-maintained** (`scripts/gen_manifest.py`,
+  `config/manifest.template.yml`). Two drifts had no guard: a role card with no tier
+  (once left 6 of 40 roles mapped, the rest silently on `default`), and a hand-edited
+  manifest diverging from intent (a pre-0.9.1 `screenshot_cmd` survived unnoticed). Now
+  `manifest = template (tracked, address-free role→tier) × a per-box fleet binding
+  (untracked: router URL + per-tier model)`. The template is the shared contract every
+  node agrees on; the binding is the only per-fleet part, so a work fleet (psrouter) and
+  a home fleet (labrouter) carry identical intent and differ by one file.
+  - **Fail closed:** a malformed binding writes nothing and exits 2 — never a
+    half-manifest. Real booleans are required for `unmapped`/`governed`/`force_only`
+    (a quoted `"false"` is refused, not silently coerced true); route values must be
+    non-empty strings; optional sections must be mappings; the binding must canonicalise.
+  - **Declared, not silent:** a tier may mark `governed: false` (an interim unaudited
+    route that *names itself* with a required `reason` — the RL-010 marked-fallback
+    pattern applied to routing) or `unmapped: true` (a role with no model in this fleet
+    falls to `default`, with a required `reason`); `role_overrides` re-tier a role for a
+    box's hardware. All three surface in the manifest's `_generated` block. The output is
+    stamped with the binding's sha256.
+  - A test asserts **every deck card resolves to a tier**, so the 38→40 growth can no
+    longer add a card that silently lands on `default`.
+
 ## [0.19.0] — 2026-09-10
 
 ### Added
