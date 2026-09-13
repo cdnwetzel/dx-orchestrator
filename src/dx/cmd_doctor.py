@@ -24,7 +24,13 @@ from .config_loader import (
     validate_manifest,
 )
 from .evidence import MERGE_SCHEMA, default_evidence_root, summarize_store
-from .model_probe import NOT_SERVED, probe_model, probe_model_autodetect
+from .model_probe import (
+    NOT_SERVED,
+    measure_latency,
+    measure_latency_autodetect,
+    probe_model,
+    probe_model_autodetect,
+)
 from .role_registry import get_parse_failures, load_registry
 
 # doctor asks tools for their version; none of them should take longer.
@@ -59,6 +65,19 @@ def register_doctor_subcommand(subparsers: SubParsers) -> None:
         "--no-network",
         action="store_true",
         help="Skip network reachability probes",
+    )
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Also time a 1-token call to each serving model — catches a resident "
+        "but degraded node (slow), which residency checks cannot see. Costs a real call.",
+    )
+    parser.add_argument(
+        "--latency-warn-ms",
+        type=float,
+        default=5000.0,
+        help="With --deep, warn when a model's 1-token call takes at least this "
+        "many ms (default 5000).",
     )
     parser.set_defaults(func=cmd_doctor)
 
@@ -249,6 +268,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 avail = probe_model(ep, provider, model)
                 icon = "✅" if avail.ok else ("❌" if avail.status == NOT_SERVED else "⚠️")
                 print(f"{icon} model {model} @ {ep}: {avail.detail}")
+                # --deep: a model that can serve may still be slow. Time a 1-token
+                # call. Slow means slow *now* (degraded node or concurrent load) —
+                # a fact residency can't see, not a diagnosis of the cause.
+                if args.deep and avail.ok:
+                    lat = measure_latency(ep, provider, model, warn_ms=args.latency_warn_ms)
+                    print(f"   {'⚠️' if (lat.slow or not lat.ok) else '✅'} latency: {lat.detail}")
         except Exception as exc:
             print(f"⚠️  could not probe model availability: {exc}")
 
@@ -264,6 +289,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 avail = probe_model_autodetect(str(ep), str(model))
                 icon = "✅" if avail.ok else ("❌" if avail.status == NOT_SERVED else "⚠️")
                 print(f"{icon} psoperator model {model} @ {ep}: {avail.detail}")
+                if args.deep and avail.ok:
+                    lat = measure_latency_autodetect(str(ep), str(model), warn_ms=args.latency_warn_ms)
+                    print(f"   {'⚠️' if (lat.slow or not lat.ok) else '✅'} latency: {lat.detail}")
         except Exception as exc:
             print(f"⚠️  could not probe the psoperator model endpoint: {exc}")
 

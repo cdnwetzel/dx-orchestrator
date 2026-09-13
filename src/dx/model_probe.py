@@ -25,6 +25,7 @@ can tell us.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 
 import requests
@@ -164,3 +165,74 @@ def probe_model_autodetect(endpoint: str, model: str, *, timeout: float = 4.0) -
     except (requests.RequestException, ValueError) as exc:
         return ModelAvailability(UNREACHABLE, f"{endpoint} /api/ps did not answer ({type(exc).__name__})")
     return classify_ollama(model, tags=tags, resident=resident)
+
+
+@dataclass(frozen=True)
+class Latency:
+    """A timed round-trip to a model. ``ok`` means the call returned; ``slow`` means
+    it returned but past the warn threshold. A slow reading is a *point-in-time*
+    fact — the model was slow **at probe time** — and does NOT by itself distinguish
+    a persistently degraded node from one merely under concurrent load. It is the
+    thing residency cannot see (a resident model that is nonetheless slow); the
+    cause is for the operator to establish (re-probe idle; restart to test a stuck
+    state). A failed/timed-out call is ``ok=False``."""
+
+    ok: bool
+    slow: bool
+    elapsed_ms: float | None
+    detail: str
+
+
+def measure_latency(
+    endpoint: str, provider: str, model: str, *, warn_ms: float = 5000.0, timeout: float = 30.0
+) -> Latency:
+    """Time a minimal 1-token generation against ``model``. This is the ``--deep``
+    check: a real round-trip (so it costs a call, hence opt-in), timing what
+    residency can't — a resident model that is slow. A slow result means slow *now*
+    (degraded node OR concurrent load), not a diagnosis; a timeout is itself the
+    signal, so the caller uses a generous ``timeout`` and anything at/over
+    ``warn_ms`` is flagged slow."""
+    base = endpoint.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
+    try:
+        start = time.monotonic()
+        if provider == "ollama":
+            resp = requests.post(
+                f"{base}/api/generate",
+                json={"model": model, "prompt": "ping", "stream": False, "options": {"num_predict": 1}},
+                timeout=timeout,
+            )
+        else:
+            resp = requests.post(
+                f"{base}/v1/chat/completions",
+                json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
+                timeout=timeout,
+                headers=_auth_headers(),
+            )
+        resp.raise_for_status()
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        slow = elapsed_ms >= warn_ms
+        note = f"{elapsed_ms:.0f} ms" + (
+            f" — slow (≥ {warn_ms:.0f} ms): node degraded or under load" if slow else ""
+        )
+        return Latency(ok=True, slow=slow, elapsed_ms=elapsed_ms, detail=note)
+    except (requests.RequestException, ValueError) as exc:
+        return Latency(ok=False, slow=True, elapsed_ms=None, detail=f"call failed ({type(exc).__name__})")
+
+
+def measure_latency_autodetect(
+    endpoint: str, model: str, *, warn_ms: float = 5000.0, timeout: float = 30.0
+) -> Latency:
+    """Latency for an endpoint whose provider is not declared (psoperator). Detect
+    the node the same way :func:`probe_model_autodetect` does — ollama if
+    ``/api/tags`` answers — then time it with the matching call."""
+    base = endpoint.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
+    try:
+        _json_object(requests.get(f"{base}/api/tags", timeout=timeout))
+        provider = "ollama"
+    except (requests.RequestException, ValueError):
+        provider = "openai-compatible"
+    return measure_latency(endpoint, provider, model, warn_ms=warn_ms, timeout=timeout)
