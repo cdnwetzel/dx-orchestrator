@@ -1,0 +1,59 @@
+# EXAMPLE per-box fleet binding — copy to ~/.config/dx/fleet_binding.yml and fill
+# with THIS box's real router + models. The real binding is machine-local and
+# NEVER committed (red line: no fleet addresses in tracked files). This example
+# uses placeholder hosts only.
+#
+#   manifest = config/manifest.template.yml (role->tier)  x  this binding
+#   generate: python scripts/gen_manifest.py --binding ~/.config/dx/fleet_binding.yml \
+#               --out ~/.config/dx/hardware_manifest.yml
+#
+# router.url is the fleet's GOVERNED front door (work: psrouter; home: the audit
+# proxy in front of labrouter). Tiers inherit it unless they override `endpoint`.
+
+version: 1
+
+router:
+  url: "http://ROUTER-HOST:PORT"
+  provider: "openai-compatible"
+
+tiers:
+  HEAVY:      { model: "<heavy-reasoning-model>", governed: true }
+  CODE:       { model: "<code-model>", governed: true }
+  FAST:       { model: "<small-instruct-model>", governed: true }
+  VISION:     { model: "<vision-model>", governed: true }
+  # LEGAL: on a fleet with a legal model, map it and mark force_only (Anchored
+  # gate is the control). On a fleet with none, mark the tier unmapped WITH a
+  # reason — the role then falls to default, declared, not silent.
+  LEGAL_DEEP: { model: "<legal-deep-model>", governed: true, force_only: true }
+  LEGAL_GEN:  { model: "<legal-general-model>", governed: true, force_only: true }
+  # DEFAULT: the fallback route. Override the endpoint to a LOCAL model so the box
+  # still drafts if the fleet router is down (a declared resilience choice), or map
+  # it through the router like any other tier.
+  DEFAULT:    { endpoint: "http://localhost:11434", provider: "ollama", model: "<local-fallback-model>", governed: true }
+  #
+  # A tier may override the router (a local exception) and/or declare itself an
+  # interim UNGOVERNED route that names itself rather than hiding:
+  #   HEAVY: { endpoint: "http://HOST:8007", provider: "openai-compatible",
+  #            model: "<model>", governed: false,
+  #            reason: "interim direct vLLM; no audited route for role inference exists yet" }
+  #
+  # A fleet with no legal model:
+  #   LEGAL_DEEP: { unmapped: true, reason: "no legal model in this fleet; Anchored gate is the control" }
+  #   LEGAL_GEN:  { unmapped: true, reason: "no legal model in this fleet; Anchored gate is the control" }
+
+# EXCEPTION: dx verify-gui speaks the Ollama /api/generate images[] API, so the VLM
+# must be an Ollama vision model, not the router's vLLM. Kept per-box here.
+gui_verification:
+  vlm_endpoint: "http://localhost:11434/api/generate"
+  vlm_model: "<vision-ollama-model>"
+  ssh_host: "user@gui-host"
+  screenshot_cmd: "DISPLAY=:99 import -window root png:-"
+  timeout_s: 120
+
+psoperator:
+  observer_port: 8764
+  gatekeeper_port: 8765
+  executor_port: 8766
+  model_endpoint: "http://localhost:11434"
+  model_name: "<planner-model>"
+  audit_log_path: "psoperator_audit.jsonl"
