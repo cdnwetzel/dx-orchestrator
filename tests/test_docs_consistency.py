@@ -263,8 +263,13 @@ _HISTORICAL_MARK = re.compile(
 )
 
 
-_FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
-_INLINE_CODE = re.compile(r"`[^`]*`")
+#: A fence opens with three or more backticks or tildes and closes only on the
+#: SAME character, at least as long (CommonMark). Toggling on any fence lets a
+#: literal ``` line inside a ~~~ block close it and re-expose what follows.
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+#: Inline code spans match on their complete backtick run, so ``x`` is masked as
+#: one span rather than leaving `x` exposed between two single-backtick matches.
+_INLINE_CODE = re.compile(r"(`+).*?\1")
 
 
 def _active_marker_lines(text: str) -> set[int]:
@@ -274,15 +279,25 @@ def _active_marker_lines(text: str) -> set[int]:
     not exempt anything. `CHANGELOG.md` documents this very marker as inline
     code, so without this the documentation of an escape hatch would become an
     escape hatch, silently, for whatever count happened to sit beside it.
+
+    Both delimiter forms are parsed properly rather than approximately, because
+    an approximate parse here fails in the permissive direction: every miss is a
+    count that stops being checked, and it stops quietly.
     """
     lines = text.splitlines()
     active: set[int] = set()
-    fenced = False
+    fence: str | None = None
     for i, line in enumerate(lines):
-        if _FENCE.match(line):
-            fenced = not fenced
+        match = _FENCE.match(line)
+        if match:
+            marker = match.group(1)
+            if fence is None:
+                fence = marker
+                continue
+            if marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = None
             continue
-        if fenced:
+        if fence is not None:
             continue
         if _HISTORICAL_MARK.search(_INLINE_CODE.sub("", line)):
             active.add(i)
@@ -991,6 +1006,23 @@ class TestUsageAndSpecTemplate:
         # the real thing, unquoted, still exempts
         real = "<!-- deck-count: historical - the archived deck -->"
         assert _role_card_counts(f"{real}\n38 role cards", skip_marked=True) == set()
+
+    def test_code_delimiters_are_parsed_not_approximated(self):
+        """Both misses found in review, pinned. A double-backtick span left the
+        marker exposed between two single-backtick matches; and toggling fence
+        state on any delimiter let a literal ``` line close a ~~~ block, so a
+        marker after it read as live. An approximate Markdown parse fails in the
+        permissive direction here — every miss is a count that stops being
+        checked, quietly."""
+        marker = "<!-- deck-count: historical - why -->"
+        double = f"Shown as ``{marker}``\n38 role cards"
+        assert 38 in _role_card_counts(double, skip_marked=True), "double-backtick span"
+        crossed = f"~~~\n```\n{marker}\n38 role cards\n~~~"
+        assert 38 in _role_card_counts(crossed, skip_marked=True), "mismatched fence"
+        # a fence really does still suppress, and a real marker really does exempt
+        fenced = f"```\n{marker}\n38 role cards\n```"
+        assert 38 in _role_card_counts(fenced, skip_marked=True)
+        assert _role_card_counts(f"{marker}\n38 role cards", skip_marked=True) == set()
 
     def test_an_exemption_without_a_reason_does_not_exempt(self):
         """`governed: false` requires a reason; so does this. A bare opt-out is
