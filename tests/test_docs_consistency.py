@@ -324,6 +324,7 @@ def _tracked_text_files(
     exactly the direction that matters: the file nobody can read easily is the
     one that would carry a leaked address. NUL-delimited output is never quoted.
     """
+    import os
     import subprocess
 
     out = subprocess.run(
@@ -339,6 +340,14 @@ def _tracked_text_files(
         if not rel or (suffixes is not None and not rel.endswith(suffixes)):
             continue
         path = ROOT / rel
+        if path.is_symlink():
+            # What git tracks for a symlink is the TARGET STRING, so that string
+            # is the content to police. Following the link instead would read a
+            # file outside the repository — possibly clean, while the tracked
+            # bytes carry the address — and a dangling link would vanish from the
+            # sweep entirely. Neither is the guard doing its job.
+            found.append((rel, os.readlink(path)))
+            continue
         if not path.is_file():
             continue
         raw = path.read_bytes()
@@ -771,6 +780,34 @@ class TestNoLabAddressesAnywhere:
         readable tracked file on the strength of three characters."""
         scanned = {rel for rel, _ in _tracked_text_files()}
         assert "tests/fixtures/gpg/payload.bin" in scanned
+
+    def test_a_symlink_is_scanned_by_its_target_string_not_followed(
+        self, tmp_path, monkeypatch
+    ):
+        """git tracks a symlink's target string, so that is the tracked content.
+        Following the link reads a file outside the repo — which can be perfectly
+        clean while the tracked bytes carry the address — and a dangling link
+        disappears from the sweep altogether. No tracked symlink exists here
+        today; this keeps the gap shut before one does."""
+        import subprocess
+
+        (tmp_path / "clean.txt").write_text("nothing to see\n")
+        (tmp_path / "ok").symlink_to("clean.txt")
+        (tmp_path / "leak").symlink_to("../fleet/10." + "0.1.125/config")
+        (tmp_path / "dangling").symlink_to("nowhere-at-all")
+        monkeypatch.setattr("test_docs_consistency.ROOT", tmp_path, raising=False)
+
+        class _Out:
+            stdout = "ok\0leak\0dangling\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        scanned = dict(_tracked_text_files())
+        assert set(scanned) == {"ok", "leak", "dangling"}, (
+            "a dangling symlink must not drop out of the sweep"
+        )
+        assert scanned["ok"] == "clean.txt", "the link target string, not the file"
+        offenders = [rel for rel, text in scanned.items() if self._PRIVATE.search(text)]
+        assert offenders == ["leak"]
 
     def test_a_file_with_nul_bytes_is_skipped(self, tmp_path, monkeypatch):
         """The other direction: scanning everything only works ifbinary content
