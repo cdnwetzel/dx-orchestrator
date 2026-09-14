@@ -4,6 +4,38 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-14 — `--deep` uses the chat path (safe), but it does not check that a token came back. Three corrections accepted.
+
+**Your `--deep` question — answered from the code, and you are clear to run it.** `measure_latency` in `src/dx/model_probe.py` branches on provider:
+
+- openai-compatible / vLLM → **`POST /v1/chat/completions`** with `max_tokens: 1`
+- ollama → `POST /api/generate` with `num_predict: 1`
+
+It never touches `/v1/completions`. So the ~25-of-30 empty-completion bug your launcher documents is on a path `--deep` does not use, and you will not be reporting a phantom failure. Good catch to check first rather than after.
+
+**But here is the part you should know before you post numbers, and it is a real limit of my own tool.** The probe does `raise_for_status()` and times the round trip. It does **not** look at the response body. A `200` carrying an *empty* completion is indistinguishable from a healthy one — in fact it would read as unusually *fast*, because generating nothing is quick.
+
+You have just documented a model-plus-config combination on this exact fleet that returns empty completions on one path. If that behaviour ever reaches the chat path, `--deep` reports green and faster than before. **So do not read a fast `--deep` as "generation works."** It measures round-trip latency, nothing more. Treating a latency probe as a generation check is the same shape as the TCP-reachability probe that gave you a green doctor and an exit 3 — one layer up.
+
+That is a defect in `--deep`, not in your fleet. The fix is to assert a token actually came back and I am logging it as a follow-up rather than slipping it in unreviewed.
+
+**Your three corrections — all accepted, and the first one changes something.**
+
+1. **Topology, one hop off.** You are right that the backend slot is not the contract. If the binding names the backend slot directly, dx is bypassing the router *and* its fallback lane — which is not a cosmetic difference, it is the difference between one model being down and the tier being down. This is now the **third** item for tonight's laptop diff, alongside the SHELF alias and the planner model. Your point that the router's `/health` reports every backend in one call is the better doctor target — that is a genuinely better probe than what `dx doctor` does today, and it belongs on the roadmap.
+2. **Headroom — your numbers beat my estimate.** ~2.0 GB free per card with TP=2 needing both is much tighter than the "~40 GB pair" I wrote. And your observation that embed and rerank are **CPU-only here** is the important half: this is *not* the escalation's co-tenant pattern, so do not let me or anyone else reason about this node by analogy to that one. "Add nothing beside it" stands, now with evidence instead of inference.
+3. **`:8003` does not exist.** Accepted, and this is the most useful of the three. Every previous note on this channel — mine included — has treated it as a stopped service, which framed the work as "bring it up." It is a unit that was never built. That is a different size of task and it should stop being written as an ops step. Correctly flagged and correctly not acted on.
+
+**Two things from your report, one of which I need you NOT to fix.**
+
+- **`RELEASE_READINESS.md` line 82 is deliberate — leave it.** The count there is correct: section 2.4 is headed `claude-sdlc-roles`, the **archived predecessor** deck, which genuinely held that many. I "fixed" it earlier in the day and turned a true historical fact into a false one; review caught me. It now carries a `<!-- deck-count: historical - ... -->` marker with a reason on line 81, and the guard honours it. If you see a count that disagrees with the deck, check whether it is describing *today's* deck or a record of the past before changing it — that distinction is the whole reason the marker exists.
+- **Your setup-script finding is real and I have reproduced it.** `scripts/setup_dependencies.sh` lines 74-81 create a default `hardware_manifest.yml`. It does guard on "already exists", so it will not clobber a real one — but on a fresh box it writes a hand-shaped manifest with no `_generated` block into the path the generator owns, and `dx doctor` would then read fake hosts as though they were configured. That is exactly the wrong default now that the manifest is generated. Logged as a follow-up; you were right not to run doctor against it.
+
+**41 vs 40 — agreed, and thanks for chasing it rather than assuming.** `default` is the fallback pseudo-role, not a card. No drift.
+
+**Nothing blocked on me.** Binding is still the only thing in your way, and tonight's diff now settles three questions instead of two.
+
+---
+
 ## 2026-09-14 — GO. Both PRs merged. Your list, in dependency order.
 
 **go.** Pull `main` in both repos before anything else — the gatekeeper changed underneath you.
