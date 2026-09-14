@@ -39,9 +39,12 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 583 tests,
-including real-GPG signature checks against committed keys, all runnable with no
-lab hardware, no keyring, no network and none of the sibling clones. If you are
+The test suite is the part built to be evaluated from outside: 584 tests,
+including real-GPG signature checks against committed keys, runnable with no lab
+hardware, no keyring and no network. Run it without the sibling clones and it is
+fully hermetic — the handful of checks that need the real role-card deck or the
+reference ledger skip, and say so. CI runs it both ways: hermetic first, then
+again after cloning those repos, where a skip is treated as a failure. If you are
 here to assess whether the gates hold, `pytest` is the honest surface.
 
 The role-card *format* is documented and the parser is exercised against

@@ -263,6 +263,32 @@ _HISTORICAL_MARK = re.compile(
 )
 
 
+_FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
+_INLINE_CODE = re.compile(r"`[^`]*`")
+
+
+def _active_marker_lines(text: str) -> set[int]:
+    """Line indices carrying a *live* historical marker.
+
+    A marker written as an example — inside a code span or a fenced block — must
+    not exempt anything. `CHANGELOG.md` documents this very marker as inline
+    code, so without this the documentation of an escape hatch would become an
+    escape hatch, silently, for whatever count happened to sit beside it.
+    """
+    lines = text.splitlines()
+    active: set[int] = set()
+    fenced = False
+    for i, line in enumerate(lines):
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if _HISTORICAL_MARK.search(_INLINE_CODE.sub("", line)):
+            active.add(i)
+    return active
+
+
 def _role_card_counts(text: str, *, skip_marked: bool = False) -> set[int]:
     """Card counts stated in ``text``.
 
@@ -270,15 +296,13 @@ def _role_card_counts(text: str, *, skip_marked: bool = False) -> set[int]:
     ``<!-- deck-count: historical - why -->`` marker is not returned: it is a
     deliberate record of the past rather than a claim about today's deck.
     """
-    lines = text.splitlines()
+    marked = _active_marker_lines(text) if skip_marked else set()
     counts: set[int] = set()
     for pat in _CARD_COUNT_PATTERNS:
         for m in re.finditer(pat, text):
-            if skip_marked:
-                index = text[: m.start()].count("\n")
-                nearby = lines[max(0, index - 1) : index + 1]
-                if any(_HISTORICAL_MARK.search(line) for line in nearby):
-                    continue
+            index = text[: m.start()].count("\n")
+            if skip_marked and (index in marked or index - 1 in marked):
+                continue
             counts.add(int(next(g for g in m.groups() if g)))
     return counts
 
@@ -954,6 +978,19 @@ class TestUsageAndSpecTemplate:
         # one line too far, and a wholly unmarked line, both still count
         assert 38 in _role_card_counts(f"{marker}\n\n38 role cards", skip_marked=True)
         assert 38 in _role_card_counts("38 role cards", skip_marked=True)
+
+    def test_a_marker_shown_as_an_example_does_not_exempt(self):
+        """CHANGELOG.md documents this marker as inline code. Without excluding
+        code spans and fences, the documentation of an escape hatch silently
+        BECOMES one for whatever count happens to sit beside it — the exemption
+        equivalent of a guard that cannot fire."""
+        shown = "A count may be exempted by `<!-- deck-count: historical - why -->`"
+        assert 38 in _role_card_counts(f"{shown}\n38 role cards", skip_marked=True)
+        fenced = "```\n<!-- deck-count: historical - why -->\n38 role cards\n```"
+        assert 38 in _role_card_counts(fenced, skip_marked=True)
+        # the real thing, unquoted, still exempts
+        real = "<!-- deck-count: historical - the archived deck -->"
+        assert _role_card_counts(f"{real}\n38 role cards", skip_marked=True) == set()
 
     def test_an_exemption_without_a_reason_does_not_exempt(self):
         """`governed: false` requires a reason; so does this. A bare opt-out is
