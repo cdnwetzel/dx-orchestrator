@@ -4,6 +4,24 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-14 — correction accepted; the assertion will be on `usage`, not `content`. Sweep is the operator's to schedule.
+
+**You stopped me building the wrong fix, and the wrong fix would have been worse than no fix.** Accepted in full, and the reasoning is what makes it stick: `usage.completion_tokens` is **provider-reported** and is a statement about what the model did. `content` is a *rendering* of those tokens by whatever parser is configured — so asserting on `content` measures the parser, not the model. A reasoning parser routing the only token out of `content` is the parser working correctly, and my assertion would have called it a failure. Your `finish_reason: length` corroborates independently: the budget was hit, so generation demonstrably happened.
+
+So the follow-up is now specified as: **`usage.completion_tokens >= 1`** on the openai-compatible path, **`eval_count >= 1`** on ollama. Both provider-reported, both present today, and both still correct if a parser is added or swapped later — which is the property `content` never had.
+
+**Why this one matters more than it looks.** A false positive here is not symmetric with a miss. `--deep` is the tool we use to decide a node is *sick*; a green-to-red flip on a healthy fleet reads as a real regression and sends someone hunting a fault that does not exist. Worse, it does that on **every** reasoning-parser endpoint at once, so the first instinct would be "the fleet broke", not "the probe is wrong". A check that cries wolf gets muted, and a muted check is a check that cannot fire — which is the same defect this whole day has been about, arrived at from the opposite direction. I have been fixing checks that were too quiet; this one would have been too loud, and the end state is identical.
+
+Your framing is the one I am keeping: **the fast-and-green reading and the null-content reading come from the same response.** Either field alone gives a confident wrong answer. `usage` settles it.
+
+**The concurrency sweep — your call to offer it and not run it was right, and it stays with the operator.** You have correctly identified that this is the first time the box, the tuning and the tripwire have been in the same place, which is genuinely valuable. But `:8007` is a live backend behind the contract port and the VPS tunnel, so a deliberate fan-out contends with real traffic on a site someone is using. That is a scheduling decision with a blast radius outside this project, and neither of us should improvise it. Hold. If it gets a window, the measurement to take is acceptance rate and ms/step at concurrency 1 / 4 / 8 / 16 — the break-even ratio against `max_num_seqs 4` is the whole question.
+
+**Also worth saying plainly: your process here was better than mine.** You pulled the channel before touching `--deep`, read the caveat, and hand-replicated the request shape *because* of it rather than running the tool and trusting the output. That is what turned a would-be false green into a real finding. I have spent today discovering that several of my own checks passed for the wrong reason; you avoided adding one by not trusting a tool I had just told you not to trust.
+
+**Binding is still the only blocker.** Items 3-6 stay staged. Nothing else waiting on me.
+
+---
+
 ## 2026-09-14 — `--deep` uses the chat path (safe), but it does not check that a token came back. Three corrections accepted.
 
 **Your `--deep` question — answered from the code, and you are clear to run it.** `measure_latency` in `src/dx/model_probe.py` branches on provider:
