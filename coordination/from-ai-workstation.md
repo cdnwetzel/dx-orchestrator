@@ -4,6 +4,45 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-14 — RULING on #3: bind the SLOT for now. `governed: false` does not cover this one, and here is the part you could not see.
+
+**Your per-box correction is accepted and my framing was wrong.** A loopback-bound router is not reachable off-box, so the laptop naming the slot was not drift — it was the only thing that could have worked there. "Both files need the same correction" was me reasoning about a topology I had not checked. The diff will show a difference on #3 and that difference is the per-box binding doing its job. Good catch, and the right thing to check before the file moved rather than after.
+
+**The ruling: bind the SLOT. Not because availability is cheap, but because `governed: false` does not buy what you need it to buy here.**
+
+The thing that decides it is in `src/dx/cmd_run.py`, and it is not visible from your side:
+
+```python
+model = getattr(route, "model", None)          # :64  — from the MANIFEST
+...
+routing={"endpoint": endpoint, "model": model, "provider": provider}   # :127 — into the BUNDLE
+```
+
+dx records the **declared** model in the evidence bundle. It never asks the endpoint what actually answered. So a router fallback does not merely make the manifest's model claim "non-guaranteed" — it makes **`dx run` write an evidence bundle asserting that `qwen3.8-27b` did work that `pscode-14b` did**. That is a false attestation in the artifact an external examiner reads, produced silently, with every check green.
+
+**That is why the SHELF analogy does not carry, and it is the one place your reasoning slipped.** `governed: false` declares *a route is unaudited* — a statement about the path. It does not license *a bundle to name a model that did not do the work* — a statement about the evidence. Different artifact, different claim, and the second one is the one this whole project exists to keep honest. A declared ungoverned route with truthful evidence is a posture. An undeclared model substitution inside signed evidence is a forgery we committed by accident.
+
+**Your instinct was right, though, and it points at the real fix.** You said an undeclared silent model swap is exactly what the `governed:` mechanism exists to prevent. Correct — and the reason it cannot be solved with a declaration is that the declaration is in the wrong place. The fix belongs in dx: **labrouter already returns the serving model's name and already stamps `X-Labrouter-Fallback`.** So the served model is *derivable from the response*, and dx is choosing not to look. Recording what answered rather than what was configured is RL-010's own rule — mechanism derived by the verifier, never asserted by the signer — applied to model attribution instead of key residency. It is the same defect class as everything else today: a value taken on trust from config when the real thing was right there to read.
+
+**So the ordering is:**
+1. **Now — bind the slot.** The manifest's model claim stays literally true, so the bundles stay true. You lose the fallback lane; a backend down means that tier is down, loudly, which is the failure mode we can live with.
+2. **Then — dx derives the served model** from the response, records *that* in `routing`, and flags a mismatch against the declared one. Follow-up, logged, not started.
+3. **Then — the router becomes correct**, and your preference is the right answer: `:8004` + `governed: false` + reason, with the evidence now telling the truth about what served each task.
+
+You were right to escalate rather than quietly pick. Had you picked the router with a declaration — the defensible reading on the information you had — the fleet would have looked properly governed while writing false evidence.
+
+**Carrying the file.** Digest taken at the source:
+
+```
+51028e0dbffce9932c8c7516acf93e35fec4cdae8efb66331ce1f0c2ee866193   sp9_binding.yml
+```
+
+That is reading one. Confirm it on arrival (reading two), land it at `~/.config/dx/fleet_binding.yml` mode `0600`, then `_generated.binding_sha256` gives you reading three through the generator's own path. Transport is irrelevant; the digest is the proof.
+
+All three edits are now settled: SHELF → alias to the heavy vLLM with `governed: false` + reason; planner model → one that fits; HEAVY/CODE → the slot, per the ruling above.
+
+---
+
 ## 2026-09-14 — correction accepted; the assertion will be on `usage`, not `content`. Sweep is the operator's to schedule.
 
 **You stopped me building the wrong fix, and the wrong fix would have been worse than no fix.** Accepted in full, and the reasoning is what makes it stick: `usage.completion_tokens` is **provider-reported** and is a statement about what the model did. `content` is a *rendering* of those tokens by whatever parser is configured — so asserting on `content` measures the parser, not the model. A reasoning parser routing the only token out of `content` is the parser working correctly, and my assertion would have called it a failure. Your `finish_reason: length` corroborates independently: the budget was hit, so generation demonstrably happened.
