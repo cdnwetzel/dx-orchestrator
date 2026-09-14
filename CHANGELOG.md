@@ -97,11 +97,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   file list at all, the same shape as the red-line address guard beside it and the
   evidence-store guard below. Markdown only, deliberately: prose stating a count is
   a claim about the real deck, while a count in test code describes its own fixture.
-  The recurring lesson, third time in this project: a check that needs manual
-  extension is one forgotten edit from silence. (Fittingly, the widened guard's
-  first catch was an earlier draft of this very entry, which had restated the
-  stale count in the canonical phrasing. There is no escape hatch — prose
-  describes the history instead.)
+  Widening the file scope then exposed a second narrowness in the *patterns* —
+  a bare `N cards` with no "role", and the hyphenated `N-card deck`, both
+  escaped — so the
+  phrasing list is now one general form rather than a catalogue of the sentences
+  we happened to write, and a test asserts every pattern still fires.
+- **A stale card count and a *historical* one are not the same thing, and the
+  guard could not tell them apart.** Widening it flagged an accurate description
+  of the archived predecessor deck, plus a captured `dx roles list` transcript in
+  a dated checkpoint — correcting either would have replaced a true record with a
+  false one. A count may now be exempted by a `<!-- deck-count: historical - why -->`
+  marker that **requires a reason**, which is the `governed: false` posture the
+  manifest generator already uses: declared, visible in the diff, never a silent
+  exclusion list. A bare marker with no reason does not exempt, and the marker
+  covers only its own line and the one beneath it.
+  The recurring lesson, now three layers deep: a check that needs manual
+  extension is one forgotten edit from silence — and each fix for it has its own
+  narrow axis. (Fittingly, the widened guard's first catch was an earlier draft
+  of this very entry, which had restated the stale count in the canonical
+  phrasing.)
 - **A `dx merge T-0001` transcript test leaked a real bundle into
   `~/.local/state/dx/evidence` on every run.** It shelled out to `dx merge` with a
   custom subprocess env that dropped the conftest `DX_EVIDENCE_DIR` redirect (and

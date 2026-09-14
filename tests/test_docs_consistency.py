@@ -239,17 +239,39 @@ REAL_CARDS = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 # phrasing. These patterns catch the forms the docs actually use so a count can
 # be policed in ANY tracked file, not just the README (dx #6).
 _CARD_COUNT_PATTERNS = (
-    r"(\d+)\s+(?:governance\s+)?role cards",   # "40 role cards"
+    # One general form, not a list of the exact sentences we happened to write:
+    # "40 role cards", "40 governance role cards", "38 cards", "40-card deck".
+    r"\b(\d+)[\s-]*(?:governance\s+)?(?:role\s+)?cards?\b",
     r"role cards?\s*\(one of (\d+)",            # "role card (one of 40"
-    r"\ball (\d+) cards\b",                      # "all 40 cards"
     r"(\d+)\s+files at\b[^\n]*roles",          # doctor sample: "40 files at .../roles"
 )
 
+#: A count may disagree with today's deck when it is deliberately a record of the
+#: past — the archived predecessor deck, or a captured session transcript — and
+#: says so on the spot. Declared, never silent: the same posture the manifest
+#: generator takes with `governed: false` + a required reason. A bare stale count
+#: is still a failure; an exemption must be visible in the diff and give a reason.
+_HISTORICAL_MARK = re.compile(
+    r"<!--\s*deck-count:\s*historical\s*[-\u2014:]\s*\S[^>]*-->", re.IGNORECASE
+)
 
-def _role_card_counts(text: str) -> set[int]:
+
+def _role_card_counts(text: str, *, skip_marked: bool = False) -> set[int]:
+    """Card counts stated in ``text``.
+
+    With ``skip_marked``, a count on a line carrying (or directly under) a
+    ``<!-- deck-count: historical - why -->`` marker is not returned: it is a
+    deliberate record of the past rather than a claim about today's deck.
+    """
+    lines = text.splitlines()
     counts: set[int] = set()
     for pat in _CARD_COUNT_PATTERNS:
         for m in re.finditer(pat, text):
+            if skip_marked:
+                index = text[: m.start()].count("\n")
+                nearby = lines[max(0, index - 1) : index + 1]
+                if any(_HISTORICAL_MARK.search(line) for line in nearby):
+                    continue
             counts.add(int(next(g for g in m.groups() if g)))
     return counts
 
@@ -679,7 +701,7 @@ class TestUsageAndSpecTemplate:
         offenders = [
             f"{rel}: states {sorted(counts)}"
             for rel, text in _tracked_text_files((".md",))
-            for counts in [_role_card_counts(text)]
+            for counts in [_role_card_counts(text, skip_marked=True)]
             if not counts <= {deck}
         ]
         assert not offenders, (
@@ -691,6 +713,40 @@ class TestUsageAndSpecTemplate:
         assert deck in _role_card_counts(README), (
             f"README no longer states the deck count {deck} in a form the guard recognizes"
         )
+
+    def test_every_count_pattern_still_matches_something(self):
+        """A pattern that never fires is decoration — the same standard the
+        red-line address guard holds itself to. These probes are the phrasings
+        the docs actually use, including the two that escaped the earlier guard
+        ('38 cards' with no 'role', and the hyphenated '38-card deck')."""
+        probes = {
+            "40 role cards": 40,
+            "40 governance role cards": 40,
+            "the same 38 cards at the identical path": 38,
+            "the real 38-card deck is absent": 38,
+            "every role card (one of 40, shipped in": 40,
+            "Role cards parse cleanly (40 files at /x/roles)": 40,
+        }
+        for text, expected in probes.items():
+            assert expected in _role_card_counts(text), f"guard no longer reads {text!r}"
+
+    def test_a_marked_historical_count_is_exempt_and_a_bare_one_is_not(self):
+        """The exemption must work, and must not be a blanket one: the marker
+        covers its own line and the line under it, nothing further."""
+        marker = "<!-- deck-count: historical - the archived deck -->"
+        assert _role_card_counts(f"{marker}\n38 role cards", skip_marked=True) == set()
+        assert _role_card_counts(f"38 role cards {marker}", skip_marked=True) == set()
+        # one line too far, and a wholly unmarked line, both still count
+        assert 38 in _role_card_counts(f"{marker}\n\n38 role cards", skip_marked=True)
+        assert 38 in _role_card_counts("38 role cards", skip_marked=True)
+
+    def test_an_exemption_without_a_reason_does_not_exempt(self):
+        """`governed: false` requires a reason; so does this. A bare opt-out is
+        how an exemption stops being a declaration and becomes a silence."""
+        for bare in ("<!-- deck-count: historical -->", "<!-- deck-count: historical - -->"):
+            assert 38 in _role_card_counts(f"{bare}\n38 role cards", skip_marked=True), (
+                f"{bare!r} exempted a count without saying why"
+            )
 
     def test_the_template_keeps_the_fields_the_workflow_needs(self):
         """These are the inputs dx wraps and the role cards expect. Dropping one

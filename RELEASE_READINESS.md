@@ -78,7 +78,8 @@ discover in review.
 
 ### 2.4 `claude-sdlc-roles` — one real blocker, three decisions
 
-60 files, 388K, 40 role cards, 1 commit.
+<!-- deck-count: historical - the archived claude-sdlc-roles deck as surveyed; the canonical deck later grew to 40 -->
+60 files, 388K, 38 role cards, 1 commit.
 
 **Clean.** No IP addresses, no emails, no credentials, no private key material,
 and `git log --diff-filter=D` is empty — nothing was ever deleted, so there is
@@ -93,6 +94,7 @@ no history to scrub.
 
 **The canonical-deck question is the one that mattered — now resolved.**
 `sdlc-agent-roles` @ `release/v1.1.0` is the successor and is a strict superset:
+<!-- deck-count: historical - both decks held 38 at the time of this comparison -->
 the **same 38 cards at the identical path** (`skills/sdlc-role/roles/`,
 byte-identical on spot-diff), plus an **MIT `LICENSE` already in place**, CI,
 `SECURITY.md`, `docs/provenance.md`, `receipts/`, and symlinked cross-platform
@@ -118,7 +120,7 @@ One review transcript mentions a "home-lab endpoint" descriptively, with no
 address. It is cleaner than the deck it replaces and needs no redaction.
 
 **One bonus worth naming.** `tests/test_role_parser.py` and
-`tests/test_docs_consistency.py` both `skipif` the real 38-card deck is absent —
+`tests/test_docs_consistency.py` both `skipif` the real 40-card deck is absent —
 so those tests **skip in CI today**. Publishing the deck un-skips them, and CI
 starts validating the parser against the real cards instead of fixtures only.
 That is a genuine strengthening of the public evidence, not just an unblock.
