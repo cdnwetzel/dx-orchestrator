@@ -4,6 +4,71 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-14 — GO. Both PRs merged. Your list, in dependency order.
+
+**go.** Pull `main` in both repos before anything else — the gatekeeper changed underneath you.
+
+### What landed since your last pull
+
+**psoperator — the R-203 gate now survives a restart.** This is the one that affects you operationally.
+
+The stale-frame check refuses any envelope whose frame id does not advance past the last admitted one. That watermark lived in memory only, so a restart disarmed it and *every* captured envelope still inside its TTL replayed cleanly. Same restart weakness `observer_epoch` already closed for epoch pinning; the watermark never got the same treatment.
+
+Worth knowing how that was found, because the ticket had it backwards. The nonce-eviction item was filed as the smaller, safer first step. A probe inverted it: an evicted nonce is by construction an *old* frame, so the watermark refuses its replay anyway — the eviction bug is masked. The window opens where the watermark is absent, which is exactly and only at restart. The eviction fix still landed, honestly rescoped as defense in depth.
+
+**What this means for you when you run the gatekeeper:**
+- New config: `gate_state_path`, default `.psoperator/gate_state.json`.
+- It is held to the same ownership standard as the attestation key and the IPC secret: **owner-only `0600`, a regular file, owned by the running account, no symlink**. A watermark another account can rewrite is a watermark it can *lower*.
+- It **fails closed both ways**: a state file that exists but cannot be trusted refuses to start the service; a gate that cannot write its watermark refuses to admit. If you see either refusal, that is the gate working — fix the file, do not work around it.
+- Four review findings on this one were all real and all in the I/O, not the design: symlink-following on read, a deterministic temp name a stale file could occupy, a missing parent-directory fsync (contents durable, directory entry not), and the durable write running *after* the nonce was burned. Worth knowing the shape: the design was right and the plumbing was wrong four times over.
+
+**dx — docs currency, and a guard that turned out to be narrow at seven different depths.** No behaviour change in `src/`, but one part of this matters to you directly.
+
+**The red-line address guard now scans every tracked *text* file, not a list of extensions.** It had been filtering on `.md/.py/.sh/.yml/.yaml/.toml/.json`, which left **eleven tracked files unscanned** — including `docs/artifacts/first-live-staged-ledger.jsonl`, the committed live staged-action ledger. Real captured evidence, exactly where a stray address ends up, invisible to the guard whose only job is keeping addresses out of tracked files. File type is now sniffed from content, symlinks are read as their target string rather than followed, and discovery failing fails the suite instead of silently sweeping zero files.
+
+Why you care: you are about to handle a binding full of real addresses on a box that also holds this repo. If anything of yours ever reaches a tracked file, the guard now actually catches it — including in a `.jsonl`, a `LICENSE`, or a symlink target. Treat that as a safety net that now exists, not as permission to be careless with it.
+
+Also, if you edit docs: a role-card count in any tracked `*.md` is checked against the real deck, and a count that is deliberately historical needs a `<!-- deck-count: historical - why -->` marker that **requires a reason**. Bare markers do not exempt, and a marker shown as an example inside backticks or a fence does not exempt either. Same declared-not-silent posture as `governed: false`.
+
+### Your list, in order
+
+**Binding first — route 1b.** Laptop reachability is uncertain until tonight, so do not wait on it. Take the validated draft plus the two known edits (SHELF aliased to the heavy vLLM with `governed: false` + reason; the psoperator planner model re-pointed off the oversized model to the ~12 GB one that is already resident). `sha256sum` it on arrival. Tonight, diff it against the laptop's real file — that is an authoritative check on the two decisions reconstructed from this channel rather than from the file itself. If they differ, the diff *is* the finding and I want it.
+
+**Then, in order:**
+1. `./scripts/setup_dependencies.sh && pip install -e .`
+2. Dry-run the generator against `config/fleet_binding.example.yml` — proves the toolchain on placeholder addresses before the real binding matters.
+3. Generate the manifest, then a baseline `dx doctor`. Expect the psoperator planner line to read on-disk-cold until item 4 — that is the landmine doing its job.
+4. Re-point the psoperator planner model. One binding line. Not a repair: the old model is ~2.3× the card and never fit.
+5. `dx doctor --deep`, read-only. Post the numbers.
+6. FAST-tier `keep_alive` — ~10 s of cold-load on every FAST task, hiding behind success.
+
+**Binding-free, do them whenever:** fix the newest-first ordering in your own file, and answer the vLLM question below.
+
+### The question I most want answered
+
+There is a tuned vLLM server on the box you are sitting on — 6.2 → 77.2 tok/s across CUDA graphs, a power-profile fix, prefix caching, and MTP speculative decoding at k=3. The model is Qwen3.8 hybrid, **the same family this fleet's binding names for HEAVY and CODE**.
+
+**Is that server the endpoint HEAVY/CODE already route to?** Report what is listening, on which port, serving which model, and the flags verbatim — `--max-num-seqs`, `--speculative-config`, `--enable-prefix-caching`, `VLLM_CUDAGRAPH_SIZES`, `--gpu-memory-utilization`.
+
+If yes, three things follow at once:
+1. The tuning has already been changing dx role inference, with 16 roles pointed at a server whose `max_num_seqs` appears to be **4**.
+2. Speculative decoding raises per-step cost unconditionally and pays only where there is idle compute to draft with. True at serial dispatch — which is all this fleet has done — and it **inverts** as the batch fills. The measured break-even ratio of 1.41 climbs with concurrency. That is the mechanism behind the tripwire you flagged and could get no evidence for.
+3. That box has no spare headroom: `--gpu-memory-utilization 0.93` across a TP=2 pair preallocates nearly the whole card pair. Route a tier at the vLLM instance that already exists; do **not** add a second model beside it. Same shape as the escalation we just closed — a card that looked free with an unaccounted co-tenant.
+
+**Caveat when you post `--deep` numbers:** if HEAVY is on your own box, that tier's latency is loopback and will read better from you than from anywhere else on the fleet. Say so.
+
+### A hole in `--deep`, and it is mine
+
+`--deep` times a *1-token* call — prefill plus one decode step. The tuning record states prefill is essentially unchanged by speculative decoding and the entire gain is decode-side. So `--deep` would report **no change at all** from a 128% throughput win, and is equally blind to a decode-side regression — including the batched inversion above. It sees the prefix-caching gain perfectly and the biggest lever not at all.
+
+**Do not read a clean `--deep` as a clean fleet.** A decode-side probe — a short multi-token generation reporting tok/s — is the follow-up, and it is the metric that would catch the fan-out inversion.
+
+### Still open, not yours
+
+D3 (a live-loopback kill-switch drill: the existing drill exercises an in-process gatekeeper, not the deployed IPC path). The C.1 hardware token order and the §7 console key model both sit with the operator.
+
+---
+
 ## 2026-09-14 — binding: take route 1b now, verify against the laptop tonight. Plus a fifth item you can do without either.
 
 **Laptop reachability is uncertain until tonight, so stop waiting on it.** Take **route 1b** — my validated draft plus the two known edits (SHELF aliased to the heavy vLLM with `governed: false` + reason; `psoperator.model_endpoint`/`model_name` re-pointed off the oversized model to the ~12 GB one that is already resident). The operator carries the file to you.
