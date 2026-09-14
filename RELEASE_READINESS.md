@@ -78,6 +78,7 @@ discover in review.
 
 ### 2.4 `claude-sdlc-roles` — one real blocker, three decisions
 
+<!-- deck-count: historical - the archived claude-sdlc-roles deck as surveyed; the canonical deck later grew to 40 -->
 60 files, 388K, 38 role cards, 1 commit.
 
 **Clean.** No IP addresses, no emails, no credentials, no private key material,
@@ -93,6 +94,7 @@ no history to scrub.
 
 **The canonical-deck question is the one that mattered — now resolved.**
 `sdlc-agent-roles` @ `release/v1.1.0` is the successor and is a strict superset:
+<!-- deck-count: historical - both decks held 38 at the time of this comparison -->
 the **same 38 cards at the identical path** (`skills/sdlc-role/roles/`,
 byte-identical on spot-diff), plus an **MIT `LICENSE` already in place**, CI,
 `SECURITY.md`, `docs/provenance.md`, `receipts/`, and symlinked cross-platform
@@ -118,9 +120,12 @@ One review transcript mentions a "home-lab endpoint" descriptively, with no
 address. It is cleaner than the deck it replaces and needs no redaction.
 
 **One bonus worth naming.** `tests/test_role_parser.py` and
-`tests/test_docs_consistency.py` both `skipif` the real 38-card deck is absent —
-so those tests **skip in CI today**. Publishing the deck un-skips them, and CI
-starts validating the parser against the real cards instead of fixtures only.
+`tests/test_docs_consistency.py` both `skipif` the real 40-card deck is absent.
+CI runs in two phases: the first pytest step is hermetic — no sibling clones — so
+those tests skip there; the later step clones the deck and re-runs the full suite,
+where they execute and a skip is rejected. Publishing the deck is what makes that
+second phase possible, so CI validates the parser against the real cards rather
+than fixtures only.
 That is a genuine strengthening of the public evidence, not just an unblock.
 
 ### 2.5 `devswarm-ledger` — the real blocker, and it is not about licensing

@@ -25,6 +25,7 @@ resuming, not for history.
 | `python -m build` + `twine check` | passes, LICENSE ships in the wheel |
 | `dx --version` | `dx 0.10.0` |
 | `dx doctor --no-network` | 8/8 green |
+<!-- deck-count: historical - captured dx roles list output at 0.10.0; the deck has since grown to 40 -->
 | `dx roles list` | 38 cards (11 High / 20 Partial / 7 Anchored) |
 | corrupt role card | fails validate, doctor and run (was: silently dropped) |
 | invalid role card | `dx run` refuses to be governed by it |
@@ -157,6 +158,7 @@ The gates are honest as long as the stubs stay labelled.
 
 The whole dependency set went public and MIT, and four defects surfaced doing it.
 
+<!-- deck-count: historical - the deck size as of this 2026-09-08 checkpoint -->
 **Every dependency is now public** — `sdlc-agent-roles` (the 38 cards; supersedes
 the archived `claude-sdlc-roles`) and `devswarm-ledger-reference` (format,
 verifier, RL-010 key standard, and a signed synthetic trace). The live

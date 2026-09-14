@@ -239,19 +239,165 @@ REAL_CARDS = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 # phrasing. These patterns catch the forms the docs actually use so a count can
 # be policed in ANY tracked file, not just the README (dx #6).
 _CARD_COUNT_PATTERNS = (
-    r"(\d+)\s+(?:governance\s+)?role cards",   # "40 role cards"
-    r"role cards?\s*\(one of (\d+)",            # "role card (one of 40"
-    r"\ball (\d+) cards\b",                      # "all 40 cards"
-    r"(\d+)\s+files at\b[^\n]*roles",          # doctor sample: "40 files at .../roles"
+    # One general form, not a list of the exact sentences we happened to write:
+    # "40 role cards", "40 governance role cards", "38 cards", "40-card deck".
+    #
+    # Horizontal whitespace only — `\s` matches newlines, so a number ending one
+    # line and "cards" opening the next would be read as a claim that neither
+    # sentence makes. The accepted cost is that a count wrapped mid-phrase across
+    # a line break is not seen; a false positive here fails the build loudly,
+    # while this kind of false negative is the silence the guard is built to
+    # avoid, so the limitation is asserted below rather than left to be found.
+    r"\b(\d+)[ \t-]*(?:governance[ \t]+)?(?:role[ \t]+)?cards?\b",
+    r"role cards?[ \t]*\(one of (\d+)",         # "role card (one of 40"
+    r"(\d+)[ \t]+files at\b[^\n]*roles",       # doctor sample: "40 files at .../roles"
+)
+
+#: A count may disagree with today's deck when it is deliberately a record of the
+#: past — the archived predecessor deck, or a captured session transcript — and
+#: says so on the spot. Declared, never silent: the same posture the manifest
+#: generator takes with `governed: false` + a required reason. A bare stale count
+#: is still a failure; an exemption must be visible in the diff and give a reason.
+_HISTORICAL_MARK = re.compile(
+    r"<!--\s*deck-count:\s*historical\s*[-\u2014:]\s*\S[^>]*-->", re.IGNORECASE
 )
 
 
-def _role_card_counts(text: str) -> set[int]:
+#: A fence opens with three or more backticks or tildes and closes only on the
+#: SAME character, at least as long (CommonMark). Toggling on any fence lets a
+#: literal ``` line inside a ~~~ block close it and re-expose what follows.
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+#: Inline code spans match on their complete backtick run, so ``x`` is masked as
+#: one span rather than leaving `x` exposed between two single-backtick matches.
+_INLINE_CODE = re.compile(r"(`+).*?\1")
+
+
+def _active_marker_lines(text: str) -> set[int]:
+    """Line indices carrying a *live* historical marker.
+
+    A marker written as an example — inside a code span or a fenced block — must
+    not exempt anything. `CHANGELOG.md` documents this very marker as inline
+    code, so without this the documentation of an escape hatch would become an
+    escape hatch, silently, for whatever count happened to sit beside it.
+
+    Both delimiter forms are parsed properly rather than approximately, because
+    an approximate parse here fails in the permissive direction: every miss is a
+    count that stops being checked, and it stops quietly.
+    """
+    lines = text.splitlines()
+    active: set[int] = set()
+    fence: str | None = None
+    for i, line in enumerate(lines):
+        match = _FENCE.match(line)
+        if match:
+            marker = match.group(1)
+            if fence is None:
+                fence = marker
+                continue
+            if marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        if _HISTORICAL_MARK.search(_INLINE_CODE.sub("", line)):
+            active.add(i)
+    return active
+
+
+def _role_card_counts(text: str, *, skip_marked: bool = False) -> set[int]:
+    """Card counts stated in ``text``.
+
+    With ``skip_marked``, a count on a line carrying (or directly under) a
+    ``<!-- deck-count: historical - why -->`` marker is not returned: it is a
+    deliberate record of the past rather than a claim about today's deck.
+    """
+    marked = _active_marker_lines(text) if skip_marked else set()
     counts: set[int] = set()
     for pat in _CARD_COUNT_PATTERNS:
         for m in re.finditer(pat, text):
+            index = text[: m.start()].count("\n")
+            if skip_marked and (index in marked or index - 1 in marked):
+                continue
             counts.add(int(next(g for g in m.groups() if g)))
     return counts
+
+
+#: Binary sniffing beats an extension list. A NUL byte in the first block is the
+#: same heuristic git itself uses to call a file binary.
+_BINARY_SNIFF_BYTES = 8192
+
+
+def _tracked_text_files(
+    suffixes: tuple[str, ...] | None = None,
+) -> list[tuple[str, str]]:
+    """Every tracked text file, as (relpath, text) — or only those with the given
+    suffixes when the caller genuinely means a subset.
+
+    Shared by the red-line address guard and the role-card count guard: both
+    police a claim that can appear in any file, so neither may carry its own
+    hand-maintained file list.
+
+    The default is *every* tracked file that is not binary, and that matters.
+    This helper used to filter on a tuple of extensions, which quietly excluded
+    `LICENSE`, `.gitignore`, the `.asc` fixtures and — worst — the committed live
+    ledger at `docs/artifacts/*.jsonl`. A lab address in any of them sailed past
+    the red line. An extension allowlist IS the hand-maintained list this module
+    keeps re-learning not to write; the file type is sniffed instead, so a new
+    kind of tracked file is covered the day it lands rather than the day someone
+    remembers to add it.
+
+    The count guard still passes `(".md",)` on purpose — prose stating a card
+    count is a claim about the real deck, while the same digits in code or a
+    fixture describe themselves.
+
+    Discovery failing is a *test* failure, never an empty result. If `git
+    ls-files` exits nonzero — an exported tree, a damaged checkout — an unchecked
+    run hands back empty stdout, and both repo-wide guards then sweep zero files
+    and report green. That is the same silent pass this guard exists to remove,
+    one layer further down, so the subprocess is checked and an empty sweep is
+    refused outright.
+
+    `-z` for the same reason. Plain `git ls-files` *quotes* any path with a
+    special or non-ASCII character (`"\303\251.md"`), and a quoted name no
+    longer ends in `.md`, so the file drops out of the sweep — silently, and in
+    exactly the direction that matters: the file nobody can read easily is the
+    one that would carry a leaked address. NUL-delimited output is never quoted.
+    """
+    import os
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    found: list[tuple[str, str]] = []
+    for rel in out.stdout.split("\0"):
+        if not rel or (suffixes is not None and not rel.endswith(suffixes)):
+            continue
+        path = ROOT / rel
+        if path.is_symlink():
+            # What git tracks for a symlink is the TARGET STRING, so that string
+            # is the content to police. Following the link instead would read a
+            # file outside the repository — possibly clean, while the tracked
+            # bytes carry the address — and a dangling link would vanish from the
+            # sweep entirely. Neither is the guard doing its job.
+            found.append((rel, os.readlink(path)))
+            continue
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if b"\0" in raw[:_BINARY_SNIFF_BYTES]:
+            continue  # binary fixture; nothing to read a claim out of
+        found.append((rel, raw.decode("utf-8", errors="replace")))
+    assert found, (
+        f"no tracked files matching {suffixes} were found — a guard that scans "
+        "nothing passes for the wrong reason"
+    )
+    return found
 
 
 def _subprocess_path() -> str:
@@ -587,29 +733,158 @@ class TestNoLabAddressesAnywhere:
         r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}(?:\.\d{1,3})?\b"
     )
 
-    @staticmethod
-    def _tracked_text_files():
-        import subprocess
-
-        out = subprocess.run(
-            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, timeout=30
-        )
-        for rel in out.stdout.splitlines():
-            if rel.endswith((".md", ".py", ".sh", ".yml", ".yaml", ".toml", ".json")):
-                path = ROOT / rel
-                if path.is_file():
-                    yield rel, path.read_text(encoding="utf-8", errors="replace")
-
     def test_no_private_range_address_in_any_tracked_file(self):
         offenders = [
             f"{rel}:{text[:m.start()].count(chr(10)) + 1}: {m.group(0)}"
-            for rel, text in self._tracked_text_files()
+            for rel, text in _tracked_text_files()
             for m in self._PRIVATE.finditer(text)
         ]
         assert not offenders, (
             "real private-range addresses in tracked files (VISION.md red line); "
             "use RFC-5737 documentation ranges instead:\n  " + "\n  ".join(offenders)
         )
+
+    def test_discovery_is_nul_delimited_so_odd_names_cannot_hide(self, monkeypatch):
+        """`git ls-files` quotes a path containing a special or non-ASCII byte,
+        and a quoted name no longer ends in `.md`, so it silently leaves the
+        sweep. That is backwards: the awkward filename is the likelier place for
+        a leaked address, not the less likely. `-z` never quotes."""
+        import subprocess
+
+        seen: dict = {}
+        real = subprocess.run
+
+        def _spy(args, **kwargs):
+            seen["args"] = args
+            return real(args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", _spy)
+        files = _tracked_text_files((".md",))
+        assert "-z" in seen["args"], "discovery must use NUL-delimited output"
+        assert any(rel == "README.md" for rel, _ in files)
+
+    def test_paths_are_split_on_nul_not_newlines(self, monkeypatch):
+        """The other half of `-z`: splitting NUL output on newlines would glue
+        every path into one unmatchable string."""
+        import subprocess
+
+        class _Out:
+            stdout = "README.md\0VISION.md\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        assert {rel for rel, _ in _tracked_text_files((".md",))} == {"README.md", "VISION.md"}
+
+    def test_a_failed_file_discovery_fails_the_guard(self, monkeypatch):
+        """The silent pass one layer down: if `git ls-files` errors, an unchecked
+        run hands back empty stdout and every repo-wide guard sweeps nothing and
+        reports green. Discovery failure must be loud."""
+        import subprocess
+
+        def _broken(*args, **kwargs):
+            raise subprocess.CalledProcessError(128, "git ls-files")
+
+        monkeypatch.setattr(subprocess, "run", _broken)
+        with pytest.raises(subprocess.CalledProcessError):
+            _tracked_text_files()
+
+    def test_an_empty_sweep_is_refused(self, monkeypatch):
+        """The other half: a clean exit matching nothing is equally a guard that
+        scanned zero files, so it is refused rather than reported green."""
+        import subprocess
+
+        class _Empty:
+            stdout = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Empty())
+        with pytest.raises(AssertionError, match="scans nothing"):
+            _tracked_text_files()
+
+    def test_it_sees_tracked_files_an_extension_list_would_miss(self):
+        """The guard filtered on a tuple of extensions, so `LICENSE`,
+        `.gitignore`, the `.asc` fixtures and the committed live ledger
+        (`docs/artifacts/*.jsonl`) were never scanned. The ledger is the one that
+        stings: it is real captured evidence, exactly where a stray address would
+        end up, and it was invisible to the red line."""
+        scanned = {rel for rel, _ in _tracked_text_files()}
+        for rel in ("LICENSE", ".gitignore"):
+            assert rel in scanned, f"{rel} is tracked text and must be scanned"
+        assert any(rel.endswith(".jsonl") for rel in scanned), (
+            "the committed ledger artifact must be scanned for addresses"
+        )
+
+    def test_type_is_sniffed_from_content_not_from_the_name(self):
+        """`tests/fixtures/gpg/payload.bin` is ASCII despite the extension, and it
+        IS scanned. That is the argument for the change in one file: the name said
+        binary, the bytes said text, and a name-based rule would have skipped a
+        readable tracked file on the strength of three characters."""
+        scanned = {rel for rel, _ in _tracked_text_files()}
+        assert "tests/fixtures/gpg/payload.bin" in scanned
+
+    def test_a_symlink_is_scanned_by_its_target_string_not_followed(
+        self, tmp_path, monkeypatch
+    ):
+        """git tracks a symlink's target string, so that is the tracked content.
+        Following the link reads a file outside the repo — which can be perfectly
+        clean while the tracked bytes carry the address — and a dangling link
+        disappears from the sweep altogether. No tracked symlink exists here
+        today; this keeps the gap shut before one does."""
+        import subprocess
+
+        (tmp_path / "clean.txt").write_text("nothing to see\n")
+        (tmp_path / "ok").symlink_to("clean.txt")
+        (tmp_path / "leak").symlink_to("../fleet/10." + "0.1.125/config")
+        (tmp_path / "dangling").symlink_to("nowhere-at-all")
+        monkeypatch.setattr("test_docs_consistency.ROOT", tmp_path, raising=False)
+
+        class _Out:
+            stdout = "ok\0leak\0dangling\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        scanned = dict(_tracked_text_files())
+        assert set(scanned) == {"ok", "leak", "dangling"}, (
+            "a dangling symlink must not drop out of the sweep"
+        )
+        assert scanned["ok"] == "clean.txt", "the link target string, not the file"
+        offenders = [rel for rel, text in scanned.items() if self._PRIVATE.search(text)]
+        assert offenders == ["leak"]
+
+    def test_a_file_with_nul_bytes_is_skipped(self, tmp_path, monkeypatch):
+        """The other direction: scanning everything only works ifbinary content
+        is skipped, or the guard trades a silent gap for decode noise. No tracked
+        file is binary today, so the branch is exercised synthetically rather than
+        left unproven."""
+        import subprocess
+
+        (tmp_path / "blob").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00binary")
+        (tmp_path / "plain.md").write_text("readable\n")
+        monkeypatch.setattr("test_docs_consistency.ROOT", tmp_path, raising=False)
+
+        class _Out:
+            stdout = "blob\0plain.md\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        assert {rel for rel, _ in _tracked_text_files()} == {"plain.md"}
+
+    def test_an_address_in_an_extensionless_file_is_caught(self, tmp_path, monkeypatch):
+        """The failure the extension list allowed, proven rather than argued: a
+        private-range address in a tracked file with no recognised suffix."""
+        import subprocess
+
+        (tmp_path / "LICENSE").write_text("Contact 10." + "0.1.125 for terms\n")
+        monkeypatch.setattr(
+            "test_docs_consistency.ROOT", tmp_path, raising=False
+        )
+
+        class _Out:
+            stdout = "LICENSE\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        offenders = [
+            rel
+            for rel, text in _tracked_text_files()
+            if self._PRIVATE.search(text)
+        ]
+        assert offenders == ["LICENSE"]
 
     def test_the_guard_actually_matches_something(self):
         """A red-line guard whose pattern never fires is decoration.
@@ -650,24 +925,112 @@ class TestUsageAndSpecTemplate:
         reason="sdlc-agent-roles not cloned; CI clones it, so this runs there",
     )
     def test_role_card_counts_match_the_deck_in_every_doc(self):
-        """A card count is a governance claim wherever it appears. This guard used
-        to check only the README, and the count drifted in TUTORIAL.md unnoticed
-        (dx #6) — the 0.7.2 lesson: a check on one file reads as enforced and is
-        not. Now the two docs that state a count — README.md and TUTORIAL.md — are
-        each checked against the deck, in every phrasing they use ('40 role cards',
-        'one of 40', 'all 40 cards', 'N files at .../roles'). Extend the tuple below
-        when another doc starts stating the count."""
+        """A card count is a governance claim wherever it appears, so the guard
+        reads every tracked doc — it does not carry a list of which ones.
+
+        Twice now the narrow version has been the bug. First the count was policed
+        in README.md alone and drifted in TUTORIAL.md (dx #6, the 0.7.2 lesson).
+        Then the fix hardcoded *two* files and told the next author to "extend the
+        tuple" — so RELEASE_READINESS.md said 38 while the deck held 40, and
+        VISION.md and a second RELEASE_READINESS line stated 40 by luck rather
+        than by enforcement. A guard that needs manual extension is a guard that
+        is one forgotten edit from silence. Every tracked `*.md` is checked, in
+        every phrasing the docs use.
+
+        Markdown only, on purpose: prose stating a count is making a claim about
+        the real deck, whereas a count in test code is describing its own fixture
+        (`test_corrupt_role_cards.py` legitimately builds a deck of 1).
+        """
         deck = len(list(REAL_CARDS.glob("*.md")))
-        for label, text in (("README.md", README), ("TUTORIAL.md", TUTORIAL)):
-            counts = _role_card_counts(text)
-            assert counts <= {deck}, (
-                f"{label} states role-card count(s) {sorted(counts)}, but the deck has {deck}"
-            )
+        offenders = [
+            f"{rel}: states {sorted(counts)}"
+            for rel, text in _tracked_text_files((".md",))
+            for counts in [_role_card_counts(text, skip_marked=True)]
+            if not counts <= {deck}
+        ]
+        assert not offenders, (
+            f"role-card counts in tracked docs disagree with the deck ({deck} cards):\n  "
+            + "\n  ".join(offenders)
+        )
         # and the README must still state the count in a recognized form, so a
         # phrasing change cannot make the guard silently find nothing.
         assert deck in _role_card_counts(README), (
             f"README no longer states the deck count {deck} in a form the guard recognizes"
         )
+
+    def test_every_count_pattern_still_matches_something(self):
+        """A pattern that never fires is decoration — the same standard the
+        red-line address guard holds itself to. These probes are the phrasings
+        the docs actually use, including the two that escaped the earlier guard
+        ('38 cards' with no 'role', and the hyphenated '38-card deck')."""
+        probes = {
+            "40 role cards": 40,
+            "40 governance role cards": 40,
+            "the same 38 cards at the identical path": 38,
+            "the real 38-card deck is absent": 38,
+            "every role card (one of 40, shipped in": 40,
+            "Role cards parse cleanly (40 files at /x/roles)": 40,
+        }
+        for text, expected in probes.items():
+            assert expected in _role_card_counts(text), f"guard no longer reads {text!r}"
+
+    def test_a_count_claim_never_spans_a_line_break(self):
+        """`\\s` would have matched newlines, so a table cell ending in a number
+        and a following line opening with "cards" read as a count neither line
+        states. The other half of the trade-off is recorded too: a phrase wrapped
+        across a break is genuinely not seen."""
+        assert _role_card_counts("| ... | 38 |\ncards are listed above") == set()
+        assert _role_card_counts("...had 38\n\ncards") == set()
+        assert _role_card_counts("38 cards") == {38}          # same line, matched
+        assert _role_card_counts("38 role\ncards") == set()   # wrapped: the known gap
+
+    def test_a_marked_historical_count_is_exempt_and_a_bare_one_is_not(self):
+        """The exemption must work, and must not be a blanket one: the marker
+        covers its own line and the line under it, nothing further."""
+        marker = "<!-- deck-count: historical - the archived deck -->"
+        assert _role_card_counts(f"{marker}\n38 role cards", skip_marked=True) == set()
+        assert _role_card_counts(f"38 role cards {marker}", skip_marked=True) == set()
+        # one line too far, and a wholly unmarked line, both still count
+        assert 38 in _role_card_counts(f"{marker}\n\n38 role cards", skip_marked=True)
+        assert 38 in _role_card_counts("38 role cards", skip_marked=True)
+
+    def test_a_marker_shown_as_an_example_does_not_exempt(self):
+        """CHANGELOG.md documents this marker as inline code. Without excluding
+        code spans and fences, the documentation of an escape hatch silently
+        BECOMES one for whatever count happens to sit beside it — the exemption
+        equivalent of a guard that cannot fire."""
+        shown = "A count may be exempted by `<!-- deck-count: historical - why -->`"
+        assert 38 in _role_card_counts(f"{shown}\n38 role cards", skip_marked=True)
+        fenced = "```\n<!-- deck-count: historical - why -->\n38 role cards\n```"
+        assert 38 in _role_card_counts(fenced, skip_marked=True)
+        # the real thing, unquoted, still exempts
+        real = "<!-- deck-count: historical - the archived deck -->"
+        assert _role_card_counts(f"{real}\n38 role cards", skip_marked=True) == set()
+
+    def test_code_delimiters_are_parsed_not_approximated(self):
+        """Both misses found in review, pinned. A double-backtick span left the
+        marker exposed between two single-backtick matches; and toggling fence
+        state on any delimiter let a literal ``` line close a ~~~ block, so a
+        marker after it read as live. An approximate Markdown parse fails in the
+        permissive direction here — every miss is a count that stops being
+        checked, quietly."""
+        marker = "<!-- deck-count: historical - why -->"
+        double = f"Shown as ``{marker}``\n38 role cards"
+        assert 38 in _role_card_counts(double, skip_marked=True), "double-backtick span"
+        crossed = f"~~~\n```\n{marker}\n38 role cards\n~~~"
+        assert 38 in _role_card_counts(crossed, skip_marked=True), "mismatched fence"
+        # a fence really does still suppress, and a real marker really does exempt
+        fenced = f"```\n{marker}\n38 role cards\n```"
+        assert 38 in _role_card_counts(fenced, skip_marked=True)
+        assert _role_card_counts(f"{marker}\n38 role cards", skip_marked=True) == set()
+
+    def test_an_exemption_without_a_reason_does_not_exempt(self):
+        """`governed: false` requires a reason; so does this. A bare opt-out is
+        how an exemption stops being a declaration and becomes a silence."""
+        for bare in ("<!-- deck-count: historical -->", "<!-- deck-count: historical - -->"):
+            assert 38 in _role_card_counts(f"{bare}\n38 role cards", skip_marked=True), (
+                f"{bare!r} exempted a count without saying why"
+            )
 
     def test_the_template_keeps_the_fields_the_workflow_needs(self):
         """These are the inputs dx wraps and the role cards expect. Dropping one
