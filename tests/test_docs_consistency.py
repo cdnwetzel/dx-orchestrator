@@ -283,15 +283,33 @@ def _role_card_counts(text: str, *, skip_marked: bool = False) -> set[int]:
     return counts
 
 
-_TEXT_SUFFIXES = (".md", ".py", ".sh", ".yml", ".yaml", ".toml", ".json")
+#: Binary sniffing beats an extension list. A NUL byte in the first block is the
+#: same heuristic git itself uses to call a file binary.
+_BINARY_SNIFF_BYTES = 8192
 
 
-def _tracked_text_files(suffixes: tuple[str, ...] = _TEXT_SUFFIXES) -> list[tuple[str, str]]:
-    """Every tracked file of the given kinds, as (relpath, text).
+def _tracked_text_files(
+    suffixes: tuple[str, ...] | None = None,
+) -> list[tuple[str, str]]:
+    """Every tracked text file, as (relpath, text) — or only those with the given
+    suffixes when the caller genuinely means a subset.
 
     Shared by the red-line address guard and the role-card count guard: both
     police a claim that can appear in any file, so neither may carry its own
     hand-maintained file list.
+
+    The default is *every* tracked file that is not binary, and that matters.
+    This helper used to filter on a tuple of extensions, which quietly excluded
+    `LICENSE`, `.gitignore`, the `.asc` fixtures and — worst — the committed live
+    ledger at `docs/artifacts/*.jsonl`. A lab address in any of them sailed past
+    the red line. An extension allowlist IS the hand-maintained list this module
+    keeps re-learning not to write; the file type is sniffed instead, so a new
+    kind of tracked file is covered the day it lands rather than the day someone
+    remembers to add it.
+
+    The count guard still passes `(".md",)` on purpose — prose stating a card
+    count is a claim about the real deck, while the same digits in code or a
+    fixture describe themselves.
 
     Discovery failing is a *test* failure, never an empty result. If `git
     ls-files` exits nonzero — an exported tree, a damaged checkout — an unchecked
@@ -316,11 +334,17 @@ def _tracked_text_files(suffixes: tuple[str, ...] = _TEXT_SUFFIXES) -> list[tupl
         timeout=30,
         check=True,
     )
-    found = [
-        (rel, (ROOT / rel).read_text(encoding="utf-8", errors="replace"))
-        for rel in out.stdout.split("\0")
-        if rel.endswith(suffixes) and (ROOT / rel).is_file()
-    ]
+    found: list[tuple[str, str]] = []
+    for rel in out.stdout.split("\0"):
+        if not rel or (suffixes is not None and not rel.endswith(suffixes)):
+            continue
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if b"\0" in raw[:_BINARY_SNIFF_BYTES]:
+            continue  # binary fixture; nothing to read a claim out of
+        found.append((rel, raw.decode("utf-8", errors="replace")))
     assert found, (
         f"no tracked files matching {suffixes} were found — a guard that scans "
         "nothing passes for the wrong reason"
@@ -726,6 +750,65 @@ class TestNoLabAddressesAnywhere:
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Empty())
         with pytest.raises(AssertionError, match="scans nothing"):
             _tracked_text_files()
+
+    def test_it_sees_tracked_files_an_extension_list_would_miss(self):
+        """The guard filtered on a tuple of extensions, so `LICENSE`,
+        `.gitignore`, the `.asc` fixtures and the committed live ledger
+        (`docs/artifacts/*.jsonl`) were never scanned. The ledger is the one that
+        stings: it is real captured evidence, exactly where a stray address would
+        end up, and it was invisible to the red line."""
+        scanned = {rel for rel, _ in _tracked_text_files()}
+        for rel in ("LICENSE", ".gitignore"):
+            assert rel in scanned, f"{rel} is tracked text and must be scanned"
+        assert any(rel.endswith(".jsonl") for rel in scanned), (
+            "the committed ledger artifact must be scanned for addresses"
+        )
+
+    def test_type_is_sniffed_from_content_not_from_the_name(self):
+        """`tests/fixtures/gpg/payload.bin` is ASCII despite the extension, and it
+        IS scanned. That is the argument for the change in one file: the name said
+        binary, the bytes said text, and a name-based rule would have skipped a
+        readable tracked file on the strength of three characters."""
+        scanned = {rel for rel, _ in _tracked_text_files()}
+        assert "tests/fixtures/gpg/payload.bin" in scanned
+
+    def test_a_file_with_nul_bytes_is_skipped(self, tmp_path, monkeypatch):
+        """The other direction: scanning everything only works ifbinary content
+        is skipped, or the guard trades a silent gap for decode noise. No tracked
+        file is binary today, so the branch is exercised synthetically rather than
+        left unproven."""
+        import subprocess
+
+        (tmp_path / "blob").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00binary")
+        (tmp_path / "plain.md").write_text("readable\n")
+        monkeypatch.setattr("test_docs_consistency.ROOT", tmp_path, raising=False)
+
+        class _Out:
+            stdout = "blob\0plain.md\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        assert {rel for rel, _ in _tracked_text_files()} == {"plain.md"}
+
+    def test_an_address_in_an_extensionless_file_is_caught(self, tmp_path, monkeypatch):
+        """The failure the extension list allowed, proven rather than argued: a
+        private-range address in a tracked file with no recognised suffix."""
+        import subprocess
+
+        (tmp_path / "LICENSE").write_text("Contact 10." + "0.1.125 for terms\n")
+        monkeypatch.setattr(
+            "test_docs_consistency.ROOT", tmp_path, raising=False
+        )
+
+        class _Out:
+            stdout = "LICENSE\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        offenders = [
+            rel
+            for rel, text in _tracked_text_files()
+            if self._PRIVATE.search(text)
+        ]
+        assert offenders == ["LICENSE"]
 
     def test_the_guard_actually_matches_something(self):
         """A red-line guard whose pattern never fires is decoration.
