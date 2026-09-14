@@ -241,9 +241,16 @@ REAL_CARDS = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 _CARD_COUNT_PATTERNS = (
     # One general form, not a list of the exact sentences we happened to write:
     # "40 role cards", "40 governance role cards", "38 cards", "40-card deck".
-    r"\b(\d+)[\s-]*(?:governance\s+)?(?:role\s+)?cards?\b",
-    r"role cards?\s*\(one of (\d+)",            # "role card (one of 40"
-    r"(\d+)\s+files at\b[^\n]*roles",          # doctor sample: "40 files at .../roles"
+    #
+    # Horizontal whitespace only — `\s` matches newlines, so a number ending one
+    # line and "cards" opening the next would be read as a claim that neither
+    # sentence makes. The accepted cost is that a count wrapped mid-phrase across
+    # a line break is not seen; a false positive here fails the build loudly,
+    # while this kind of false negative is the silence the guard is built to
+    # avoid, so the limitation is asserted below rather than left to be found.
+    r"\b(\d+)[ \t-]*(?:governance[ \t]+)?(?:role[ \t]+)?cards?\b",
+    r"role cards?[ \t]*\(one of (\d+)",         # "role card (one of 40"
+    r"(\d+)[ \t]+files at\b[^\n]*roles",       # doctor sample: "40 files at .../roles"
 )
 
 #: A count may disagree with today's deck when it is deliberately a record of the
@@ -729,6 +736,16 @@ class TestUsageAndSpecTemplate:
         }
         for text, expected in probes.items():
             assert expected in _role_card_counts(text), f"guard no longer reads {text!r}"
+
+    def test_a_count_claim_never_spans_a_line_break(self):
+        """`\\s` would have matched newlines, so a table cell ending in a number
+        and a following line opening with "cards" read as a count neither line
+        states. The other half of the trade-off is recorded too: a phrase wrapped
+        across a break is genuinely not seen."""
+        assert _role_card_counts("| ... | 38 |\ncards are listed above") == set()
+        assert _role_card_counts("...had 38\n\ncards") == set()
+        assert _role_card_counts("38 cards") == {38}          # same line, matched
+        assert _role_card_counts("38 role\ncards") == set()   # wrapped: the known gap
 
     def test_a_marked_historical_count_is_exempt_and_a_bare_one_is_not(self):
         """The exemption must work, and must not be a blanket one: the marker
