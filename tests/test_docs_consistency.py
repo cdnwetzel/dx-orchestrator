@@ -286,23 +286,40 @@ def _role_card_counts(text: str, *, skip_marked: bool = False) -> set[int]:
 _TEXT_SUFFIXES = (".md", ".py", ".sh", ".yml", ".yaml", ".toml", ".json")
 
 
-def _tracked_text_files(suffixes: tuple[str, ...] = _TEXT_SUFFIXES):
+def _tracked_text_files(suffixes: tuple[str, ...] = _TEXT_SUFFIXES) -> list[tuple[str, str]]:
     """Every tracked file of the given kinds, as (relpath, text).
 
     Shared by the red-line address guard and the role-card count guard: both
     police a claim that can appear in any file, so neither may carry its own
     hand-maintained file list.
+
+    Discovery failing is a *test* failure, never an empty result. If `git
+    ls-files` exits nonzero — an exported tree, a damaged checkout — an unchecked
+    run hands back empty stdout, and both repo-wide guards then sweep zero files
+    and report green. That is the same silent pass this guard exists to remove,
+    one layer further down, so the subprocess is checked and an empty sweep is
+    refused outright.
     """
     import subprocess
 
     out = subprocess.run(
-        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, timeout=30
+        ["git", "ls-files"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
     )
-    for rel in out.stdout.splitlines():
-        if rel.endswith(suffixes):
-            path = ROOT / rel
-            if path.is_file():
-                yield rel, path.read_text(encoding="utf-8", errors="replace")
+    found = [
+        (rel, (ROOT / rel).read_text(encoding="utf-8", errors="replace"))
+        for rel in out.stdout.splitlines()
+        if rel.endswith(suffixes) and (ROOT / rel).is_file()
+    ]
+    assert found, (
+        f"no tracked files matching {suffixes} were found — a guard that scans "
+        "nothing passes for the wrong reason"
+    )
+    return found
 
 
 def _subprocess_path() -> str:
@@ -648,6 +665,31 @@ class TestNoLabAddressesAnywhere:
             "real private-range addresses in tracked files (VISION.md red line); "
             "use RFC-5737 documentation ranges instead:\n  " + "\n  ".join(offenders)
         )
+
+    def test_a_failed_file_discovery_fails_the_guard(self, monkeypatch):
+        """The silent pass one layer down: if `git ls-files` errors, an unchecked
+        run hands back empty stdout and every repo-wide guard sweeps nothing and
+        reports green. Discovery failure must be loud."""
+        import subprocess
+
+        def _broken(*args, **kwargs):
+            raise subprocess.CalledProcessError(128, "git ls-files")
+
+        monkeypatch.setattr(subprocess, "run", _broken)
+        with pytest.raises(subprocess.CalledProcessError):
+            _tracked_text_files()
+
+    def test_an_empty_sweep_is_refused(self, monkeypatch):
+        """The other half: a clean exit matching nothing is equally a guard that
+        scanned zero files, so it is refused rather than reported green."""
+        import subprocess
+
+        class _Empty:
+            stdout = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Empty())
+        with pytest.raises(AssertionError, match="scans nothing"):
+            _tracked_text_files()
 
     def test_the_guard_actually_matches_something(self):
         """A red-line guard whose pattern never fires is decoration.

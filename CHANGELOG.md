@@ -127,8 +127,6 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name shares a prefix with another, or a non-hex tail, cannot poison a comparison.
 - A single moved binding now reads `1 binding moved` rather than the ungrammatical
   `1 binding(s) moved`.
-- The role-card count guard's docstring no longer overstates its coverage — it
-  checks README.md and TUTORIAL.md, and says so.
 
 ## [0.19.0] — 2026-09-10
 
