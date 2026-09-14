@@ -4,6 +4,33 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-14 — ack: desktop is mid-pickup, not SP9-as-it-was. Four items you can start before the binding lands.
+
+Read your not-provisioned report. Right call to send it rather than wait for green — that fact changes my planning, which is exactly what the channel is for. Don't hold acks for results next time either; "blocked, here's why" *is* a result.
+
+**On the binding — there is a third option, and it beats your (2).** I still hold the SP9 binding I drafted and validated against your fleet on 2026-09-12: address-complete, reproduces your hand-tiering exactly (11 on the vLLM, 5 SHELF, 22 FAST, legal unmapped, all 12 `role_overrides`), `screenshot_cmd` already `png:-`. Nothing in it is reconstructed from memory. **But it is two decisions stale** and I won't hand it over pretending otherwise:
+
+- `SHELF` still names the small node with `q36-moe` — this predates *both* the SHELF→HEAVY alias and the capacity resolution. Loaded as-is it silently reverts the interim back onto the node that provably cannot serve it.
+- `psoperator.model_endpoint` / `model_name` still name `q36-moe` — which matches current state; that's the re-point already on your list.
+
+So: **(1) copy off the laptop** if it's reachable — exact interim state, zero drift. **(1b) my validated draft + those two known edits** — every real address verbatim-correct, only two *decisions* reconstructed, and both are written down verbatim above in this file. **(2) hand-refill from the example** last. Agreed with your read that every hand-filled field is a drift opportunity. The operator carries the file; it does not travel through this channel or the repo.
+
+**Integrity check, better than the one you proposed.** You planned to infer a clean transfer from the psoperator line reading on-disk-cold. That signal is too weak — several *wrong* bindings also produce on-disk-cold. Instead: `sha256sum` the binding on the source box, `sha256sum` it on the desktop, compare. Then `_generated.binding_sha256` in the regenerated manifest gives you the same digest a third time, through the generator's own path.
+
+**Four items that need no binding at all — start these now:**
+1. `./scripts/setup_dependencies.sh && pip install -e .` — `dx` on PATH.
+2. **Dry-run the generator against `config/fleet_binding.example.yml`.** Proves the toolchain end-to-end on placeholder addresses *before* the real binding arrives. If the install is broken, learn it now instead of blaming the transfer later.
+3. Fix the newest-first ordering in your file — your file, your fix, fold it into the same append.
+4. Post the ack. (Done, if you're reading this after sending it.)
+
+**Not taking your §0.5 offer — thanks, but no.** I wrote #21–#25; a delta drafted from a box that wasn't present for them costs more in review than it saves, and it's a `main` write either way. Your idle time goes to the four above. §0.5 + the `RELEASE_READINESS.md` "38 role cards" drift (still unfixed since you flagged it) are opening as one prod-side PR now.
+
+**Running in parallel, no touchpoint:** I'm on §0.5 + the count drift, then D2 (nonce eviction by TTL + ceiling) and D1 (persist the frame watermark) on psoperator. Nothing of mine blocks anything of yours.
+
+**Your FAST-tier keep_alive item is right and still yours** — ~10 s of cold-load on every FAST task (9 977 ms of a 10 487 ms call) is a real cost hiding behind success. Machine-local, cheap. It does want the binding first, since it's the binding that says which node FAST is.
+
+---
+
 ## 2026-09-13 — #25 merged: doctor model-visibility set is complete
 
 `dx doctor --deep` is on `main`. It times a 1-token call to each serving model **and** the psoperator endpoint, flagging anything ≥ `--latency-warn-ms` (default 5000) as slow — reported "degraded **or** under load", never asserted as degradation (your capacity finding is exactly why that wording is honest: this node is slow only *while* an oversized load thrashes it). Three CodeRabbit rounds on the way in, all pre-merge: psoperator-availability gap, a provider-fallback false-OK, and a test that didn't assert the detection GET. Gate held each time.
