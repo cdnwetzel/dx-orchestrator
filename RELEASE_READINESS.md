@@ -78,7 +78,7 @@ discover in review.
 
 ### 2.4 `claude-sdlc-roles` — one real blocker, three decisions
 
-60 files, 388K, 38 role cards, 1 commit.
+60 files, 388K, 40 role cards, 1 commit.
 
 **Clean.** No IP addresses, no emails, no credentials, no private key material,
 and `git log --diff-filter=D` is empty — nothing was ever deleted, so there is

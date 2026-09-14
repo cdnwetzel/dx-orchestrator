@@ -89,6 +89,19 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`RELEASE_READINESS.md` carried a stale card count of 38 against the real
+  40-card deck, and the count guard could not see it.** The guard had already been widened once, from
+  README-only to a hardcoded two-file tuple whose docstring told the next author to
+  "extend the tuple" — so three docs that state a count were never checked, two of
+  them correct only by luck. It now reads **every tracked `*.md`** and carries no
+  file list at all, the same shape as the red-line address guard beside it and the
+  evidence-store guard below. Markdown only, deliberately: prose stating a count is
+  a claim about the real deck, while a count in test code describes its own fixture.
+  The recurring lesson, third time in this project: a check that needs manual
+  extension is one forgotten edit from silence. (Fittingly, the widened guard's
+  first catch was an earlier draft of this very entry, which had restated the
+  stale count in the canonical phrasing. There is no escape hatch — prose
+  describes the history instead.)
 - **A `dx merge T-0001` transcript test leaked a real bundle into
   `~/.local/state/dx/evidence` on every run.** It shelled out to `dx merge` with a
   custom subprocess env that dropped the conftest `DX_EVIDENCE_DIR` redirect (and

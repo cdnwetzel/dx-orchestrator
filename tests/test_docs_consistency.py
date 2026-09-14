@@ -254,6 +254,28 @@ def _role_card_counts(text: str) -> set[int]:
     return counts
 
 
+_TEXT_SUFFIXES = (".md", ".py", ".sh", ".yml", ".yaml", ".toml", ".json")
+
+
+def _tracked_text_files(suffixes: tuple[str, ...] = _TEXT_SUFFIXES):
+    """Every tracked file of the given kinds, as (relpath, text).
+
+    Shared by the red-line address guard and the role-card count guard: both
+    police a claim that can appear in any file, so neither may carry its own
+    hand-maintained file list.
+    """
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, timeout=30
+    )
+    for rel in out.stdout.splitlines():
+        if rel.endswith(suffixes):
+            path = ROOT / rel
+            if path.is_file():
+                yield rel, path.read_text(encoding="utf-8", errors="replace")
+
+
 def _subprocess_path() -> str:
     """System dirs only — plus wherever gpg lives, since `dx merge` shells out to
     it and Homebrew puts it in /opt/homebrew/bin, outside /usr/bin:/bin."""
@@ -587,23 +609,10 @@ class TestNoLabAddressesAnywhere:
         r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}(?:\.\d{1,3})?\b"
     )
 
-    @staticmethod
-    def _tracked_text_files():
-        import subprocess
-
-        out = subprocess.run(
-            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, timeout=30
-        )
-        for rel in out.stdout.splitlines():
-            if rel.endswith((".md", ".py", ".sh", ".yml", ".yaml", ".toml", ".json")):
-                path = ROOT / rel
-                if path.is_file():
-                    yield rel, path.read_text(encoding="utf-8", errors="replace")
-
     def test_no_private_range_address_in_any_tracked_file(self):
         offenders = [
             f"{rel}:{text[:m.start()].count(chr(10)) + 1}: {m.group(0)}"
-            for rel, text in self._tracked_text_files()
+            for rel, text in _tracked_text_files()
             for m in self._PRIVATE.finditer(text)
         ]
         assert not offenders, (
@@ -650,19 +659,33 @@ class TestUsageAndSpecTemplate:
         reason="sdlc-agent-roles not cloned; CI clones it, so this runs there",
     )
     def test_role_card_counts_match_the_deck_in_every_doc(self):
-        """A card count is a governance claim wherever it appears. This guard used
-        to check only the README, and the count drifted in TUTORIAL.md unnoticed
-        (dx #6) — the 0.7.2 lesson: a check on one file reads as enforced and is
-        not. Now the two docs that state a count — README.md and TUTORIAL.md — are
-        each checked against the deck, in every phrasing they use ('40 role cards',
-        'one of 40', 'all 40 cards', 'N files at .../roles'). Extend the tuple below
-        when another doc starts stating the count."""
+        """A card count is a governance claim wherever it appears, so the guard
+        reads every tracked doc — it does not carry a list of which ones.
+
+        Twice now the narrow version has been the bug. First the count was policed
+        in README.md alone and drifted in TUTORIAL.md (dx #6, the 0.7.2 lesson).
+        Then the fix hardcoded *two* files and told the next author to "extend the
+        tuple" — so RELEASE_READINESS.md said 38 while the deck held 40, and
+        VISION.md and a second RELEASE_READINESS line stated 40 by luck rather
+        than by enforcement. A guard that needs manual extension is a guard that
+        is one forgotten edit from silence. Every tracked `*.md` is checked, in
+        every phrasing the docs use.
+
+        Markdown only, on purpose: prose stating a count is making a claim about
+        the real deck, whereas a count in test code is describing its own fixture
+        (`test_corrupt_role_cards.py` legitimately builds a deck of 1).
+        """
         deck = len(list(REAL_CARDS.glob("*.md")))
-        for label, text in (("README.md", README), ("TUTORIAL.md", TUTORIAL)):
-            counts = _role_card_counts(text)
-            assert counts <= {deck}, (
-                f"{label} states role-card count(s) {sorted(counts)}, but the deck has {deck}"
-            )
+        offenders = [
+            f"{rel}: states {sorted(counts)}"
+            for rel, text in _tracked_text_files((".md",))
+            for counts in [_role_card_counts(text)]
+            if not counts <= {deck}
+        ]
+        assert not offenders, (
+            f"role-card counts in tracked docs disagree with the deck ({deck} cards):\n  "
+            + "\n  ".join(offenders)
+        )
         # and the README must still state the count in a recognized form, so a
         # phrasing change cannot make the guard silently find nothing.
         assert deck in _role_card_counts(README), (
