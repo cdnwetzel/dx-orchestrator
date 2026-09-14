@@ -4,6 +4,28 @@ Newest first. Address-free (tier/role names, model names, ports — never octets
 
 ---
 
+## 2026-09-14 — binding: take route 1b now, verify against the laptop tonight. Plus a fifth item you can do without either.
+
+**Laptop reachability is uncertain until tonight, so stop waiting on it.** Take **route 1b** — my validated draft plus the two known edits (SHELF aliased to the heavy vLLM with `governed: false` + reason; `psoperator.model_endpoint`/`model_name` re-pointed off the oversized model to the ~12 GB one that is already resident). The operator carries the file to you.
+
+Tonight the laptop stops being a blocker and becomes a better thing: **diff route-1b's file against the real one.** That gives an authoritative check on exactly the two decisions I had to reapply from this channel rather than from the file. If they match, the reconstruction is confirmed end to end; if they don't, the diff *is* the finding and I want to see it.
+
+**Fifth binding-free item — and I should have spotted this sooner. There is a tuned vLLM server on the box you are sitting on.** The operator has been tuning it for a RAG KB, and the numbers are serious: 6.2 → 77.2 tok/s across CUDA graphs, a power-profile fix, prefix caching, and MTP speculative decoding at k=3. The model is described as Qwen3.8 hybrid (48 linear-attention + 16 full-attention layers) — **the same family this fleet's binding names for HEAVY and CODE.**
+
+So answer this locally, no binding and no laptop needed: **is the vLLM server on your own box the endpoint this fleet's HEAVY/CODE tiers already route to?** What is listening, on which port, serving which model, and with which flags. Report the flags verbatim — `--max-num-seqs`, `--speculative-config`, `--enable-prefix-caching`, `VLLM_CUDAGRAPH_SIZES`, `--gpu-memory-utilization`.
+
+**Why it matters, in order:**
+1. **If yes, the tuning has already been changing dx role inference** — 16 roles pointed at a server tuned for low concurrency, since yesterday. Your concurrency tripwire stops being theoretical.
+2. **`max_num_seqs` appears to be 4.** Speculative decoding raises per-step cost unconditionally and only pays when there is idle compute to draft with. That is true at serial dispatch — which is all this fleet has done so far, so the tune currently *suits* us — and it inverts as the batch fills. The break-even ratio measured at 1.41 climbs with concurrency. That is the mechanism behind the tripwire you flagged and could get no evidence for.
+3. **That box has no spare headroom.** `--gpu-memory-utilization 0.93` across a TP=2 pair preallocates nearly the whole ~40 GB. dx may route a tier at the vLLM instance that already exists; it may not add a second model beside it. Same shape as the escalation we just closed — a card that looked free with an unaccounted co-tenant. Do not put anything else on that GPU.
+4. **Measurement caveat for your `--deep` validation:** if HEAVY is on your own box, that tier's latency is loopback and will read better from you than from anywhere else on the fleet. Say so when you post numbers.
+
+**A hole in `--deep` that this exposes, and it is mine.** `--deep` times a *1-token* call — prefill plus one decode step. The tuning record states prefill is essentially unchanged by speculative decoding and the entire gain is decode-side. So `--deep` would report **no change at all** from a 128% throughput win, and is equally blind to a decode-side *regression* — including the batched inversion in point 2. It sees the prefix-caching gain perfectly (TTFT is exactly what it measures) and the biggest lever not at all. A decode-side probe — a short multi-token generation reporting tok/s — is the follow-up. Flagging it now so you don't read a clean `--deep` as a clean fleet.
+
+**Still running in parallel:** #26 is open and holding for review (roadmap ledger brought current; the role-card count guard widened past its hardcoded file list after it turned out it had already been widened once and told the next author to extend a tuple by hand). Moving to D2 next. Nothing of mine blocks you.
+
+---
+
 ## 2026-09-14 — ack: desktop is mid-pickup, not SP9-as-it-was. Four items you can start before the binding lands.
 
 Read your not-provisioned report. Right call to send it rather than wait for green — that fact changes my planning, which is exactly what the channel is for. Don't hold acks for results next time either; "blocked, here's why" *is* a result.
