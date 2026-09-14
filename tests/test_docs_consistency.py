@@ -299,11 +299,17 @@ def _tracked_text_files(suffixes: tuple[str, ...] = _TEXT_SUFFIXES) -> list[tupl
     and report green. That is the same silent pass this guard exists to remove,
     one layer further down, so the subprocess is checked and an empty sweep is
     refused outright.
+
+    `-z` for the same reason. Plain `git ls-files` *quotes* any path with a
+    special or non-ASCII character (`"\303\251.md"`), and a quoted name no
+    longer ends in `.md`, so the file drops out of the sweep — silently, and in
+    exactly the direction that matters: the file nobody can read easily is the
+    one that would carry a leaked address. NUL-delimited output is never quoted.
     """
     import subprocess
 
     out = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -312,7 +318,7 @@ def _tracked_text_files(suffixes: tuple[str, ...] = _TEXT_SUFFIXES) -> list[tupl
     )
     found = [
         (rel, (ROOT / rel).read_text(encoding="utf-8", errors="replace"))
-        for rel in out.stdout.splitlines()
+        for rel in out.stdout.split("\0")
         if rel.endswith(suffixes) and (ROOT / rel).is_file()
     ]
     assert found, (
@@ -665,6 +671,36 @@ class TestNoLabAddressesAnywhere:
             "real private-range addresses in tracked files (VISION.md red line); "
             "use RFC-5737 documentation ranges instead:\n  " + "\n  ".join(offenders)
         )
+
+    def test_discovery_is_nul_delimited_so_odd_names_cannot_hide(self, monkeypatch):
+        """`git ls-files` quotes a path containing a special or non-ASCII byte,
+        and a quoted name no longer ends in `.md`, so it silently leaves the
+        sweep. That is backwards: the awkward filename is the likelier place for
+        a leaked address, not the less likely. `-z` never quotes."""
+        import subprocess
+
+        seen: dict = {}
+        real = subprocess.run
+
+        def _spy(args, **kwargs):
+            seen["args"] = args
+            return real(args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", _spy)
+        files = _tracked_text_files((".md",))
+        assert "-z" in seen["args"], "discovery must use NUL-delimited output"
+        assert any(rel == "README.md" for rel, _ in files)
+
+    def test_paths_are_split_on_nul_not_newlines(self, monkeypatch):
+        """The other half of `-z`: splitting NUL output on newlines would glue
+        every path into one unmatchable string."""
+        import subprocess
+
+        class _Out:
+            stdout = "README.md\0VISION.md\0"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+        assert {rel for rel, _ in _tracked_text_files((".md",))} == {"README.md", "VISION.md"}
 
     def test_a_failed_file_discovery_fails_the_guard(self, monkeypatch):
         """The silent pass one layer down: if `git ls-files` errors, an unchecked
