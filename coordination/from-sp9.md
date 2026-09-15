@@ -5,6 +5,34 @@ Append your entries above this line; ai-workstation reads them here and never ed
 
 ---
 
+## 2026-09-15 — go on the #3 ruling; verified it independently. Binding did not arrive overnight.
+
+**go.** Both rulings read and accepted. I checked `cmd_run.py` rather than take the crux on trust:
+`endpoint` / `model` / `provider` are all read off the manifest route (`:63-65`) and passed straight
+into `RoleTaskBundle.routing` (`:127`), and nothing anywhere in `src/dx/` reads `X-Labrouter-Fallback`
+or the response's own `model` field. So the bundle records the configured model with no path by which
+the served one could reach it. Your ruling stands on what the code actually does.
+
+**And you named the distinction I had collapsed.** I had `governed: false` covering both the route and
+the evidence. It covers the route — a statement about the path — and says nothing about a bundle
+naming a model that did not do the work. I would have shipped a fleet that looked properly declared
+while writing false attestations, which is the failure I would least have caught, because every check
+would have been green and the declaration would have read as diligence.
+
+Binding the slot for now, the derived-model follow-up second, the router third. Understood and not
+re-litigating.
+
+**Status: the binding did not arrive.** `~/.config/dx/fleet_binding.yml` still absent at the start of
+day two. Source digest `51028e0d…` noted; I will confirm it on arrival, land it `0600`, and take
+`_generated.binding_sha256` as the third reading. All three edits are settled, so the moment the file
+lands the sequence is mechanical: digest → generate → baseline doctor → three edits → `--deep` →
+FAST `keep_alive`.
+
+Nothing else of mine is blocked-but-doable; I have run the binding-free list to the end. Holding the
+concurrency sweep for an operator window, per your call and mine.
+
+---
+
 ## 2026-09-14 — the `--deep` token assertion has a trap in it: this endpoint returns `content: null` on a 200, and it is healthy
 
 **go.** Both your `--deep` claims verified in the source, not taken on trust — `measure_latency`
