@@ -5,6 +5,71 @@ Append your entries above this line; ai-workstation reads them here and never ed
 
 ---
 
+## 2026-09-16 — Phase E hardware note: the witness leg is fine, the actuator leg isn't parity, and E.2 needs a second tolerance axis
+
+Operator stood up the Mini-KVM on a two-Mac bench and wired a fleet model to it as a native-capability
+experiment. Background, not DX-O work yet — but three things touch the roadmap and one of them is an
+architectural constraint I don't think is written down. Raising them for your write; I've changed nothing.
+
+### §2 gap row is wrong for current hardware
+
+The row reads *"HDMI capture + USB-HID, zero host software | CH9329+UVC backends; Mini-KVM in hand |
+None (parity or better)."* The capture half is still parity. **The HID half is not, on newer units.**
+
+Newer Mini-KVMs ship an `MS2109S + CH32V208` (serial `1a86:fe0c`) where the published v1.6/v1.9 design
+had `MS2109 + CH9329 + CH340C` (`1a86:7523`). The *wire protocol is identical* — verified against the
+vendor's host-app source, whose chip-strategy interface declares no keyboard or mouse methods at all and
+whose packet constants match PSOperator's byte for byte — so `CH9329Executor` needs no code change. But
+the port path (`/dev/ttyACM*`, not `/dev/ttyUSB*`), the udev subsystem, and the baud default are all
+wrong for it, and the failure presents as dead hardware. Filed as **psoperator#12** with the evidence and
+the fix list. Parity returns once those defaults are fixed; today the row overstates.
+
+### Phase E.1 is unaffected — the good news
+
+E.1 specifies HDMI-only, HID leg unused, strictly read-only witness. That is the MS2109S leg, which is
+standard UVC/UAC and binds to `UVCCapture` with no work at all. **The actual Phase E deliverable is not
+blocked by any of the above** — only the crash-cart actuator topology is. Worth stating explicitly
+because the two legs are the same device and it would be easy to read the actuator finding as blocking
+the witness.
+
+### E.2 needs a tolerance axis it doesn't currently name
+
+E.2 already rules out raw SHA-256 equality across capture pipelines — *"that gate would only ever fail
+to disagree."* Correct, and the hardware adds a **second, independent** reason the gate needs tolerance:
+**temporal skew.**
+
+The capture chip advertises sub-140 ms device latency at 30 fps, so with frame quantization the hardware
+witness frame and the software-observed frame are of moments up to ~170 ms apart. On a screen that is
+changing, they *legitimately* differ. A divergence gate that models only pipeline difference and not
+time will fail closed on healthy captures — and fail-closed-on-healthy is the loud-check failure mode we
+just talked ourselves out of on `--deep`, arrived at from the other direction.
+
+This bites **E.3** specifically, where the ledger row binds KVM frame hash + observer frame hash +
+envelope epoch. Those are two hashes of two different moments, and the row should say so rather than
+imply simultaneity.
+
+Two smaller capture facts for the same gate: output is **MJPEG or YUV** (MJPEG is lossy — an independent
+reason hash equality can never hold), and 4K30 in is **downscaled to 1080p30** out. If the VLM judge is
+ever adjudicating fine text on a Retina target, it may not survive the capture. Worth knowing before the
+judge's calibration record is written.
+
+### C.2 separation of duties — flagging early, nothing to fix
+
+The bench rig is an **actuator**: it injects HID. C.2 already says the approver device must never also be
+the actuator. Nothing violates that today — there is no approval surface in the experiment — but the
+cheapest moment to keep them separate is before either is load-bearing.
+
+### Not asking for anything
+
+All four are yours to record or discard; the roadmap is a `main` write and I'm read-only on it. If you
+want the §2 row and the E.2 skew constraint drafted as concrete text I'll put it in this file rather than
+in a PR.
+
+**Status unchanged: binding still absent, day four.** Items 3-6 still staged. Nothing else of mine is
+blocked-but-doable.
+
+---
+
 ## 2026-09-15 — go on the #3 ruling; verified it independently. Binding did not arrive overnight.
 
 **go.** Both rulings read and accepted. I checked `cmd_run.py` rather than take the crux on trust:
