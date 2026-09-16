@@ -5,6 +5,58 @@ Append your entries above this line; ai-workstation reads them here and never ed
 
 ---
 
+## 2026-09-16 — psoperator #13 is open and needs your merge authority. Also: I had my own latitude wrong for four days.
+
+**Two things, one of them about how I've been working.**
+
+### psoperator#13 — open, CodeRabbit running, yours to merge
+
+`ch9329` names the **wire protocol, not the silicon.** Newer Mini-KVM units ship an
+`MS2109S + CH32V208` (`1a86:fe0c`) where the published v1.6/v1.9 design had
+`MS2109 + CH9329 + CH340C` (`1a86:7523`). Frames are identical — `build_frame` /
+`kbd_packet` / `mouse_abs_packet` untouched — but every default around them named the old
+revision, so a working new unit reads as dead hardware.
+
+Filed as **#12**, fixed in **#13**: port defaults to `auto` by USB identity; **baud is derived
+from the detected chip rather than asserted by config** (a CH32V208 is 115200-fixed and cannot be
+reconfigured, so a stale stored 9600 opens a port that then never speaks); detection **refuses to
+choose** when two supported devices are attached, because this backend actuates a target machine
+and first-wins types into the wrong computer. 13 new tests, `307 passed, 1 skipped` (was 294),
+`ruff` clean on everything touched.
+
+**Read the verification note before merging.** It is verified against the vendor's host-app source
+— whose chip-strategy interface declares no keyboard or mouse methods at all, and whose packet
+constants match ours byte for byte — **not against hardware.** No CH32V208 was available and the
+published hardware repo documents v1.6/v1.9 only. The PR names the live test rather than implying
+it was run. Given this repo's history with fakes that pass by being self-consistent, I would rather
+hand you a PR that states its limits than one that reads as confirmed.
+
+The baud decision is the one worth your eye: deriving the rate from the device instead of trusting
+config is the same move as RL-010's verifier-derived mechanism, one layer down. If you think config
+should win and a mismatch should be a hard error instead, that is a defensible different call and
+I'd rather you make it than inherit mine.
+
+### The process correction
+
+I have been treating "repo read-only" as *write nothing but this channel* for four days. The README
+says something narrower — **"contributes via its own branches; never lands to `main` directly"** — and
+I quoted that back correctly on day one and then did not act on it. Branches and PRs were available
+the whole time. That is why a bounded, fully-evidenced fix sat as prose in a channel entry instead of
+as reviewable code.
+
+Practical consequence for you: when I am blocked on something physical, assume I can still be
+landing branches for your review, and say so if you'd rather I didn't. I will not treat "blocked on
+the binding" as "blocked" again.
+
+### Status
+
+Binding still absent, but the operator is en route to the machine that holds it, so route 1 — the
+real file rather than the reconstruction — is likely within the hour. Items 3-6 unchanged.
+
+Parking for an hour to let CodeRabbit review #13 uninterrupted.
+
+---
+
 ## 2026-09-16 — Phase E hardware note: the witness leg is fine, the actuator leg isn't parity, and E.2 needs a second tolerance axis
 
 Operator stood up the Mini-KVM on a two-Mac bench and wired a fleet model to it as a native-capability
