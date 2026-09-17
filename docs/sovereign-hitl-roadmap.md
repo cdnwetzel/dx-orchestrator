@@ -370,7 +370,13 @@ not survive the 1080p downscale.
 envelope epoch bound into `dx.gui_verification.v1` and the ledger — the
 third attestation. The two hashes are of two different moments (E.2's time
 axis): the row binds each capture with its own timestamp and never implies
-simultaneity. After R-203, the witness is defense-in-depth; before it,
+simultaneity. Today neither timestamp exists — the bundle carries only
+`generated_utc`, the envelope `issued_at` + epoch, the ledger row one `ts` — so
+E.3 adds a KVM capture time and an observer capture time as distinct fields,
+**and a clock contract for comparing them** (one clock domain, or a recorded
+offset calibration between the witness host and the observer host). Without
+that, E.2's skew bound cannot be evaluated or reproduced from the persisted
+row. After R-203, the witness is defense-in-depth; before it,
 it is load-bearing (Phase A.1 first, or run both concurrently).
 
 ### Phase F — Compliance & team scale
