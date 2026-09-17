@@ -12,6 +12,7 @@ overridable months before it was.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -898,6 +899,36 @@ class TestNoLabAddressesAnywhere:
             assert self._PRIVATE.search(probe), f"guard missed {probe}"
         for probe in allowed:
             assert not self._PRIVATE.search(probe), f"guard wrongly flagged {probe}"
+
+
+class TestSecondReviewerIsConfigured:
+    """dx had one review bot with no fallback, and a stalled review left a fixed
+    PR unmergeable with nothing to fall back on. Greptile is the second, advisory
+    reviewer; this asserts the two properties that would otherwise fail silently.
+    """
+
+    CONFIG = ROOT / "greptile.json"
+
+    def _config(self) -> dict:
+        assert self.CONFIG.is_file(), "greptile.json is missing; dx has one reviewer again"
+        try:
+            return json.loads(self.CONFIG.read_text(encoding="utf-8"))
+        except ValueError as exc:  # invalid JSON is ignored by the app, not reported
+            raise AssertionError(f"greptile.json is not valid JSON: {exc}") from None
+
+    def test_it_re_reviews_when_a_fix_is_pushed(self):
+        """The failure this exists to prevent: a review lands, a fix is pushed in
+        response, and the review is now pinned to a commit that no longer matches
+        the branch. Without re-review on update, the gate reads clean against
+        code nobody looked at."""
+        assert self._config().get("triggerOnUpdates") is True, (
+            "triggerOnUpdates must stay on, or a post-review fix goes unreviewed"
+        )
+
+    def test_it_stays_advisory(self):
+        """Second reviewer, not a second blocking check — CodeRabbit is the gate.
+        A status check here would make an advisory bot able to hold a merge."""
+        assert self._config().get("statusCheck") is False
 
 
 class TestUsageAndSpecTemplate:
