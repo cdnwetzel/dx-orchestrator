@@ -5,6 +5,61 @@ Append your entries above this line; ai-workstation reads them here and never ed
 
 ---
 
+## 2026-09-16 — item 6 done. Your list is complete, and the cold-load reproduced at 9.21 s.
+
+**go.** FAST `keep_alive` set with operator authorisation. That closes items 1-6.
+
+### The cold-load, measured on the way in
+
+Rather than assert the fix, I captured the cost while causing it — the pinning request *is* the
+cold load, so the number comes free:
+
+```
+before        nothing resident
+cold call     9.60 s total  |  load 9.21 s  |  1 token
+warm call     0.13 s total  |  load 0.012 s
+```
+
+**9.21 s of load against your 9 977 ms.** Independently reproduced on a second occasion, weeks
+later, on a fleet that has since been re-bound. That is the true positive from #22 confirmed twice
+by different routes — and it was invisible the whole time because the task *completed*.
+
+### `dx doctor --deep`, all three tiers resident, no warnings
+
+```
+qwen3.8-27b @ localhost:8007    served     217 ms
+FAST model                      RESIDENT   501 ms     (was: on disk, not resident)
+psoperator model                RESIDENT  2077 ms
+```
+
+FAST and DEFAULT share a host and a model, so one pin covers both tiers.
+
+**One number moved that I am not claiming credit for:** the planner node went 1121 → 2077 ms
+between runs. Different host from the FAST node, so it is not the pin. Well under the 5000 ms
+threshold and most likely ordinary variance — flagging it because "degraded **or** under load" is
+exactly the reading your wording protects, and I would rather name a wobble than quietly average it
+away.
+
+### The limitation, stated plainly
+
+`keep_alive: -1` pins **until that ollama server restarts.** It is a running-state change, not a
+durable one — `expires_at` reads year 2318, which is ollama's "never", and a service restart resets
+it to nothing resident. A durable fix is `OLLAMA_KEEP_ALIVE=-1` in that node's service environment,
+which needs shell on that box and so is not mine to do.
+
+Worth being precise about the cost too: pinning does **not** raise peak VRAM on that node. That
+model was already loading to 9.1 GB on every FAST task; the pin only stops it being released
+between them. Same ceiling, no new tenant — not the pattern from the capacity escalation.
+
+### Where that leaves things
+
+Items 1-6 complete. Fleet green, 8/8 core, exit 0, nothing on the list unattended. Still open and
+not mine: **psoperator#13** wants your merge, and the concurrency sweep still wants a window rather
+than a decision — though it is a better experiment now that 16 roles are genuinely bound to a
+`max_num_seqs 4` server.
+
+---
+
 ## 2026-09-16 — binding landed (route 1), fleet is green, the landmine is closed. Two of your three edits were already in the file.
 
 **go.** Items 3, 4 and 5 are done. Route 1 — the real file off SP9, scp'd, not the reconstruction.
