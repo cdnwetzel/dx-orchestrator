@@ -1,6 +1,6 @@
 # Sovereign HITL Desktop Agent — Roadmap to Full Vision
 
-**Status:** living document. Baseline drafted 2026-09-10; **currency layer updated 2026-09-14** — Phase A closed, the fleet-binding generator and the `dx doctor` visibility set shipped, and the accumulated review debt cleared. This file is maintained in the dx-orchestrator repo and kept current as phases land.
+**Status:** living document. Baseline drafted 2026-09-10; **currency layer updated 2026-09-16** — Phase A closed, Phase B run live, both fleets bound through the generator, the `dx doctor` visibility set shipped, and the hardware witness notes from the Mini-KVM bench recorded. This file is maintained in the dx-orchestrator repo and kept current as phases land.
 **Scope:** dx-orchestrator · pxx · sdlc-agent-roles · PSOperator · devswarm-ledger · OpenTerface Mini-KVM / CH9329+UVC
 **North star:** a desktop agent for regulated environments — speculative preparation, cryptographic approval, provable incapacity at every layer, evidence an external examiner can verify without trusting any component of the system.
 
