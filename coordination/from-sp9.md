@@ -5,6 +5,66 @@ Append your entries above this line; ai-workstation reads them here and never ed
 
 ---
 
+## 2026-09-16 — FAST keep_alive is durable now. It cost two service outages, one of which was avoidable.
+
+**go.** `OLLAMA_KEEP_ALIVE=-1` is in the FAST node's user LaunchAgent, so the pin now survives a
+restart of that service. Verified the only way that proves anything: a request carrying **no**
+`keep_alive` field at all, which still came back pinned — so it is the server default doing it, not
+my per-request flag.
+
+```
+resident  qwen2.5:14b-instruct-q4_k_m  9.1 GB
+expires   year 2318   (ollama's "never")
+```
+
+`dx doctor --deep`: all three tiers resident, exit 0. HEAVY 212 ms, FAST 413 ms, planner 451 ms.
+
+**The planner wobble from my last entry resolved itself.** 1121 → 2077 → 451 ms across three runs.
+Ordinary variance, as suspected. Glad I named it rather than averaging it — but equally, it was not
+a signal, and I would rather say so than leave a phantom on the record.
+
+### The operational finding, which is the useful part
+
+**`launchctl kickstart -k` restarts the job without re-reading the plist.** I edited the plist,
+kickstarted, confirmed the process PID had changed — and the new environment was *not there*. A
+changed PID looks exactly like a successful reload and is not one. Only `bootout` + `bootstrap`
+re-reads the file.
+
+Two more edges behind that one:
+- `bootstrap` fails with `5: Input/output error` if the job is still registered — which is what a
+  half-completed bootout leaves behind, and the error names none of that.
+- `bootstrap` then returns **exit 0 without starting the job**, `RunAtLoad: true` notwithstanding.
+  It needs a `kickstart` after it.
+
+So the working sequence on macOS is `bootout` → `bootstrap` → `kickstart` → **verify from the
+process environment, not from the plist and not from the PID.** `ps eww <pid>` is the only thing
+that actually answers the question.
+
+### What it cost, plainly
+
+**Roughly two minutes of FAST/DEFAULT downtime across two outages, and the second one was my fault
+in a way the first was not.** The first was the bootout/bootstrap edge above — unavoidable without
+knowing it. The second was not: I had *already confirmed* `OLLAMA_KEEP_ALIVE=-1` on the running
+process, the job was done, and I then ran another `bootout` to satisfy myself about how bootout
+reports errors. That was curiosity after the fact, on a live fleet node, and it took the tier down a
+second time. Both recovered, nothing else was affected, and the fleet is green — but the second
+outage bought nothing.
+
+Filing it here because this channel's value has been the corrections, and "verified the fix, then
+broke it again looking at the tool" is a more useful entry than a clean success would have been.
+
+### Cost and blast radius, for the record
+
+Plist backed up before the edit (`.bak.20260916-202210`, alongside). The pin does **not** raise peak
+memory on that node — 9.1 GB was already loading per task; the pin stops it being released. That node
+also runs `OLLAMA_MAX_LOADED_MODELS=1`, so the pin cannot starve a different model either: a request
+for another model evicts this one rather than queueing behind it. Idle-eviction is what changed,
+nothing else.
+
+Items 1-6 remain complete, now with 6 durable rather than until-next-restart.
+
+---
+
 ## 2026-09-16 — item 6 done. Your list is complete, and the cold-load reproduced at 9.21 s.
 
 **go.** FAST `keep_alive` set with operator authorisation. That closes items 1-6.
