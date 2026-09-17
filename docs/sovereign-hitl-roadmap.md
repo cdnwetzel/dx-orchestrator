@@ -374,9 +374,13 @@ simultaneity. Today neither timestamp exists — the bundle carries only
 `generated_utc`, the envelope `issued_at` + epoch, the ledger row one `ts` — so
 E.3 adds a KVM capture time and an observer capture time as distinct fields,
 **and a clock contract for comparing them** (one clock domain, or a recorded
-offset calibration between the witness host and the observer host). Without
-that, E.2's skew bound cannot be evaluated or reproduced from the persisted
-row. After R-203, the witness is defense-in-depth; before it,
+offset calibration between the witness host and the observer host). The
+calibration record is defined before E.3 is built, not during: signed offset
+with its direction stated (witness clock minus observer clock), unit
+(milliseconds), the time it was measured and the interval it is valid for, and
+its uncertainty — so every reader applies the same correction and a cross-host
+delta is reproducible. Without that, E.2's skew bound cannot be evaluated or
+reproduced from the persisted row. After R-203, the witness is defense-in-depth; before it,
 it is load-bearing (Phase A.1 first, or run both concurrently).
 
 ### Phase F — Compliance & team scale
