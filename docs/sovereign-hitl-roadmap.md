@@ -1,6 +1,6 @@
 # Sovereign HITL Desktop Agent — Roadmap to Full Vision
 
-**Status:** living document. Baseline drafted 2026-09-10; **currency layer updated 2026-09-14** — Phase A closed, the fleet-binding generator and the `dx doctor` visibility set shipped, and the accumulated review debt cleared. This file is maintained in the dx-orchestrator repo and kept current as phases land.
+**Status:** living document. Baseline drafted 2026-09-10; **currency layer updated 2026-09-16** — Phase A closed, Phase B run live, both fleets bound through the generator, the `dx doctor` visibility set shipped, and the hardware witness notes from the Mini-KVM bench recorded. This file is maintained in the dx-orchestrator repo and kept current as phases land.
 **Scope:** dx-orchestrator · pxx · sdlc-agent-roles · PSOperator · devswarm-ledger · OpenTerface Mini-KVM / CH9329+UVC
 **North star:** a desktop agent for regulated environments — speculative preparation, cryptographic approval, provable incapacity at every layer, evidence an external examiner can verify without trusting any component of the system.
 
@@ -18,7 +18,7 @@ execution; one-gesture approval) under sovereign, audit-grade governance:
 > signature. Every consequential act leaves third-party-verifiable evidence.
 > No component — including the whole software stack — can fake that evidence.
 
-## 0.5 Progress ledger — shipped as of 2026-09-14
+## 0.5 Progress ledger — shipped as of 2026-09-16
 
 Mapping today's work onto the phases and invariants below. Everything here is on `main` and released, except where noted.
 
@@ -45,13 +45,20 @@ Mapping today's work onto the phases and invariants below. Everything here is on
 - **A narrow guard was the bug, three times over (2026-09-14).** The role-card count guard had already been widened once (README-only → a hardcoded two-file tuple) and left a docstring telling the next author to extend the tuple by hand; nobody did, so four counts across three docs went unchecked and several more were right only by luck. Widening it to every tracked `*.md` then exposed the *second* narrowness — the pattern list itself, which missed a bare `N cards` with no "role", and the hyphenated `N-card deck` — and that in turn exposed the third: the rule "every count must equal today's deck" cannot tell a stale claim from a deliberate record of the past, and it flagged an accurate description of the archived predecessor deck. A count may now be exempted only by a marker that gives a reason, the same **declared-not-silent** posture the generator takes with `governed: false`. The through-line, and the reason this keeps recurring: **a check that needs manual extension is one forgotten edit from silence — and every fix for it has its own narrow axis.**
 - **An operational finding that is really a design rule.** A tier bound to a ~37 GB model on a 16 GB card was read for days as a *degraded node* — including by this document's author — when it was simply a model that never fit, thrashing a card it shared with an unnoticed co-tenant. Nothing was broken; a binding was mis-sized. The rule going out of it: **size the model to the card, and never let a latency number assert a cause.** It is why `--deep` reports "degraded or under load" rather than a verdict.
 
+### Shipped 2026-09-15 → 2026-09-16
+
+- **D1 + D2 landed (psoperator #11).** The R-203 frame watermark persists across restarts and nonces are evicted by TTL with a count ceiling, not FIFO-by-count. D3 (a live-loopback kill-switch drill) stays open below.
+- **The home fleet is bound, and the generator's declared-not-silent posture paid out on first contact.** The real per-box binding landed (the file itself, not the reconstruction), and of the three edits settled over the channel, *two were already in the file*: the SHELF alias to the heavy vLLM was `governed: false` with its reason written out, and HEAVY/CODE already named the backend slot rather than the router. Only the planner re-point to a model that fits was a real edit. Doctor now reads the planner tier **RESIDENT** where it would have read on-disk-cold under the oversized model — #24 confirming its own fix on the fleet it was built for. The FAST tier's model is pinned resident (`keep_alive: -1`, then made durable in the service environment), which closes the ~10 s cold-load per FAST task that #22 first surfaced — **reproduced twice by different routes** (9 977 ms then 9.21 s, weeks apart, after a re-bind) and invisible both times because the task *completed*.
+- **A hardware revision the defaults did not know about (psoperator #12 → #13).** Newer Mini-KVM units ship an MS2109S + CH32V208 (`1a86:fe0c`, native USB CDC, `/dev/ttyACM*`, 115200 fixed) where the published design had a CH9329 behind a CH340 bridge (`1a86:7523`, `/dev/ttyUSB*`, 9600). The frames are identical — verified against the vendor host-app source, whose chip-strategy interface declares no keyboard or mouse methods — so the executor needed no change, but a working unit read as dead hardware. #13 derives port and baud from the detected chip (the same move as RL-010's verifier-derived mechanism, one layer down) and refuses to choose between two attached units. Review then caught the sharper edge: `1a86:7523` is the id of *every* CH340 adapter, so auto-selecting it could have written HID frames into an unrelated device. Resolution: recognise it, never choose it, the operator names the port. A read-only protocol probe as the true discriminator is filed (psoperator #14) and needs the hardware.
+- **An operational finding worth its own line:** on macOS, `launchctl kickstart -k` restarts a job without re-reading its plist, and a changed PID looks exactly like a successful reload. Only `bootout` → `bootstrap` → `kickstart` re-reads the file, and the proof is the process environment (`ps eww`), never the plist or the PID. The same entry recorded that a second, curiosity-driven `bootout` on a live node — after the fix was already verified — cost the second of two brief outages. The rule going out of it: **verify from the running process, then stop touching it.**
+- **Coordination is now a git channel, and the home-fleet dev seat moved.** Relays between the two fleets run "go → pull → read" over an orthogonal branch that never merges, address-free by rule; the home fleet's dev side has been handed off to a workstation-class box. Both are process, not code, but the channel is where every correction above was caught.
+
 ### Still open
 
 - **Phase C.1 hardware — the single parked decision, and the sole remaining blocker on I-5.** Order the touch-sign token and register a second backup key in the same sitting. The seam already binds to the *contract*, so this is a purchase, not a build.
-- **Three gate-design decisions, specified with recommendations, awaiting a call** (psoperator, each independently landable):
-  - **D2 — nonce eviction.** `attestation_gate.admit()` evicts FIFO by count, so a *still-valid* nonce can be dropped inside its TTL, reopening replay. Recommend TTL + a count ceiling.
-  - **D1 — gate state across restarts.** The nonce set and frame watermark are process-local and reset on restart, reopening a TTL-bounded rollback window; the epoch is already durable. Recommend persisting the frame watermark only — rollback is the higher-value attack — and leaving nonces to TTL.
+- **One gate-design decision still open** (psoperator; D1 and D2 landed in #11):
   - **D3 — drill realism.** `kill_switch_drill` exercises an in-process gatekeeper, not the deployed IPC path. Recommend one live-loopback drill. Additive, lowest priority.
+- **The concurrency sweep** wants an operator window, not a decision — a better experiment now that the home fleet's roles are bound to a `max_num_seqs 4` server.
 - **dx role inference has no documented governance posture in either repo** — psoperator's audited-proxy rule is scoped to its own planner lane. This is a **gap, not a violation**, and the honest form of the question is "should dx role traffic be audited, and through what," not "move it off a port." The generator's `governed: false` + reason keeps today's interim declared while it stays open.
 
 ## 1. Invariants (bind every phase; a violation anywhere fails the phase)
@@ -71,7 +78,7 @@ Mapping today's work onto the phases and invariants below. Everything here is on
 
 | Violoop capability | Our state | Gap class |
 | --- | --- | --- |
-| HDMI capture + USB-HID, zero host software | CH9329+UVC backends; Mini-KVM in hand | None (parity or better) |
+| HDMI capture + USB-HID, zero host software | UVC capture: parity. HID: the `ch9329` backend names the *wire protocol*, which both chip revisions share; the newer CH32V208 units needed every default around it fixed (psoperator #12 → #13, port and baud derived from the chip; the generic CH340 id is recognised but never auto-selected) | Capture: none. HID: parity restored by #13 — the row overstated it on current hardware until then |
 | On-device inference | LAN fleet inference | None functionally; portability note §7 |
 | Approval model cannot be bypassed by compromise | planner/executor separation, T3 hard-block, kill switch | Parity (silicon vs. process isolation) |
 | **Proactive, screen-aware intent detection** | change detection only (tile diff, pHash keyframes) | **Build (Phase 3)** |
@@ -338,13 +345,42 @@ and the Windows attestation port is tracked as D-01.)**
 1. ☐ Wire Mini-KVM **HDMI-only** (HID leg unused) as a strictly read-only
 out-of-band witness; frames consumed off-box by the driver or a second host.
 (CH9329+UVC remains the crash-cart actuator topology for pre-login/BIOS.)
+The witness and the actuator are two legs of the *same* device: E.1 uses only
+the capture leg (MS2109S, standard UVC/UAC, binds to `UVCCapture` with no work),
+so the actuator-leg defaults finding in psoperator #12 never blocked E.1 — worth
+stating because it would be easy to read the one as blocking the other. And the
+bench rig *is* an actuator (it injects HID): per C.2 it must never double as the
+approval surface. Nothing violates that today; recorded before either is
+load-bearing, which is the cheap moment.
 2. ☐ **Divergence gate.** Software-observed frame vs. hardware frame compared
 (perceptual hash / VLM judge on the hardware frame as ground truth — never
 raw SHA-256 equality across different capture pipelines; that gate would
 only ever fail to disagree). Divergence → fail closed, receipt, ledger row.
+**Two tolerance axes, both required.** *Pipeline:* the capture output is MJPEG
+or YUV (MJPEG is lossy) and 4K30 in is downscaled to 1080p30 out — independent
+reasons hash equality can never hold. *Time:* the capture chip advertises
+sub-140 ms device latency at 30 fps, so with frame quantisation the hardware
+witness frame and the software-observed frame are of moments up to ~170 ms
+apart; on a changing screen they *legitimately* differ. A gate that models only
+the pipeline fails closed on healthy captures — the loud-check failure mode
+`--deep` was steered away from, arrived at from the other direction. The VLM
+judge's calibration record must also note that fine text on a Retina target may
+not survive the 1080p downscale.
 3. ☐ **Witness rows in the ledger.** KVM frame hash + observer frame hash +
 envelope epoch bound into `dx.gui_verification.v1` and the ledger — the
-third attestation. After R-203, the witness is defense-in-depth; before it,
+third attestation. The two hashes are of two different moments (E.2's time
+axis): the row binds each capture with its own timestamp and never implies
+simultaneity. Today neither timestamp exists — the bundle carries only
+`generated_utc`, the envelope `issued_at` + epoch, the ledger row one `ts` — so
+E.3 adds a KVM capture time and an observer capture time as distinct fields,
+**and a clock contract for comparing them** (one clock domain, or a recorded
+offset calibration between the witness host and the observer host). The
+calibration record is defined before E.3 is built, not during: signed offset
+with its direction stated (witness clock minus observer clock), unit
+(milliseconds), the time it was measured and the interval it is valid for, and
+its uncertainty — so every reader applies the same correction and a cross-host
+delta is reproducible. Without that, E.2's skew bound cannot be evaluated or
+reproduced from the persisted row. After R-203, the witness is defense-in-depth; before it,
 it is load-bearing (Phase A.1 first, or run both concurrently).
 
 ### Phase F — Compliance & team scale
