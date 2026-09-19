@@ -89,6 +89,21 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`dx doctor` matched model names by exact membership, so an Ollama binding
+  written the way Ollama itself resolves names read `not-served`.** `qwen2.5-coder`
+  against a node serving `qwen2.5-coder:latest` — or `Qwen2.5-Coder`, or
+  `library/qwen2.5-coder:7b` — was reported as "not pulled on this node", and the
+  resident-vs-cold distinction missed the same way. Names now resolve the way the
+  backend does: Ollama drops `library/` and the registry prefix, lower-cases, and
+  gives a bare name `:latest` (a digest reference resolves only to itself);
+  OpenAI-compatible ids stay exact. `ModelAvailability` records `resolves_to`, and
+  doctor prints it. A `not-served` result now carries a **did you mean** hint —
+  `qwen2.5-coder` against `qwen2.5-coder:32b-instruct-q4_K_M` names it; several
+  candidates are listed as ambiguous — as text only; the status is never changed
+  by a guess. Measured against a 42-shape hand-labeled corpus
+  (`tests/fixtures/model-names.jsonl`): resolution 42/42 (was 34/42); the hint
+  heuristic agreed with a dev-time labeling pass on 24 of the 26 not-served rows.
+
 - **Evidence bundles were a raw pipe, not a filtered sink (RL-011).** `dx run`
   wrote `changes.patch`, `git-status.txt`, `prompt.txt` and `command.txt` (the
   full pxx argv, prompt included) straight from `git diff` and the command line;

@@ -44,34 +44,119 @@ _OK = frozenset({RESIDENT, SERVED})
 class ModelAvailability:
     """The result of a probe. ``ok`` is True only when the model can plausibly
     serve now — an on-disk-cold model is deliberately *not* ok, because that is
-    exactly the state that read green and then failed."""
+    exactly the state that read green and then failed.
+
+    ``resolves_to`` is the served name the manifest's name actually resolves
+    to, when it does (``qwen2.5-coder`` → ``qwen2.5-coder:latest`` on Ollama).
+    ``hints`` are served names a *not-served* manifest name probably meant —
+    advisory text for the operator, never a status."""
 
     status: str
     detail: str
+    resolves_to: str | None = None
+    hints: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
         return self.status in _OK
 
 
+# ---------------------------------------------------------------------------
+# Name resolution. Two questions used to hide inside `model in tags`, and only
+# one of them has a deterministic answer:
+#
+#   Would a request with this name be served?  Ollama resolves a bare name to
+#   `:latest`, drops `library/` and the registry prefix, and is case-insensitive;
+#   an OpenAI-compatible id must match exactly. That is what the backends do,
+#   so that is the rule — 42/42 against a hand-labeled corpus of real shapes
+#   (`~/ai/review/typesafe/corpus/model-names.jsonl`), where exact membership
+#   scored 34/42: `qwen2.5-coder` against `qwen2.5-coder:latest` read not-served
+#   and the operator was told their binding was broken.
+#
+#   Which served name did the operator *mean*?  A judgment, not a rule. It is
+#   offered only as a "did you mean" hint on a not-served result, from a
+#   deliberately recall-leaning base-name comparison that a dev-time labeling
+#   pass backed on 24 of the 26 not-served corpus rows. The status is never
+#   changed by it (RL-007: a guess informs the operator; it never decides).
+# ---------------------------------------------------------------------------
+_OLLAMA_PREFIXES = ("registry.ollama.ai/library/", "library/")
+
+
+def _ollama_key(name: str) -> str:
+    """The name Ollama would look up: lower-cased, registry/library prefix
+    dropped, bare name given `:latest`. A digest reference resolves only to
+    itself, so it is left untagged."""
+    n = name.strip().lower()
+    for prefix in _OLLAMA_PREFIXES:
+        if n.startswith(prefix):
+            n = n[len(prefix):]
+    if "@sha256:" in n or ":" in n:
+        return n
+    return f"{n}:latest"
+
+
+def _resolve_ollama(model: str, names: list[str]) -> str | None:
+    want = _ollama_key(model)
+    for name in names:
+        if _ollama_key(name) == want:
+            return name
+    return None
+
+
+def _base(name: str) -> str:
+    """Model base for hinting: org, tag and digest stripped, lower-cased,
+    non-alphanumerics dropped so `gemma4` meets `gemma-4-26b-it`."""
+    n = name.strip().lower().split("/")[-1].split("@")[0].split(":")[0]
+    return "".join(ch for ch in n if ch.isalnum())
+
+
+def hint_candidates(model: str, served: list[str]) -> tuple[str, ...]:
+    """Served names a not-served ``model`` probably meant. Recall-leaning on
+    purpose — a wrong hint on an already-failed check costs a glance; a missing
+    one costs a trip to /api/tags."""
+    want = _base(model)
+    if not want:
+        return ()
+    return tuple(name for name in served if _base(name).startswith(want))
+
+
+def _not_served(model: str, where: str, served: list[str]) -> ModelAvailability:
+    hints = hint_candidates(model, served)
+    if len(hints) == 1:
+        tail = f" — did you mean '{hints[0]}'?"
+    elif hints:
+        tail = " — similar names served: " + ", ".join(f"'{h}'" for h in hints) + " (ambiguous)"
+    else:
+        tail = " — not pulled on this node" if where == "/api/tags" else ""
+    return ModelAvailability(NOT_SERVED, f"{model} is not in {where}{tail}", hints=hints)
+
+
 def classify_ollama(model: str, *, tags: list[str], resident: list[str]) -> ModelAvailability:
     """Classify an Ollama-backed model from its ``/api/tags`` (on disk) and
-    ``/api/ps`` (resident) name lists."""
-    if model in resident:
-        return ModelAvailability(RESIDENT, f"{model} is resident")
-    if model in tags:
+    ``/api/ps`` (resident) name lists, resolving the name the way Ollama does."""
+    hit = _resolve_ollama(model, resident)
+    if hit is not None:
+        return ModelAvailability(RESIDENT, f"{model} is resident (as {hit})", resolves_to=hit)
+    hit = _resolve_ollama(model, tags)
+    if hit is not None:
         return ModelAvailability(
-            ON_DISK_COLD, f"{model} is on disk but not resident — it will cold-load (may stall)"
+            ON_DISK_COLD,
+            f"{model} is on disk (as {hit}) but not resident — it will cold-load (may stall)",
+            resolves_to=hit,
         )
-    return ModelAvailability(NOT_SERVED, f"{model} is not in /api/tags — not pulled on this node")
+    return _not_served(model, "/api/tags", tags)
 
 
 def classify_openai(model: str, *, served: list[str]) -> ModelAvailability:
     """Classify an OpenAI-compatible/vLLM model from its ``/v1/models`` list.
-    Residency is opaque here, so a listed model is 'served', not 'resident'."""
-    if model in served:
-        return ModelAvailability(SERVED, f"{model} is served (residency opaque via /v1/models)")
-    return ModelAvailability(NOT_SERVED, f"{model} is not in /v1/models")
+    Ids are exact (case included); residency is opaque here, so a listed model
+    is 'served', not 'resident'."""
+    wanted = model.strip()
+    if wanted in served:
+        return ModelAvailability(
+            SERVED, f"{model} is served (residency opaque via /v1/models)", resolves_to=wanted
+        )
+    return _not_served(model, "/v1/models", served)
 
 
 def _names(models: object) -> list[str]:
