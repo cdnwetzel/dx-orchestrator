@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 
 from dx.cli import build_parser
-from dx.cmd_verify import GuiConfigError, gui_target, verify_gui
+from dx.cmd_verify import (
+    GuiConfigError,
+    Verdict,
+    gui_target,
+    parse_vlm_reply,
+    verify_gui,
+)
 
 
 def test_target_comes_from_the_manifest():
@@ -150,8 +156,8 @@ class TestNoHostDefaults:
 
     def test_verify_gui_reports_config_error_rather_than_raising(self, empty_manifest):
         """cmd_merge calls this; it must degrade to a failed check, not a crash."""
-        passed, detail = verify_gui("anything")
-        assert passed is False
+        verdict, detail = verify_gui("anything")
+        assert verdict is Verdict.NO_VERDICT
         assert "config error" in detail
 
     def test_no_ssh_is_attempted_without_configuration(self, empty_manifest, monkeypatch):
@@ -159,7 +165,7 @@ class TestNoHostDefaults:
             "dx.cmd_verify.subprocess.run",
             lambda *a, **k: pytest.fail("ssh was invoked with no configured host"),
         )
-        assert verify_gui("anything")[0] is False
+        assert verify_gui("anything")[0] is Verdict.NO_VERDICT
 
 
 class TestCaptureMustBePng:
@@ -180,8 +186,8 @@ class TestCaptureMustBePng:
     def test_postscript_capture_is_rejected_and_names_the_fix(self, monkeypatch):
         ps = b"%!PS-Adobe-3.0\n%%Creator: ImageMagick\n"
         monkeypatch.setattr("dx.cmd_verify.subprocess.run", self._fake_ssh(ps))
-        passed, detail = verify_gui("anything")
-        assert passed is False
+        verdict, detail = verify_gui("anything")
+        assert verdict is Verdict.NO_VERDICT
         assert "capture error" in detail
         assert "not a PNG" in detail
         assert "png:-" in detail
@@ -193,10 +199,10 @@ class TestCaptureMustBePng:
 
         def fake_vlm(data, expected, endpoint, model, timeout_s=30):
             seen["data"] = data
-            return (True, "YES")
+            return (Verdict.MET, "YES")
 
         monkeypatch.setattr("dx.cmd_verify._verify_with_vlm", fake_vlm)
-        assert verify_gui("anything") == (True, "YES")
+        assert verify_gui("anything") == (Verdict.MET, "YES")
         assert seen["data"] == png
 
 
@@ -205,8 +211,9 @@ def test_capture_error_is_reported_not_raised(monkeypatch):
         raise RuntimeError("ssh: connect to host vlm.invalid port 22: No route to host")
 
     monkeypatch.setattr("dx.cmd_verify._capture_ssh", boom)
-    passed, detail = verify_gui("anything")
-    assert passed is False
+    verdict, detail = verify_gui("anything")
+    # No frame was judged, so this is not a NO — it is nothing.
+    assert verdict is Verdict.NO_VERDICT
     assert "capture error" in detail
     assert "No route to host" in detail
 
@@ -215,18 +222,26 @@ def test_vlm_yes_and_no_are_both_honoured(monkeypatch, tmp_path, capsys):
     shot = tmp_path / "screen.png"
     shot.write_bytes(b"\x89PNG\r\n\x1a\n fake")
 
-    for answer, expected_pass in (("YES — the dialog is shown", True), ("NO — blank", False)):
+    cases = (
+        ("YES — the dialog is shown", Verdict.MET, True),
+        ("NO — blank", Verdict.NOT_MET, False),
+        ("The dialog appears to be shown, possibly.", Verdict.NO_VERDICT, False),
+    )
+    for answer, verdict, expected_pass in cases:
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, timeout_s=30, _a=answer: (_a.startswith("YES"), _a),
+            lambda png, exp, ep, model, timeout_s=30, _v=verdict, _a=answer: (_v, _a),
         )
         args = build_parser().parse_args(
-            ["verify-gui", "--screenshot", str(shot), "--json"]
+            ["verify-gui", "--screenshot", str(shot), "--json", "--no-evidence"]
         )
         with pytest.raises(SystemExit) as exc:
             args.func(args)
         payload = json.loads(capsys.readouterr().out)
         assert payload["passed"] is expected_pass
+        assert payload["verdict"] == verdict.value
+        # NO_VERDICT is not a pass and not a NO: exit 1 either way, and the
+        # payload says which it was.
         assert exc.value.code == (0 if expected_pass else 1)
 
 
@@ -262,7 +277,7 @@ class TestVerifyGuiEmitsEvidence:
         shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+            lambda png, exp, ep, model, timeout_s=30: (Verdict.MET, "YES matches"),
         )
         ev = tmp_path / "ev"
         args = build_parser().parse_args(
@@ -286,7 +301,7 @@ class TestVerifyGuiEmitsEvidence:
         shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+            lambda png, exp, ep, model, timeout_s=30: (Verdict.MET, "YES matches"),
         )
         ev = tmp_path / "ev"
         args = build_parser().parse_args(
@@ -305,7 +320,7 @@ class TestVerifyGuiEmitsEvidence:
         shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, timeout_s=30: (False, "NO it is blank"),
+            lambda png, exp, ep, model, timeout_s=30: (Verdict.NOT_MET, "NO it is blank"),
         )
         ev = tmp_path / "ev"
         args = build_parser().parse_args(
@@ -337,7 +352,7 @@ class TestObserverAttestation:
     def test_verified_provenance_is_recorded_in_the_bundle(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+            lambda png, exp, ep, model, timeout_s=30: (Verdict.MET, "YES matches"),
         )
         prov = {"key_id": "obs-1", "frame_hash": "b" * 64,
                 "signature_verified": True, "frame_hash_matches": True}
@@ -355,7 +370,7 @@ class TestObserverAttestation:
     def test_failure_to_attest_fails_closed_with_no_bundle(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+            lambda png, exp, ep, model, timeout_s=30: (Verdict.MET, "YES matches"),
         )
         def boom(png):
             from dx.observer import ObserverError
@@ -375,7 +390,7 @@ class TestObserverAttestation:
         monkeypatch.delenv("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH", raising=False)
         monkeypatch.setattr(
             "dx.cmd_verify._verify_with_vlm",
-            lambda png, exp, ep, model, timeout_s=30: (True, "YES matches"),
+            lambda png, exp, ep, model, timeout_s=30: (Verdict.MET, "YES matches"),
         )
         ev = tmp_path / "ev"
         args = self._args(tmp_path, ev)
@@ -384,3 +399,149 @@ class TestObserverAttestation:
         payload = json.loads(capsys.readouterr().out)
         assert exc.value.code == 1
         assert "PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH" in payload["error"]
+
+
+class TestParseVlmReply:
+    """The prompt asks for YES or NO as the first word. dx reads that word and
+    nothing else — a reply that breaks the contract is `no_verdict`, never a
+    guess. Cases come from `~/ai/review/typesafe/corpus/seed.jsonl`, where the
+    old `startswith("YES")` scored 0.67 and collapsed every no-verdict reply
+    into NO.
+    """
+
+    @pytest.mark.parametrize(
+        "reply, verdict",
+        [
+            ("YES - the calculator shows 42.", Verdict.MET),
+            ("Yes, the calculator window is open.", Verdict.MET),
+            ("yes the dialog is there", Verdict.MET),
+            ("**YES** — calculator visible, result 42.", Verdict.MET),
+            ("NO - the calculator shows 24, not 42.", Verdict.NOT_MET),
+            ("No, there is no calculator window.", Verdict.NOT_MET),
+            ("No. The dialog is open, but focus is elsewhere.", Verdict.NOT_MET),
+        ],
+    )
+    def test_first_word_decides(self, reply, verdict):
+        assert parse_vlm_reply(reply) == (verdict, "")
+
+    def test_yesterday_is_not_yes(self):
+        """The `startswith("YES")` bug: `YESTERDAY` passed."""
+        verdict, reason = parse_vlm_reply("Yesterday's result is still displayed; the value is 0.")
+        assert verdict is Verdict.NO_VERDICT
+        assert "did not open with YES or NO" in reason
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "The screen does show the calculator with 42 in the display.",
+            "Answer: YES. The calculator displays 42.",
+            "Correct, the calculator is open and shows 42.",
+            "It seems possible that the number is 42, though it could be 47.",
+            "Not exactly — a dialog is open but I cannot tell which control is focused.",
+            "I'm sorry, but I can't help with that request.",
+        ],
+    )
+    def test_prose_is_not_interpreted(self, reply):
+        """Whether the prose *sounds* like a yes is not dx's call to make."""
+        verdict, reason = parse_vlm_reply(reply)
+        assert verdict is Verdict.NO_VERDICT
+        assert reason == "reply did not open with YES or NO"
+
+    def test_empty_and_transport_error_are_no_verdict(self):
+        assert parse_vlm_reply("") == (Verdict.NO_VERDICT, "empty reply")
+        assert parse_vlm_reply("   \n") == (Verdict.NO_VERDICT, "empty reply")
+        assert parse_vlm_reply("VLM error: read timed out") == (Verdict.NO_VERDICT, "transport error")
+
+    def test_contradiction_is_no_verdict_not_a_pass(self):
+        """`YES` followed by `No dialog is visible` was a PASSED receipt."""
+        verdict, reason = parse_vlm_reply("YES\n\nNo dialog is visible; the editor fills the screen.")
+        assert verdict is Verdict.NO_VERDICT
+        assert "contradictory" in reason
+        verdict, reason = parse_vlm_reply("NO. Yes there is a window but not the right one.")
+        assert verdict is Verdict.NO_VERDICT
+        assert "contradictory" in reason
+
+    def test_never_returns_a_fourth_value(self):
+        for reply in ("YES", "NO", "", "maybe", "YES NO", "**no**"):
+            assert parse_vlm_reply(reply)[0] in Verdict
+
+
+class TestNoVerdictInTheReceipt:
+    """A silent, erroring or prose-only model is not a failed screen. The bundle
+    has to keep "the model said no" and "the model did not answer" apart, and
+    `passed` may be true for exactly one of the three verdicts."""
+
+    def _run(self, monkeypatch, tmp_path, capsys, verdict, reply):
+        shot = tmp_path / "screen.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (verdict, reply),
+        )
+        ev = tmp_path / "ev"
+        args = build_parser().parse_args(
+            ["verify-gui", "--screenshot", str(shot), "--json", "--evidence-dir", str(ev)]
+        )
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        manifest = json.loads((Path(payload["evidence"]) / "manifest.json").read_text())
+        return exc.value.code, payload, manifest
+
+    def test_no_verdict_is_recorded_as_such_and_does_not_pass(self, monkeypatch, tmp_path, capsys):
+        code, payload, m = self._run(
+            monkeypatch, tmp_path, capsys, Verdict.NO_VERDICT, "The image appears to be blank."
+        )
+        assert code == 1
+        assert payload["verdict"] == "no_verdict"
+        assert m["result"]["passed"] is False
+        assert m["gui_verification"]["verdict"] == "no_verdict"
+        assert m["checks"]["verdict_reached"]["ok"] is False
+        assert m["checks"]["expectation_met"]["ok"] is False
+        assert m["checks"]["vlm_answered"]["ok"] is True  # the model *did* reply
+
+    def test_a_real_no_reaches_a_verdict(self, monkeypatch, tmp_path, capsys):
+        code, payload, m = self._run(monkeypatch, tmp_path, capsys, Verdict.NOT_MET, "NO — blank")
+        assert code == 1
+        assert m["gui_verification"]["verdict"] == "not_met"
+        assert m["checks"]["verdict_reached"]["ok"] is True
+        assert m["checks"]["expectation_met"]["ok"] is False
+
+    def test_passed_is_true_only_for_met(self, monkeypatch, tmp_path, capsys):
+        for verdict in Verdict:
+            _, _, m = self._run(monkeypatch, tmp_path, capsys, verdict, "whatever")
+            assert m["result"]["passed"] is (verdict is Verdict.MET)
+
+    def test_human_output_marks_no_verdict_distinctly(self, monkeypatch, tmp_path, capsys):
+        shot = tmp_path / "screen.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
+        monkeypatch.setattr(
+            "dx.cmd_verify._verify_with_vlm",
+            lambda png, exp, ep, model, timeout_s=30: (Verdict.NO_VERDICT, ""),
+        )
+        args = build_parser().parse_args(
+            ["verify-gui", "--screenshot", str(shot), "--no-evidence"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        out = capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "no verdict" in out and "empty reply" in out
+        assert "❌" not in out
+
+
+def test_merge_records_no_verdict_distinctly_from_a_no(monkeypatch, tmp_path, capsys):
+    """`dx merge --verify-gui` fails the advisory check either way (RL-007 —
+    the signature is the gate), but the record must say which it was."""
+    monkeypatch.setenv("DX_LEDGER_REPO", str(tmp_path / "absent"))
+    monkeypatch.setattr(
+        "dx.cmd_merge.verify_gui",
+        lambda expected: (Verdict.NO_VERDICT, "VLM error: read timed out"),
+    )
+    args = build_parser().parse_args(["merge", "T-TEST", "--verify-gui", "--no-evidence"])
+    with pytest.raises(SystemExit) as exc:
+        args.func(args)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "no verdict" in err
+    assert "GUI verification failed" not in err

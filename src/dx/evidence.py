@@ -72,11 +72,16 @@ GUI_SCHEMA = "dx.gui_verification.v1"
 #: `compliance-privacy` judgement, so changing it is a policy change.
 GUI_DEFAULT_BOUNDARY: tuple[str, ...] = (
     "This bundle records that a vision-language model was shown one screenshot "
-    "and returned a YES/NO answer. That answer is advisory evidence, never a "
+    "and asked for a YES/NO verdict. Its reply is advisory evidence, never a "
     "proof.",
-    "`result.passed` true means the model's reply began with YES for the stated "
+    "`result.passed` true means the reply opened with the word YES for the stated "
     "expectation. It does not mean the GUI is correct — only that one model said "
     "so, about one frame.",
+    "The prompt asks the model to answer with YES or NO as its first word. dx "
+    "reads that word and nothing else; it does not interpret prose.",
+    "A `verdict` of `no_verdict` means the reply did not open with YES or NO — it "
+    "was empty, an error, a refusal, or prose. This bundle then asserts nothing "
+    "about the screen, and `result.passed` is false.",
     "The screenshot under `artifacts/` is the exact bytes the model was shown. "
     "The model's reasoning beyond its short reply is not recorded.",
     "This is not a merge gate. `dx merge` requires a GPG signature regardless of "
@@ -238,6 +243,9 @@ class GuiVerificationBundle:
     vlm_model: str
     vlm_endpoint: str
     screenshot: bytes
+    #: "met" | "not_met" | "no_verdict" — what the reply asserted. ``passed``
+    #: is true only for "met"; the third value is why this is not a boolean.
+    verdict: str = "no_verdict"
     screenshot_name: str = "screenshot.png"
     #: how the frame was obtained (ssh host, --screenshot <path>, psoperator)
     capture: str | None = None
@@ -463,6 +471,7 @@ def _render_gui_readme(bundle: GuiVerificationBundle, generated_utc: str) -> str
         "## GUI verification",
         "",
         f"- **Expected:** {bundle.expected}",
+        f"- **Verdict:** `{bundle.verdict}`",
         f"- **VLM answer:** {bundle.vlm_answer}",
         f"- **VLM model:** `{bundle.vlm_model}`",
         f"- **VLM endpoint:** `{bundle.vlm_endpoint}`",
@@ -511,6 +520,7 @@ def write_gui_bundle(
         "checks": {k: v.as_json() for k, v in bundle.checks.items()},
         "gui_verification": {
             "expected": bundle.expected,
+            "verdict": bundle.verdict,
             "vlm_answer": bundle.vlm_answer,
             "vlm_model": bundle.vlm_model,
             "vlm_endpoint": bundle.vlm_endpoint,

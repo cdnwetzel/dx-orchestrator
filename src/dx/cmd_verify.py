@@ -11,9 +11,11 @@ import argparse
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,65 @@ from .evidence import (
 )
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+class Verdict(Enum):
+    """What the vision model's reply actually asserted.
+
+    Three values, not two. A boolean forces "the model did not answer" into
+    "the model said no", and a receipt that records a silent model as a
+    failed screen is evidence of a defect that was never observed.
+    """
+
+    MET = "met"  # the reply opened with YES
+    NOT_MET = "not_met"  # the reply opened with NO
+    NO_VERDICT = "no_verdict"  # the model did not answer the question asked
+
+
+# Markdown wrapping a model may put around its first word: emphasis, code
+# spans, headings, quotes, brackets. Formatting, not content — stripping it
+# does not change what the model asserted.
+_MARKDOWN_LEAD_RE = re.compile(r"^[\s*_`#>\"'\[\(]+")
+_FIRST_WORD_RE = re.compile(r"[A-Za-z]+")
+
+
+def parse_vlm_reply(reply: str) -> tuple[Verdict, str]:
+    """Read the verdict the prompt asked for, and nothing else.
+
+    The prompt says: answer with YES or NO, then a brief reason. This reads the
+    first *word* of the reply after markdown wrapping, and compares the whole
+    word — so ``YESTERDAY`` is not ``YES``, which ``startswith`` got wrong. A
+    reply that does not open with either word broke the contract, and that is
+    reported as :attr:`Verdict.NO_VERDICT` with the reason, never guessed at:
+    dx does not interpret prose (RL-007 — the model drafts, code decides).
+
+    A reply whose verdict word is immediately contradicted by the reason's
+    first word (``YES\\n\\nNo dialog is visible``) is also ``NO_VERDICT``. Erring
+    toward "no verdict" costs a re-run; erring toward a pass is a false
+    attestation in a receipt.
+
+    Returns ``(verdict, reason)`` where ``reason`` explains a ``NO_VERDICT``
+    and is empty otherwise.
+    """
+    if not reply.strip():
+        return Verdict.NO_VERDICT, "empty reply"
+    if reply.startswith("VLM error"):
+        return Verdict.NO_VERDICT, "transport error"
+    text = _MARKDOWN_LEAD_RE.sub("", reply.strip())
+    words = _FIRST_WORD_RE.findall(text)
+    if not words:
+        return Verdict.NO_VERDICT, "reply did not open with YES or NO"
+    first = words[0].upper()
+    second = words[1].upper() if len(words) > 1 else ""
+    if first == "YES":
+        if second == "NO":
+            return Verdict.NO_VERDICT, "reply opened with YES then NO — contradictory"
+        return Verdict.MET, ""
+    if first == "NO":
+        if second == "YES":
+            return Verdict.NO_VERDICT, "reply opened with NO then YES — contradictory"
+        return Verdict.NOT_MET, ""
+    return Verdict.NO_VERDICT, "reply did not open with YES or NO"
 
 #: Kept in sync with cmd_run.DEFAULT_EVIDENCE_ROOT — receipts live outside any
 #: repo under edit. Duplicated (three trivial lines) rather than imported so the
@@ -193,7 +254,9 @@ def _verify_with_vlm(
     endpoint: str,
     model: str,
     timeout_s: int = DEFAULT_VLM_TIMEOUT_S,
-) -> tuple[bool, str]:
+) -> tuple[Verdict, str]:
+    """Ask the VLM and return ``(verdict, raw reply)``. Never raises: a
+    transport failure is a reply of ``VLM error: …`` and a ``NO_VERDICT``."""
     import requests
 
     img_b64 = base64.b64encode(png_data).decode("utf-8")
@@ -211,22 +274,23 @@ def _verify_with_vlm(
         output = (resp.json().get("response") or "").strip()
         # RL-007: this is advisory evidence, never a gate on its own. dx merge
         # requires a GPG signature regardless of what the model says here.
-        passed = output.upper().startswith("YES")
-        return (passed, output)
+        verdict, _ = parse_vlm_reply(output)
+        return (verdict, output)
     except Exception as exc:
-        return (False, f"VLM error: {exc}")
+        return (Verdict.NO_VERDICT, f"VLM error: {exc}")
 
 
-def verify_gui(expected: str) -> tuple[bool, str]:
-    """Capture over SSH and verify. Returns (passed, detail); never raises."""
+def verify_gui(expected: str) -> tuple[Verdict, str]:
+    """Capture over SSH and verify. Returns (verdict, detail); never raises.
+    Nothing to judge — no config, no frame — is ``NO_VERDICT``, not a NO."""
     try:
         target = gui_target(require_ssh=True)
     except (GuiConfigError, FileNotFoundError) as exc:
-        return (False, f"config error: {exc}")
+        return (Verdict.NO_VERDICT, f"config error: {exc}")
     try:
         png_data = _capture_ssh(target.ssh_host or "", target.screenshot_cmd)
     except Exception as exc:
-        return (False, f"capture error: {exc}")
+        return (Verdict.NO_VERDICT, f"capture error: {exc}")
     return _verify_with_vlm(
         png_data, expected, target.vlm_endpoint, target.vlm_model, target.vlm_timeout_s
     )
@@ -276,14 +340,23 @@ def _emit_gui_evidence(
     target: GuiTarget,
     png: bytes,
     capture: str,
-    passed: bool,
+    verdict: Verdict,
     output: str,
     observer: dict[str, object] | None = None,
 ) -> Path:
+    passed = verdict is Verdict.MET
     answered = not output.startswith("VLM error")
+    _, reason = parse_vlm_reply(output)
     checks = {
         "frame_captured": Check(ok=True, path="artifacts/screenshot.png", detail=capture),
         "vlm_answered": Check(ok=answered, detail=target.vlm_model),
+        # Distinct from expectation_met: a model that returned prose, an error
+        # or nothing did not fail the screen — it failed to judge it. A receipt
+        # must keep the two apart or every silent model reads as a defect.
+        "verdict_reached": Check(
+            ok=verdict is not Verdict.NO_VERDICT,
+            detail=reason or verdict.value,
+        ),
         "expectation_met": Check(ok=passed, detail=output[:200]),
     }
     if observer is not None:
@@ -294,6 +367,7 @@ def _emit_gui_evidence(
         task_id=args.task,
         title=f"GUI verification — {args.task}",
         passed=passed,
+        verdict=verdict.value,
         expected=args.expected,
         vlm_answer=output,
         vlm_model=target.vlm_model,
@@ -332,15 +406,18 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 print(f"ERROR: {msg}", file=sys.stderr)
             sys.exit(1)
 
-    passed, output = _verify_with_vlm(
+    verdict, output = _verify_with_vlm(
         png_data, args.expected, target.vlm_endpoint, target.vlm_model, target.vlm_timeout_s
     )
+    # Only MET passes. NO_VERDICT is not a pass and not a NO: the exit code
+    # stays 1 either way, and the receipt says which it was.
+    passed = verdict is Verdict.MET
 
     bundle_path: Path | None = None
     if not args.no_evidence:
         try:
             bundle_path = _emit_gui_evidence(
-                args, target, png_data, capture, passed, output, observer
+                args, target, png_data, capture, verdict, output, observer
             )
         except EvidenceError as exc:
             # Same stance as dx run: a receipted verification that produced no
@@ -353,13 +430,21 @@ def cmd_verify(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     if args.json:
-        payload: dict[str, object] = {"passed": passed, "output": output}
+        payload: dict[str, object] = {
+            "passed": passed,
+            "verdict": verdict.value,
+            "output": output,
+        }
         if bundle_path is not None:
             payload["evidence"] = str(bundle_path)
         print(json.dumps(payload))
     else:
-        marker = "✅" if passed else "❌"
-        print(f"{marker} GUI verification: {output}")
+        if verdict is Verdict.NO_VERDICT:
+            _, reason = parse_vlm_reply(output)
+            print(f"❓ GUI verification: no verdict — {reason}: {output!r}")
+        else:
+            marker = "✅" if passed else "❌"
+            print(f"{marker} GUI verification: {output}")
         if bundle_path is not None:
             print(f"🧾 Evidence: {bundle_path}")
 

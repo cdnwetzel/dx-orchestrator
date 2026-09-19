@@ -12,6 +12,7 @@ import pytest
 
 from dx import cli
 from dx.cli import build_parser
+from dx.cmd_verify import Verdict
 from dx.config_loader import DEFAULT_PSOPERATOR_REPO, get_psoperator_repo
 
 
@@ -154,11 +155,12 @@ class TestVlmCall:
     @pytest.mark.parametrize(
         "reply,expected",
         [
-            ("YES it matches", True),
-            ("yes it matches", True),
-            ("NO it is blank", False),
-            ("Maybe?", False),
-            ("", False),
+            ("YES it matches", Verdict.MET),
+            ("yes it matches", Verdict.MET),
+            ("NO it is blank", Verdict.NOT_MET),
+            # Neither is a NO: the model did not answer the question asked.
+            ("Maybe?", Verdict.NO_VERDICT),
+            ("", Verdict.NO_VERDICT),
         ],
     )
     def test_only_an_affirmative_answer_passes(self, posted, reply, expected):
@@ -169,8 +171,8 @@ class TestVlmCall:
         """RL-007: an unreachable model must fail closed, and must not crash the
         caller — dx merge treats this as one gate among several."""
         posted["state"]["ok"] = False
-        passed, detail = self._verify()
-        assert passed is False
+        verdict, detail = self._verify()
+        assert verdict is Verdict.NO_VERDICT
         assert "VLM error" in detail
 
 
