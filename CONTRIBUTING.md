@@ -97,3 +97,10 @@ From `VISION.md`, and not negotiable:
 
 Explain *why* in the commit body — the diff already shows what. For a fix, say
 what the bug let through. Small, reviewable commits; one concern each.
+
+**Policy text gets its own PR.** The `boundary` blocks in `evidence.py` state
+what a receipt does and does not claim; that wording is a compliance-privacy
+judgement Anchored to a named human, not a docstring. Change it in a PR of its
+own, so the decision is one row on `main` and one review — a squash-merged
+feature PR folds it into the code change it describes, which is what happened
+in #29.
