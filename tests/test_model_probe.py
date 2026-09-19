@@ -362,6 +362,20 @@ def test_a_digest_reference_resolves_only_to_itself():
     a = classify_ollama("qwen2.5-coder@sha256:0123", tags=["qwen2.5-coder:7b"], resident=[])
     assert a.status == NOT_SERVED
     assert a.hints == ("qwen2.5-coder:7b",)
+    # and does resolve when the node lists that exact digest
+    b = classify_ollama(
+        "qwen2.5-coder@sha256:0123", tags=["qwen2.5-coder@sha256:0123"], resident=[]
+    )
+    assert b.status == "on-disk-cold" and b.resolves_to == "qwen2.5-coder@sha256:0123"
+
+
+def test_hint_base_comparison_is_symmetric():
+    """The long HF-style name in the manifest against a short Ollama tag is the
+    same near-miss as the reverse; both directions must hint."""
+    a = classify_ollama("gemma-4-26b-it", tags=["gemma4:26b"], resident=[])
+    assert a.status == NOT_SERVED and a.hints == ("gemma4:26b",)
+    b = classify_openai("gemma4", served=["google/gemma-4-26b-it"])
+    assert b.status == NOT_SERVED and b.hints == ("google/gemma-4-26b-it",)
 
 
 def test_a_hint_never_promotes_the_status():

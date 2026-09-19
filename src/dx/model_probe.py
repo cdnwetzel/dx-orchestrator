@@ -117,7 +117,12 @@ def hint_candidates(model: str, served: list[str]) -> tuple[str, ...]:
     want = _base(model)
     if not want:
         return ()
-    return tuple(name for name in served if _base(name).startswith(want))
+    # Either side may be the longer one: a manifest saying `gemma-4-26b-it`
+    # against a node serving `gemma4:26b` is the same near-miss as the reverse.
+    return tuple(
+        name for name in served
+        if (have := _base(name)) and (have.startswith(want) or want.startswith(have))
+    )
 
 
 def _not_served(model: str, where: str, served: list[str]) -> ModelAvailability:
