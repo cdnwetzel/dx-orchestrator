@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,13 @@ class RoleRoute:
     #: normalisation. Non-None means dx corrected the operator's URL and the
     #: caller is expected to say so out loud.
     endpoint_raw: str | None = None
+    #: Seconds pxx may wait on this role's HTTP round trip. Per role, because
+    #: the reason for a long wait is per role: a model that is on disk but not
+    #: resident pays a cold load on its first call, and a box without the memory
+    #: to keep it resident pays that on every first call. Raising the ceiling is
+    #: the right answer there -- keep-alive would mean holding memory the box
+    #: does not have. None leaves pxx's own default (120s) alone.
+    timeout_s: float | None = None
 
 
 DEFAULT_CONFIG_PATH = Path("~/.config/dx/hardware_manifest.yml").expanduser()
@@ -135,11 +143,24 @@ def get_route_for_role(role_slug: str) -> RoleRoute:
     role_cfg = _as_mapping(roles.get(role_slug), f"roles.{role_slug}", path)
     configured = str(role_cfg.get("endpoint") or default_ep)
     endpoint, corrected = normalize_endpoint(configured)
+    raw_timeout = role_cfg.get("timeout_s", default_cfg.get("timeout_s"))
+    timeout_s: float | None = None
+    if raw_timeout is not None:
+        try:
+            parsed = float(raw_timeout)
+        except (TypeError, ValueError):
+            parsed = -1.0
+        # Reject non-positive/non-finite rather than passing them on: pxx warns
+        # and falls back to its default anyway, and a silently wrong timeout on
+        # the wrong knob is worse than the default (pxx _timeout_from_env).
+        timeout_s = parsed if parsed > 0 and math.isfinite(parsed) else None
+
     return RoleRoute(
         endpoint=endpoint,
         model=role_cfg.get("model") or default_model,
         provider=role_cfg.get("provider") or default_provider,
         endpoint_raw=configured if corrected else None,
+        timeout_s=timeout_s,
     )
 
 
@@ -198,6 +219,7 @@ def validate_manifest() -> None:
         _as_mapping(roles.get(slug), f"roles.{slug}", path)
     _as_mapping(cfg.get("gui_verification"), "gui_verification", path)
     _as_mapping(cfg.get("psoperator"), "psoperator", path)
+    _as_mapping(cfg.get("ledger"), "ledger", path)
 
 
 def get_gui_config() -> dict[str, Any]:
@@ -220,17 +242,39 @@ DEFAULT_LEDGER_REPO = Path("~/ai/devswarm-ledger-reference").expanduser()
 DEFAULT_ROLES_PATH = Path("~/ai/sdlc-agent-roles/skills/sdlc-role/roles").expanduser()
 
 
+def get_ledger_config() -> dict[str, Any]:
+    return _as_mapping(load_config().get("ledger"), "ledger", get_config_path())
+
+
 def get_ledger_repo_path() -> Path:
     """Path to a local clone of a devswarm-ledger-format repository.
 
-    Defaults to ~/ai/devswarm-ledger-reference — the public reference ledger,
-    which setup_dependencies.sh clones and which exercises every RL-003 gate
-    with synthetic rows. Point DX_LEDGER_REPO at your own operational ledger to
-    gate real merges; the reference ledger attests to no real work.
+    Resolution order: DX_LEDGER_REPO, then `ledger.repo` in the manifest, then
+    ~/ai/devswarm-ledger-reference — matching get_psoperator_repo below.
+
+    The default is the PUBLIC REFERENCE ledger, which exercises every RL-003
+    gate against synthetic rows and **attests to no real work**. That makes the
+    default a safe starting point and a dangerous resting point: a merge gated
+    against it verifies a signature over data nobody did.
+
+    The manifest step exists because env-only resolution fails in the way that
+    matters least visibly. An operator exports DX_LEDGER_REPO in one shell, sees
+    a green `dx doctor`, and every later shell — a systemd unit, a cron job, a
+    bridge service, a new terminal — silently falls back to the reference
+    ledger. Nothing errors. `dx merge` just gates real work against synthetic
+    history. A file the operator can point at, and that doctor prints, removes a
+    class of failure that a correct export cannot.
     """
-    return Path(
-        os.environ.get("DX_LEDGER_REPO", str(DEFAULT_LEDGER_REPO))
-    ).expanduser()
+    env = os.environ.get("DX_LEDGER_REPO")
+    if env:
+        return Path(env).expanduser()
+    try:
+        configured = get_ledger_config().get("repo")
+    except FileNotFoundError:
+        return DEFAULT_LEDGER_REPO
+    if configured:
+        return Path(str(configured)).expanduser()
+    return DEFAULT_LEDGER_REPO
 
 
 DEFAULT_PSOPERATOR_REPO = Path("~/ai/psoperator").expanduser()

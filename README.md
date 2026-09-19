@@ -205,10 +205,11 @@ file ends up saying what actually runs.
 | `DX_CONFIG` | Path to the hardware manifest |
 | `DX_ROLES_PATH` | Role-card directory (also settable as `roles_path:` in the manifest) |
 | `DX_EVIDENCE_DIR` | Where evidence bundles are written (default `~/.local/state/dx/evidence`) |
-| `DX_LEDGER_REPO` | Path to a ledger repo — set this to your own operational ledger; the default is the public reference one |
+| `DX_LEDGER_REPO` | Path to a ledger repo — set this to your own operational ledger; the default is the public reference one (also settable as `ledger.repo` in the manifest, which survives the shell it was typed in) |
 | `DX_VLM_ENDPOINT` / `DX_VLM_MODEL` | GUI verification model endpoint and name |
 | `DX_VLM_TIMEOUT` | Seconds to wait on the VLM (default 30; manifest: `gui_verification.timeout_s`) |
 | `DX_GUI_SSH_HOST` | Host to capture screenshots from |
+| `PXX_NATIVE_TIMEOUT` | Set by `dx run` from the route's `timeout_s` when the manifest declares one, so pxx waits long enough for a model that is on disk but not resident to cold-load. Left alone otherwise, so pxx's own default stands |
 | `PXX_API_KEY` | Credential for an OpenAI-compatible endpoint — the same key `pxx` uses; `dx doctor` sends it when probing model availability |
 | `PSOPERATOR_REPO` / `PSOPERATOR_SNAPSHOT_DIR` | PSOperator clone and snapshot locations |
 | `PSOPERATOR_OBSERVER_PORT` / `PSOPERATOR_GATEKEEPER_PORT` / `PSOPERATOR_EXECUTOR_PORT` | PSOperator service ports (manifest: `psoperator.*_port`) |

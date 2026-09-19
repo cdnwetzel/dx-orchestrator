@@ -323,6 +323,12 @@ def cmd_run(args: argparse.Namespace) -> None:
         env["PXX_MODEL"] = route.model
     if route.provider:
         env["PXX_PROVIDER"] = route.provider
+    if route.timeout_s:
+        # PXX_NATIVE_TIMEOUT is the base knob; pxx's review_timeout() falls back
+        # to it when PXX_REVIEW_TIMEOUT is unset, so one manifest value covers
+        # the agent round and the review round. Set only when the manifest asks,
+        # so pxx's own default stays in force otherwise.
+        env["PXX_NATIVE_TIMEOUT"] = str(route.timeout_s)
 
     pxx_bin = _resolve_pxx()
     if pxx_bin is None:
