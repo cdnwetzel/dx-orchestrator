@@ -29,7 +29,7 @@ attacker in the picture. Three such bugs shipped in 0.2.0 and were fixed in
 | Approval keys | **Never harness-reachable** (RL-010). `dx` verifies signatures; it never creates them, and it never holds a passphrase. Signing happens on a trusted terminal, outside any agent context. |
 | The keyring | `dx merge` imports registered public keys into a scratch `--homedir` per invocation. It never reads or writes the user's `~/.gnupg`. |
 | The ledger | `cdnwetzel/devswarm-ledger` is authoritative. `dx` never computes chain state itself; it shells out to that repo's own `tools/verify_chain.py` and surfaces the result unchanged. |
-| Local models | **Never a gate** (RL-007). The GUI verifier's answer is advisory evidence recorded alongside a decision; it cannot make one. Every gate is regex, YAML, or GPG. |
+| Local models | **Never a gate** (RL-007). The GUI verifier's answer is advisory evidence recorded alongside a decision. It can refuse a merge when `--verify-gui` is requested; it can never approve one. Every gate that grants is regex, YAML, or GPG. |
 | Inference endpoints | Treated as untrusted output sources. Model output is written to files under `pxx`'s control and reviewed like any other diff. |
 | The network | `dx` never listens on a port and never sends telemetry. All connections are outbound to endpoints you configure. |
 
@@ -49,7 +49,8 @@ Stated plainly, because a gate that overstates its coverage is worse than none:
   not analyse generated code for vulnerabilities — that is the reviewer's job,
   and the reason a human signature is required at all.
 - **The GUI verifier's judgement.** A vision model can be wrong or fooled. It is
-  never the sole basis for a merge (RL-007).
+  never the sole basis for a merge (RL-007): with `--verify-gui` its NO — or its
+  silence — stops a merge, but its YES grants nothing without the signature.
 - **Anything after `--force`.** `--force` bypasses every gate by design, for
   emergency rollback. It announces itself on stderr; it does not stop you.
 
@@ -68,10 +69,11 @@ survive that:
 - **The approval's provenance is only as good as its key.** The gate proves a
   registered, currently-valid key signed the current head. Whether that key was
   generated to the RL-010 standard — interactively, by the accountable human,
-  unreachable by any harness — is a property of your process, not something dx
-  can check.
+  unreachable by any harness — is a property of your process, not something
+  `dx merge` can check. Staged actions are the exception: their approval
+  records the mechanism derived from the signing key's actual residency
+  (`dx.approval_key`), and a software key claiming the card standard is refused.
 
-`dx verify-gui` remains unexercised against a live desktop.
 
 ## Verifying a release
 
