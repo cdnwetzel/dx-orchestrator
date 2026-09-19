@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from ._argtypes import SubParsers
-from .cmd_verify import verify_gui
+from .cmd_verify import Verdict, verify_gui
 from .config_loader import get_ledger_repo_path
 from .evidence import (
     Check,
@@ -273,8 +273,14 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
     if args.verify_gui:
         _info("📷 Running GUI verification...")
         expected = args.expected or "The GUI shows the correct result."
-        passed, output = verify_gui(expected)
-        rec["gui"] = {"verified": passed, "answer": output}
+        verdict, output = verify_gui(expected)
+        passed = verdict is Verdict.MET
+        rec["gui"] = {"verified": passed, "verdict": verdict.value, "answer": output}
+        if verdict is Verdict.NO_VERDICT:
+            # Not a NO: the model did not answer. The advisory check still
+            # fails the merge, and the record says the screen was not judged.
+            rec["failure"] = "gui_verification_no_verdict"
+            _fail(f"GUI verification reached no verdict: {output}")
         if not passed:
             rec["failure"] = "gui_verification_failed"
             _fail(f"GUI verification failed: {output}")

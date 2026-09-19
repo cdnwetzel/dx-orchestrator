@@ -89,6 +89,24 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`dx verify-gui` read the vision model's reply with `startswith("YES")`, so
+  "no answer" and "no" were the same bit.** A reply of `Yesterday's result is
+  still displayed` passed; `**YES**` and `Answer: YES.` failed; an empty reply, a
+  transport error, a refusal and a real NO all produced identical `FAILED`
+  receipts. Against a 24-reply hand-labeled corpus the parser scored 0.67 and
+  recorded 8 no-verdict replies as failed screens. The verdict is now
+  three-valued — `met`, `not_met`, `no_verdict` — read strictly from the first
+  word the prompt asked for, after markdown wrapping; a reply that does not open
+  with YES or NO, or opens with one and immediately says the other, is
+  `no_verdict` with the reason recorded. dx does not interpret prose (RL-007: the
+  model drafts, code decides). `result.passed` is true only for `met`; the bundle
+  gains `gui_verification.verdict` and a `verdict_reached` check so a silent model
+  is never evidence of a defect; `--json` gains `verdict`; `dx merge --verify-gui`
+  records `gui.verdict` and reports "no verdict" as its own failure. Exit codes
+  are unchanged. `verify_gui()` and `_verify_with_vlm()` now return
+  `(Verdict, str)`. Measured with `~/ai/review/typesafe/` (DevSwarmX decision
+  0017): Jev labels the corpus at dev time; the deterministic parser ships.
+
 - **`RELEASE_READINESS.md` carried a stale card count of 38 against the real
   40-card deck, and the count guard could not see it.** The guard had already been widened once, from
   README-only to a hardcoded two-file tuple whose docstring told the next author to

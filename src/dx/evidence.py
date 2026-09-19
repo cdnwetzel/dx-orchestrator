@@ -238,6 +238,9 @@ class GuiVerificationBundle:
     vlm_model: str
     vlm_endpoint: str
     screenshot: bytes
+    #: "met" | "not_met" | "no_verdict" — what the reply asserted. ``passed``
+    #: is true only for "met"; the third value is why this is not a boolean.
+    verdict: str = "no_verdict"
     screenshot_name: str = "screenshot.png"
     #: how the frame was obtained (ssh host, --screenshot <path>, psoperator)
     capture: str | None = None
@@ -463,6 +466,7 @@ def _render_gui_readme(bundle: GuiVerificationBundle, generated_utc: str) -> str
         "## GUI verification",
         "",
         f"- **Expected:** {bundle.expected}",
+        f"- **Verdict:** `{bundle.verdict}`",
         f"- **VLM answer:** {bundle.vlm_answer}",
         f"- **VLM model:** `{bundle.vlm_model}`",
         f"- **VLM endpoint:** `{bundle.vlm_endpoint}`",
@@ -511,6 +515,7 @@ def write_gui_bundle(
         "checks": {k: v.as_json() for k, v in bundle.checks.items()},
         "gui_verification": {
             "expected": bundle.expected,
+            "verdict": bundle.verdict,
             "vlm_answer": bundle.vlm_answer,
             "vlm_model": bundle.vlm_model,
             "vlm_endpoint": bundle.vlm_endpoint,

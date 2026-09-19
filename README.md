@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 585 tests,
+The test suite is the part built to be evaluated from outside: 607 tests,
 including real-GPG signature checks against committed keys, runnable with no lab
 hardware, no keyring and no network. Run it without the sibling clones and it is
 fully hermetic — the handful of checks that need the real role-card deck or the
@@ -127,9 +127,11 @@ generated behaviour was run. A bundle without one is a claim wearing a receipt's
 clothing, so the writer refuses to emit it.
 
 `dx verify-gui` writes its own family, `dx.gui_verification.v1`: the screenshot
-it judged stored verbatim under `artifacts/`, the model's YES/NO answer, and a
-`boundary` block whose first line is that the answer is advisory evidence, never
-a proof (RL-007 — `dx merge` still requires a GPG signature). Same
+it judged stored verbatim under `artifacts/`, the model's reply and the
+`verdict` dx read from it — `met`, `not_met`, or `no_verdict` when the reply
+did not open with YES or NO (dx does not interpret prose) — and a `boundary`
+block whose first line is that the answer is advisory evidence, never a proof
+(RL-007 — `dx merge` still requires a GPG signature). Same
 `--evidence-dir` / `DX_EVIDENCE_DIR` / `--no-evidence` controls; `--task` sets
 the id it is filed under (default `verify-gui`). Add `--observer` and the bundle also carries a **verified** PSOperator observer attestation bound to the exact frame by hash (signature and freshness checked, `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` required); it fails closed if that provenance cannot be obtained.
 
