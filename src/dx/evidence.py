@@ -118,8 +118,9 @@ MERGE_DEFAULT_BOUNDARY: tuple[str, ...] = (
     "Separation of duties compares names, and is only as good as the "
     "`author_human` the ledger records. A missing author_human is noted, not "
     "fabricated, and the check is reported as unenforced.",
-    "A GUI check, when present, is advisory (RL-007). The signature is what "
-    "gates the merge, not the vision model.",
+    "A GUI check, when present, is advisory (RL-007): its NO or its silence "
+    "stops the merge, but its YES grants nothing. The signature is what admits "
+    "the merge, not the vision model.",
     "Without `--repo`, no git merge happened — the ledger records the approval "
     "only, and `merge_gate.merged` is null.",
     "This receipt is tamper-evident (`SHA256SUMS`), not signed. It proves "
