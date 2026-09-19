@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -568,3 +569,107 @@ def test_bundle_digest_changes_if_any_artifact_is_mutated(tmp_path):
 def test_bundle_digest_refuses_a_non_bundle(tmp_path):
     with pytest.raises(EvidenceError, match="not a bundle"):
         bundle_digest(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# RL-011 at the sink: every family, every file
+# ---------------------------------------------------------------------------
+
+_PLANTED = "ghp_" + "PLANTEDsecret" * 3  # github-token shape, synthetic
+
+
+def _no_file_contains(bundle_dir: Path, needle: str) -> None:
+    """The assertion that matters: not one file anywhere under the bundle —
+    artifact, manifest, README, SHA256SUMS — carries the string. A per-artifact
+    check could miss a copy in a README line or a manifest field."""
+    for p in bundle_dir.rglob("*"):
+        if p.is_file():
+            assert needle not in p.read_bytes().decode("utf-8", errors="replace"), p
+
+
+class TestRedactionAtTheSink:
+    def test_role_task_artifacts_are_scrubbed(self, tmp_path):
+        out = write_bundle(
+            _bundle(artifacts={
+                "command.txt": f"pxx edit -m 'use {_PLANTED}'\n",
+                "changes.patch": f"+TOKEN = '{_PLANTED}'\n",
+                "prompt.txt": f"MANDATE: rotate {_PLANTED}\n",
+            }),
+            tmp_path,
+        )
+        _no_file_contains(out, _PLANTED)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["redaction"]["patterns"].startswith("dx-redact-v")
+        assert set(m["redaction"]["findings"]) == {
+            "artifacts/command.txt", "artifacts/changes.patch", "artifacts/prompt.txt"
+        }
+        assert m["checks"]["redaction_applied"]["ok"] is True
+        assert "github-token" in m["checks"]["redaction_applied"]["detail"]
+        assert "[REDACTED:github-token]" in (out / "artifacts" / "changes.patch").read_text()
+        readme = (out / "README.md").read_text()
+        assert "## Redaction (RL-011)" in readme
+        assert "`artifacts/changes.patch`: github-token×1" in readme
+        # the section sits before the verify block, so a reader meets it first
+        assert readme.index("## Redaction") < readme.index("## Verify")
+
+    def test_gui_reply_and_expectation_are_scrubbed_from_manifest_and_readme(self, tmp_path):
+        """`vlm_answer` and `expected` are manifest fields, not artifacts. A
+        model reading a token off a screen must not put it in the receipt."""
+        out = write_gui_bundle(
+            _gui_bundle(
+                vlm_answer=f"YES — the terminal shows {_PLANTED}",
+                expected=f"a terminal showing {_PLANTED}",
+            ),
+            tmp_path,
+        )
+        _no_file_contains(out, _PLANTED)
+        m = json.loads((out / "manifest.json").read_text())
+        assert "[REDACTED:github-token]" in m["gui_verification"]["vlm_answer"]
+        assert "manifest.json" in m["redaction"]["findings"]
+        assert "README.md" in m["redaction"]["findings"]
+        # binary artifact untouched
+        assert (out / "artifacts" / "screenshot.png").read_bytes() == _PNG_1x1
+
+    def test_merge_and_staged_families_are_covered_too(self, tmp_path):
+        out = write_merge_bundle(
+            _merge_bundle(signer={"name": f"Signer {_PLANTED}", "email": "s@example.invalid"}),
+            tmp_path,
+        )
+        _no_file_contains(out, _PLANTED)
+        out = write_staged_action_bundle(
+            _staged(title=f"stage — {_PLANTED}"),
+            tmp_path,
+        )
+        _no_file_contains(out, _PLANTED)
+
+    def test_a_clean_bundle_is_unchanged_and_says_so(self, tmp_path):
+        clean = "diff --git a/x b/x\n+print('hi')\n+token_count = 3\n"
+        out = write_bundle(_bundle(artifacts={"changes.patch": clean}), tmp_path)
+        assert (out / "artifacts" / "changes.patch").read_text() == clean
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["redaction"]["findings"] == {}
+        assert "no credential-shaped strings" in m["checks"]["redaction_applied"]["detail"]
+        assert "No credential-shaped strings found" in (out / "README.md").read_text()
+        # hashes, paths and enum values match nothing: the manifest core is intact
+        assert m["source_head"] == "a" * 40
+        assert m["routing"]["endpoint"] == "http://box.invalid:8000"
+
+    def test_sha256sums_cover_the_redacted_files(self, tmp_path):
+        out = write_bundle(
+            _bundle(artifacts={"changes.patch": f"+K='{_PLANTED}'\n"}), tmp_path
+        )
+        result = subprocess.run(
+            ["sha256sum", "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_the_run_still_gets_its_receipt(self, tmp_path):
+        """Flag, never fail: a leaky diff is exactly the run whose evidence
+        matters most."""
+        out = write_bundle(
+            _bundle(passed=False, artifacts={"changes.patch": f"+K='{_PLANTED}'\n"}),
+            tmp_path,
+        )
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["result"]["passed"] is False
+        assert m["redaction"]["findings"]

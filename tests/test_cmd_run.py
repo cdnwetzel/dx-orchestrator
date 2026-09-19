@@ -361,3 +361,28 @@ def test_nonzero_exit_with_no_change_is_still_a_flat_failure(monkeypatch, tmp_pa
         )
     assert exc.value.code == cmd_run.EXIT_TASK_FAILED
     assert "pxx task failed (pxx exit 2)" in capsys.readouterr().err
+
+
+class TestRunEvidenceIsRedacted:
+    """RL-011: the prompt (`--message` plus the role card) is written to
+    prompt.txt and again inside command.txt's argv. A pasted credential in
+    --message must reach neither, nor the README or manifest."""
+
+    def test_a_key_in_the_message_reaches_no_file_in_the_bundle(self, monkeypatch, tmp_path):
+        planted = "sk-" + "PLANTED0" * 4  # openai-key shape, synthetic
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        monkeypatch.setattr("dx.cmd_run._git", lambda *a, **k: None)
+        _run("T-RED", "--required_role", "widget-engineer", "-m", f"rotate {planted} now",
+             "--no-commit", "--evidence-dir", str(tmp_path))
+        bundles = list((tmp_path / "T-RED").iterdir())
+        assert len(bundles) == 1
+        for p in bundles[0].rglob("*"):
+            if p.is_file():
+                assert planted not in p.read_text(errors="replace"), p
+        m = json.loads((bundles[0] / "manifest.json").read_text())
+        assert set(m["redaction"]["findings"]) >= {"artifacts/prompt.txt", "artifacts/command.txt"}
+        assert "[REDACTED:openai-key]" in (bundles[0] / "artifacts" / "prompt.txt").read_text()

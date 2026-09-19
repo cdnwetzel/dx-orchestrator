@@ -89,6 +89,26 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Evidence bundles were a raw pipe, not a filtered sink (RL-011).** `dx run`
+  wrote `changes.patch`, `git-status.txt`, `prompt.txt` and `command.txt` (the
+  full pxx argv, prompt included) straight from `git diff` and the command line;
+  `dx verify-gui` put the model's reply verbatim in `manifest.json` and
+  `README.md`. A task touching a `.env`, a fixture with a token, or a `--message`
+  with a pasted credential landed that string in a receipt, and `SHA256SUMS` then
+  certified it — with no way back, since a bound bundle is append-only in effect.
+  Every bundle family now passes through one choke point in the writer: text
+  artifacts, every string field of the manifest, and the README are run through
+  `dx.redact` (the floor `DevSwarmX/harness/redact.py` guards the
+  ledger with — private keys, API keys, tokens, JWTs, URL credentials,
+  `secret = "…"` assignments, plus Basic auth headers and prefixed or camelCase
+  assignment keys such as `auth_token` and `authToken`) before anything is written. A hit becomes
+  `[REDACTED:<label>]` in place; the manifest records `redaction.findings` and
+  the pattern-set version, a `redaction_applied` check names them, and the
+  README gains a `## Redaction (RL-011)` section. Flag, never fail: the run
+  still gets its receipt, with the secret gone and the fact that one was there
+  kept. Secrets only, floor only — no `gitleaks` in the receipt path, so the
+  suite stays hermetic and the same run always produces the same bundle.
+
 - **`dx verify-gui` read the vision model's reply with `startswith("YES")`, so
   "no answer" and "no" were the same bit.** A reply of `Yesterday's result is
   still displayed` passed; `**YES**` and `Answer: YES.` failed; an empty reply, a

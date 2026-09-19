@@ -39,7 +39,7 @@ rows and one real GPG signature so `dx merge` can be exercised end-to-end — an
 so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
 
-The test suite is the part built to be evaluated from outside: 607 tests,
+The test suite is the part built to be evaluated from outside: 642 tests,
 including real-GPG signature checks against committed keys, runnable with no lab
 hardware, no keyring and no network. Run it without the sibling clones and it is
 fully hermetic — the handful of checks that need the real role-card deck or the
@@ -120,6 +120,11 @@ skips emission entirely.
 **Failed runs get bundles too.** A store that only records successes is a
 highlight reel. And a run whose receipt cannot be written fails closed: the task
 may have succeeded, but a receipted run that produced no receipt is not one.
+
+Every text artifact, manifest field and README line passes a capture-time
+redaction filter before the write (RL-011): a credential-shaped string becomes
+`[REDACTED:<label>]`, and the manifest's `redaction.findings` says where. The
+run still gets its receipt; the secret never reaches it.
 
 Every bundle carries a mandatory `boundary` block stating what it does **not**
 prove — that the code is correct, that anyone reviewed it, that any test of the
