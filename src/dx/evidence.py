@@ -63,6 +63,10 @@ DEFAULT_BOUNDARY: tuple[str, ...] = (
     "The diff is of the scope directory only, and covers tracked changes only. "
     "New files not yet added to git appear in `artifacts/git-status.txt`, not in "
     "the patch. Changes made outside the scope are not captured at all.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
 )
 
 
@@ -93,6 +97,10 @@ GUI_DEFAULT_BOUNDARY: tuple[str, ...] = (
     "perception snapshot whose frame hash matches this screenshot — provenance "
     "for the pixels, not a judgement of them. Its absence means the frame's only "
     "provenance is the `capture` command that produced it.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
 )
 
 
@@ -116,6 +124,10 @@ MERGE_DEFAULT_BOUNDARY: tuple[str, ...] = (
     "only, and `merge_gate.merged` is null.",
     "This receipt is tamper-evident (`SHA256SUMS`), not signed. It proves "
     "nothing was altered after the fact, not who produced it.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
 )
 
 
@@ -143,6 +155,10 @@ STAGED_DEFAULT_BOUNDARY: tuple[str, ...] = (
     "An approval binds exactly one world-state: `stage_id + bundle_hash + "
     "payload_hash + frame_hash + head + role`. If any of those moved, the approval "
     "is stale and the stage must be re-presented, never auto-retried.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
 )
 
 #: Deterministic bundle-level risk escalation (T0–T3). Per-action classes are a
