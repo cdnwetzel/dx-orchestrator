@@ -40,6 +40,7 @@ from dx.approval_key import (
     MECHANISM_STANDARD,
     MECHANISM_TEST_DOUBLE,
 )
+from dx.redact import PATTERN_SET, redact, redact_artifacts
 
 SCHEMA = "dx.role_task.v1"
 
@@ -397,6 +398,53 @@ def _prepare_out(root: Path, task_id: str, generated_utc: str) -> Path:
     return out
 
 
+def _redact_manifest_strings(node: object) -> list[str]:
+    """Redact every string leaf of the manifest in place; return the findings.
+    Hashes, paths and enum values match none of the patterns, so a clean
+    manifest is untouched — a test pins that."""
+    hits: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str):
+                red, found = redact(value)
+                if found:
+                    node[key] = red
+                    hits.extend(found)
+            else:
+                hits.extend(_redact_manifest_strings(value))
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            if isinstance(value, str):
+                red, found = redact(value)
+                if found:
+                    node[i] = red
+                    hits.extend(found)
+            else:
+                hits.extend(_redact_manifest_strings(value))
+    return hits
+
+
+def _with_redaction_section(readme: str, findings: dict[str, list[str]]) -> str:
+    """Insert a `## Redaction (RL-011)` section ahead of the shared `## Verify`
+    tail every family's README ends with. Placed here rather than in each
+    renderer so the section cannot be forgotten by a new family."""
+    if findings:
+        body = [
+            "Credential-shaped strings were removed from these artifacts before "
+            "the write; each is replaced in place by a `[REDACTED:<label>]` marker. "
+            "The unredacted content was never stored.",
+            "",
+            *(f"- `{where}`: {', '.join(hits)}" for where, hits in findings.items()),
+        ]
+    else:
+        body = [f"No credential-shaped strings found (pattern set `{PATTERN_SET}`)."]
+    section = "\n".join(["## Redaction (RL-011)", "", *body, ""])
+    marker = "\n## Verify\n"
+    if marker in readme:
+        return readme.replace(marker, f"\n{section}\n## Verify\n", 1)
+    return readme.rstrip("\n") + "\n\n" + section
+
+
 def _finalize(
     out: Path,
     manifest: dict[str, object],
@@ -404,7 +452,38 @@ def _finalize(
     text_artifacts: dict[str, str],
     binary_artifacts: dict[str, bytes],
 ) -> Path:
-    """Write artifacts, manifest.json, README.md and SHA256SUMS into ``out``."""
+    """Write artifacts, manifest.json, README.md and SHA256SUMS into ``out``.
+
+    This is the one place a bundle is written, so it is the one place RL-011
+    is enforced: every text artifact passes :func:`dx.redact.redact` first, and
+    the findings go into the manifest, the checks and the README. A family
+    cannot opt out by construction — there is no other writer.
+    """
+    # Artifacts first, then the README and every string leaf of the manifest:
+    # a VLM reply, an `expected` string or a ledger `evidence` field lands in
+    # manifest.json and README.md, not under artifacts/, and a filter that
+    # covered artifacts only would let a secret the model read off a screen
+    # straight through. Findings are keyed by the file they were found in.
+    text_artifacts, findings = redact_artifacts(text_artifacts)
+    findings = {f"artifacts/{name}": hits for name, hits in findings.items()}
+    readme, readme_hits = redact(readme)
+    if readme_hits:
+        findings["README.md"] = readme_hits
+    manifest_hits = _redact_manifest_strings(manifest)
+    if manifest_hits:
+        findings["manifest.json"] = manifest_hits
+    manifest["redaction"] = {"patterns": PATTERN_SET, "findings": findings}
+    checks = manifest.get("checks")
+    if isinstance(checks, dict):
+        checks["redaction_applied"] = Check(
+            ok=True,
+            detail=(
+                "; ".join(f"{n}: {', '.join(h)}" for n, h in findings.items())
+                if findings
+                else f"no credential-shaped strings found ({PATTERN_SET})"
+            ),
+        ).as_json()
+    readme = _with_redaction_section(readme, findings)
     try:
         for name, content in text_artifacts.items():
             target = out / "artifacts" / name
