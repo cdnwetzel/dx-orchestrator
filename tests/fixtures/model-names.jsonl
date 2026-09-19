@@ -1,0 +1,42 @@
+{"provider": "ollama", "manifest": "qwen2.5-coder", "served": ["qwen2.5-coder:latest", "llama3.1:8b"], "resolves": "qwen2.5-coder:latest", "hint": null, "note": "bare name means :latest"}
+{"provider": "ollama", "manifest": "qwen2.5-coder", "served": ["qwen2.5-coder:32b-instruct-q4_K_M", "llama3.1:8b"], "resolves": "none", "hint": "qwen2.5-coder:32b-instruct-q4_K_M", "note": "the SP9 shape: not served, but obviously meant"}
+{"provider": "ollama", "manifest": "qwen2.5-coder", "served": ["qwen2.5-coder:7b", "qwen2.5-coder:32b"], "resolves": "none", "hint": "ambiguous", "note": ""}
+{"provider": "ollama", "manifest": "qwen2.5-coder:7b", "served": ["qwen2.5-coder:7b", "qwen2.5-coder:32b"], "resolves": "qwen2.5-coder:7b", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "qwen2.5", "served": ["qwen2.5-coder:7b"], "resolves": "none", "hint": "qwen2.5-coder:7b", "note": "different model, shares a prefix"}
+{"provider": "ollama", "manifest": "devstral", "served": ["devstral:24b"], "resolves": "none", "hint": "devstral:24b", "note": ""}
+{"provider": "ollama", "manifest": "devstral:24b", "served": ["devstral:latest"], "resolves": "none", "hint": "devstral:latest", "note": ":latest might be 24b; nothing in the list says so"}
+{"provider": "ollama", "manifest": "gemma4:26b", "served": ["gemma4:26b-it-q8_0"], "resolves": "none", "hint": "gemma4:26b-it-q8_0", "note": ""}
+{"provider": "ollama", "manifest": "Qwen2.5-Coder", "served": ["qwen2.5-coder:latest"], "resolves": "qwen2.5-coder:latest", "hint": null, "note": "ollama names are case-insensitive"}
+{"provider": "ollama", "manifest": "gpt-oss:20b", "served": ["gpt-oss:20b-pxx"], "resolves": "none", "hint": "gpt-oss:20b-pxx", "note": "a custom tag off the roster"}
+{"provider": "ollama", "manifest": " qwen2.5-coder:7b ", "served": ["qwen2.5-coder:7b"], "resolves": "qwen2.5-coder:7b", "hint": null, "note": "whitespace"}
+{"provider": "ollama", "manifest": "library/qwen2.5-coder:7b", "served": ["qwen2.5-coder:7b"], "resolves": "qwen2.5-coder:7b", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "registry.ollama.ai/library/qwen2.5-coder:7b", "served": ["qwen2.5-coder:7b"], "resolves": "qwen2.5-coder:7b", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "hf.co/bartowski/Qwen2.5-Coder-7B-GGUF:Q4_K_M", "served": ["hf.co/bartowski/Qwen2.5-Coder-7B-GGUF:Q4_K_M"], "resolves": "hf.co/bartowski/Qwen2.5-Coder-7B-GGUF:Q4_K_M", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "qwen2.5-coder@sha256:0123456789abcdef", "served": ["qwen2.5-coder:7b"], "resolves": "none", "hint": "qwen2.5-coder:7b", "note": "digest reference; a tag is what was meant"}
+{"provider": "openai", "manifest": "Qwen3-Coder", "served": ["Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"], "resolves": "none", "hint": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "note": ""}
+{"provider": "openai", "manifest": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "served": ["Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"], "resolves": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "hint": null, "note": ""}
+{"provider": "openai", "manifest": "qwen/qwen3-coder-30b-a3b-instruct-fp8", "served": ["Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"], "resolves": "none", "hint": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "note": "openai ids are case-sensitive"}
+{"provider": "openai", "manifest": "Qwen3-Coder-30B-A3B-Instruct-FP8", "served": ["Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"], "resolves": "none", "hint": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "note": "org dropped"}
+{"provider": "openai", "manifest": "qwen2.5-coder-14b", "served": ["qwen2.5-coder-14b", "coder-prod"], "resolves": "qwen2.5-coder-14b", "hint": null, "note": ""}
+{"provider": "openai", "manifest": "coder-prod", "served": ["qwen2.5-coder-14b", "coder-prod"], "resolves": "coder-prod", "hint": null, "note": "a LoRA id"}
+{"provider": "openai", "manifest": "gpt-4o", "served": ["gpt-4o-2024-08-06", "gpt-4o-mini"], "resolves": "none", "hint": "ambiguous", "note": ""}
+{"provider": "ollama", "manifest": "mistral", "served": ["mistral:7b-instruct", "mistral-nemo:12b"], "resolves": "none", "hint": "ambiguous", "note": "nemo is a different family"}
+{"provider": "ollama", "manifest": "llama3.1", "served": ["llama3.1:8b", "llama3.1:70b"], "resolves": "none", "hint": "ambiguous", "note": ""}
+{"provider": "ollama", "manifest": "llama3.1:8b", "served": ["llama3.1:8b-instruct-q4_0"], "resolves": "none", "hint": "llama3.1:8b-instruct-q4_0", "note": ""}
+{"provider": "ollama", "manifest": "qwen2.5-coder:7b", "served": [], "resolves": "none", "hint": "none", "note": "nothing served"}
+{"provider": "ollama", "manifest": "", "served": ["qwen2.5-coder:7b"], "resolves": "none", "hint": "none", "note": "empty manifest name"}
+{"provider": "ollama", "manifest": "nomic-embed-text", "served": ["nomic-embed-text:latest"], "resolves": "nomic-embed-text:latest", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "deepseek-r1:32b", "served": ["deepseek-r1:32b", "deepseek-r1:14b"], "resolves": "deepseek-r1:32b", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "deepseek-r1", "served": ["deepseek-r1:32b", "deepseek-r1:14b"], "resolves": "none", "hint": "ambiguous", "note": ""}
+{"provider": "ollama", "manifest": "phi4", "served": ["phi4-mini:latest"], "resolves": "none", "hint": "phi4-mini:latest", "note": "mini is a different model"}
+{"provider": "ollama", "manifest": "phi4", "served": ["phi4:latest", "phi4-mini:latest"], "resolves": "phi4:latest", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "codellama:13b-code", "served": ["codellama:13b-code-q4_0"], "resolves": "none", "hint": "codellama:13b-code-q4_0", "note": ""}
+{"provider": "openai", "manifest": "ui-tars-1.5-7b", "served": ["ui-tars-1.5-7b"], "resolves": "ui-tars-1.5-7b", "hint": null, "note": ""}
+{"provider": "openai", "manifest": "ui-tars", "served": ["ui-tars-1.5-7b", "ui-tars-7b-dpo"], "resolves": "none", "hint": "ambiguous", "note": ""}
+{"provider": "openai", "manifest": "qwen2.5-coder:latest", "served": ["qwen2.5-coder"], "resolves": "none", "hint": "qwen2.5-coder", "note": "ollama-style tag against an openai list"}
+{"provider": "openai", "manifest": "Qwen3-Coder", "served": ["Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8", "Qwen/Qwen3-Coder-480B-A35B-Instruct"], "resolves": "none", "hint": "ambiguous", "note": ""}
+{"provider": "ollama", "manifest": "llava:13b", "served": ["llava:13b", "llava:latest"], "resolves": "llava:13b", "hint": null, "note": ""}
+{"provider": "ollama", "manifest": "qwen2.5-coder:32B", "served": ["qwen2.5-coder:32b"], "resolves": "qwen2.5-coder:32b", "hint": null, "note": "tag case"}
+{"provider": "ollama", "manifest": "qwen2.5-codr", "served": ["qwen2.5-coder:7b"], "resolves": "none", "hint": "none", "note": "typo"}
+{"provider": "ollama", "manifest": "llama3", "served": ["llama3.1:8b", "llama3.2:3b"], "resolves": "none", "hint": "ambiguous", "note": "version-adjacent"}
+{"provider": "openai", "manifest": "gemma4:26b", "served": ["google/gemma-4-26b-it"], "resolves": "none", "hint": "google/gemma-4-26b-it", "note": "ollama tag written for a vLLM endpoint"}

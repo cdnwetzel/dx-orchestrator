@@ -279,3 +279,113 @@ def test_measure_latency_autodetect_falls_back_to_chat_for_non_ollama(monkeypatc
     lat = measure_latency_autodetect("http://r:8888/v1", "m")
     assert seen["get"] == "http://r:8888/api/tags"  # detection probed /api/tags first
     assert lat.ok and seen["post"] == "http://r:8888/v1/chat/completions"
+
+
+# ---------------------------------------------------------------------------
+# Name resolution — the corpus in tests/fixtures/model-names.jsonl
+# ---------------------------------------------------------------------------
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+from dx.model_probe import NOT_SERVED, hint_candidates  # noqa: E402
+
+_CORPUS = [
+    json.loads(line)
+    for line in (Path(__file__).parent / "fixtures" / "model-names.jsonl").read_text().splitlines()
+    if line.strip()
+]
+
+
+def _classify(row):
+    if row["provider"] == "ollama":
+        return classify_ollama(row["manifest"], tags=row["served"], resident=[])
+    return classify_openai(row["manifest"], served=row["served"])
+
+
+@pytest.mark.parametrize("row", _CORPUS, ids=[f"{r['provider']}:{r['manifest'] or '<empty>'}" for r in _CORPUS])
+def test_resolution_matches_what_the_backend_would_do(row):
+    """`resolves` is the served name a request with this manifest name actually
+    hits — Ollama's :latest/library//case rules, OpenAI's exact ids — labeled
+    by hand for 42 real shapes. Exact membership got 34 of them."""
+    a = _classify(row)
+    if row["resolves"] == "none":
+        assert a.status == NOT_SERVED, (row, a)
+        assert a.resolves_to is None
+    else:
+        assert a.status != NOT_SERVED, (row, a)
+        assert a.resolves_to == row["resolves"], (row, a)
+
+
+@pytest.mark.parametrize("row", [r for r in _CORPUS if r["resolves"] == "none"], ids=[f"{r['provider']}:{r['manifest'] or '<empty>'}" for r in _CORPUS if r["resolves"] == "none"])
+def test_not_served_carries_the_agreed_hint(row):
+    """A hint never changes the status; it is text for the operator. The
+    expectations were fixed against a dev-time labeling pass (24/26 agreement)
+    and are pinned here so the heuristic cannot drift silently."""
+    a = _classify(row)
+    assert a.status == NOT_SERVED
+    if row["hint"] == "none":
+        assert a.hints == () and "did you mean" not in a.detail
+    elif row["hint"] == "ambiguous":
+        assert len(a.hints) > 1 and "ambiguous" in a.detail
+    else:
+        assert a.hints == (row["hint"],)
+        assert f"did you mean '{row['hint']}'?" in a.detail
+
+
+def test_the_sp9_shape_is_not_served_with_a_hint():
+    """The incident this module exists for: the manifest says the model, the
+    node has it under a size/quant tag, and the operator was told the binding
+    was broken with nothing to go on."""
+    a = classify_ollama("qwen2.5-coder", tags=["qwen2.5-coder:32b-instruct-q4_K_M"], resident=[])
+    assert a.status == NOT_SERVED and not a.ok
+    assert a.hints == ("qwen2.5-coder:32b-instruct-q4_K_M",)
+    assert "did you mean 'qwen2.5-coder:32b-instruct-q4_K_M'?" in a.detail
+
+
+def test_a_bare_ollama_name_resolves_to_latest_for_residency_too():
+    """The same rule decides resident vs on-disk-cold: a bare name in the
+    manifest must find `name:latest` in /api/ps, or a resident model reads cold."""
+    a = classify_ollama("phi4", tags=["phi4:latest"], resident=["phi4:latest"])
+    assert a.status == "resident" and a.resolves_to == "phi4:latest"
+
+
+def test_ollama_is_case_insensitive_but_openai_is_not():
+    assert classify_ollama("Qwen2.5-Coder:32B", tags=["qwen2.5-coder:32b"], resident=[]).ok is False  # cold, but resolved
+    assert classify_ollama("Qwen2.5-Coder:32B", tags=["qwen2.5-coder:32b"], resident=[]).resolves_to == "qwen2.5-coder:32b"
+    a = classify_openai("qwen/qwen3-coder", served=["Qwen/Qwen3-Coder"])
+    assert a.status == NOT_SERVED and a.hints == ("Qwen/Qwen3-Coder",)
+
+
+def test_a_digest_reference_resolves_only_to_itself():
+    a = classify_ollama("qwen2.5-coder@sha256:0123", tags=["qwen2.5-coder:7b"], resident=[])
+    assert a.status == NOT_SERVED
+    assert a.hints == ("qwen2.5-coder:7b",)
+    # and does resolve when the node lists that exact digest
+    b = classify_ollama(
+        "qwen2.5-coder@sha256:0123", tags=["qwen2.5-coder@sha256:0123"], resident=[]
+    )
+    assert b.status == "on-disk-cold" and b.resolves_to == "qwen2.5-coder@sha256:0123"
+
+
+def test_hint_base_comparison_is_symmetric():
+    """The long HF-style name in the manifest against a short Ollama tag is the
+    same near-miss as the reverse; both directions must hint."""
+    a = classify_ollama("gemma-4-26b-it", tags=["gemma4:26b"], resident=[])
+    assert a.status == NOT_SERVED and a.hints == ("gemma4:26b",)
+    b = classify_openai("gemma4", served=["google/gemma-4-26b-it"])
+    assert b.status == NOT_SERVED and b.hints == ("google/gemma-4-26b-it",)
+
+
+def test_a_hint_never_promotes_the_status():
+    """RL-007 in miniature: the guess is text, the status is the rule."""
+    for row in _CORPUS:
+        a = _classify(row)
+        if a.hints:
+            assert a.status == NOT_SERVED and not a.ok
+
+
+def test_hint_candidates_is_empty_for_an_empty_name():
+    assert hint_candidates("", ["qwen2.5-coder:7b"]) == ()
+    assert hint_candidates("   ", ["qwen2.5-coder:7b"]) == ()
