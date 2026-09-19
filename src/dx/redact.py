@@ -58,15 +58,22 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     ),
     ("bearer-token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}=*")),
+    # `Authorization: Basic <base64(user:pass)>` — the credential is the whole
+    # token, so the header value goes, not just the password inside it.
+    ("basic-auth", re.compile(r"(?i)\bbasic\s+[A-Za-z0-9+/]{16,}={0,2}")),
     ("url-credentials", re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s]+@")),
     (
         "secret-assignment",
         re.compile(
-            # The value class excludes [ and ] so an earlier rule's
-            # `[REDACTED:…]` marker is not re-matched as a fresh secret and
-            # the finding keeps its real label.
-            r"(?i)\b(?:api[_-]?key|secret|token|passwd|password|credential)s?\b"
-            r"\s*[:=]\s*['\"][^'\"\s\[\]]{8,}['\"]"
+            # The keyword may carry an identifier prefix — `auth_token`,
+            # `access_token`, `client_secret`, `authToken`, `apiKey` — which a
+            # bare `\btoken\b` cannot see because `_` and a camelCase letter
+            # are both word characters. The value class excludes [ and ] so an
+            # earlier rule's `[REDACTED:…]` marker is not re-matched as a fresh
+            # secret and the finding keeps its real label.
+            # A JSON-style key closes its quote before the colon: `"authToken": "…"`.
+            r"(?i)\b[A-Za-z_]*?(?:api[_-]?key|secret|token|passwd|password|credential)s?\b"
+            r"['\"]?\s*[:=]\s*['\"][^'\"\s\[\]]{8,}['\"]"
         ),
     ),
 )

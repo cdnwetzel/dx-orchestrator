@@ -98,9 +98,10 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   certified it — with no way back, since a bound bundle is append-only in effect.
   Every bundle family now passes through one choke point in the writer: text
   artifacts, every string field of the manifest, and the README are run through
-  `dx.redact` (the same 13-pattern floor `DevSwarmX/harness/redact.py` guards the
+  `dx.redact` (the floor `DevSwarmX/harness/redact.py` guards the
   ledger with — private keys, API keys, tokens, JWTs, URL credentials,
-  `secret = "…"` assignments) before anything is written. A hit becomes
+  `secret = "…"` assignments, plus Basic auth headers and prefixed or camelCase
+  assignment keys such as `auth_token` and `authToken`) before anything is written. A hit becomes
   `[REDACTED:<label>]` in place; the manifest records `redaction.findings` and
   the pattern-set version, a `redaction_applied` check names them, and the
   README gains a `## Redaction (RL-011)` section. Flag, never fail: the run

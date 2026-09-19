@@ -26,9 +26,41 @@ CASES = [
     ("google-api-key", "AIza" + "B" * 35, "AIzaShort"),
     ("jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fw", "eyJ.single"),
     ("bearer-token", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123", "Bearer short"),
+    ("basic-auth", "Authorization: Basic dXNlcjpodW50ZXIyaHVudGVyMg==", "Basic idea: keep it"),
     ("url-credentials", "postgres://user:hunter2@db.invalid/app", "https://db.invalid/app"),
     ("secret-assignment", 'api_key = "supersecretvalue"', 'api_key = ""'),
 ]
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        'auth_token = "abcdefghijkl"',
+        'access_token: "abcdefghijkl"',
+        '"authToken": "abcdefghijkl"',
+        'apiKey = "abcdefghijkl"',
+        'client_secret="abcdefghijkl"',
+        "DB_PASSWORD = 'abcdefghijkl'",
+    ],
+)
+def test_secret_assignment_sees_through_prefixes_and_camel_case(assignment):
+    """`\\btoken\\b` cannot match inside `auth_token` or `authToken` — `_` and a
+    camelCase letter are word characters. A prefix must not hide the keyword."""
+    red, findings = redact(assignment)
+    assert findings == ["secret-assignment×1"], (assignment, findings)
+    assert "abcdefghijkl" not in red
+
+
+@pytest.mark.parametrize(
+    "benign",
+    [
+        'token_count = "12"',  # value too short to be a credential
+        'tokenizer = "gpt2"',  # keyword not at the end of the identifier
+        'secrets_dir = "/var/lib/app/keys"',  # plural + suffix, not a value
+    ],
+)
+def test_secret_assignment_leaves_lookalikes_alone(benign):
+    assert redact(benign) == (benign, [])
 
 
 @pytest.mark.parametrize("label, hit, miss", CASES, ids=[c[0] for c in CASES])
