@@ -37,7 +37,8 @@ needed.
 **The reference ledger is synthetic on purpose.** It carries three chain-verified
 rows and one real GPG signature so `dx merge` can be exercised end-to-end — and
 so every way the gate *fails* can be reproduced. It attests to no real work.
-Point `DX_LEDGER_REPO` at your own ledger to gate real merges.
+Point `DX_LEDGER_REPO`, or `ledger.repo` in the manifest, at your own ledger to
+gate real merges.
 
 The test suite is the part built to be evaluated from outside: 717 tests,
 including real-GPG signature checks against committed keys, runnable with no lab
