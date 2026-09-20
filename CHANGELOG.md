@@ -140,7 +140,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   records `gui.verdict` and reports "no verdict" as its own failure. Exit codes
   are unchanged. `verify_gui()` and `_verify_with_vlm()` now return
   `(Verdict, str)`. Measured with `~/ai/review/typesafe/` (DevSwarmX decision
-  0017): Jev labels the corpus at dev time; the deterministic parser ships.
+  0018): Jev labels the corpus at dev time; the deterministic parser ships.
 
 - **`RELEASE_READINESS.md` carried a stale card count of 38 against the real
   40-card deck, and the count guard could not see it.** The guard had already been widened once, from
