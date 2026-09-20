@@ -271,7 +271,23 @@ def _verify_with_vlm(
     try:
         resp = requests.post(endpoint, json=payload, timeout=timeout_s)
         resp.raise_for_status()
-        output = (resp.json().get("response") or "").strip()
+        data = resp.json()
+        if not isinstance(data, dict):
+            data = {}
+        # Ollama can report a failure inside a 200: an ``error`` body, or a
+        # generation that stopped before it finished (``done: false``). The
+        # first live run through this path got 31 question marks with
+        # ``done: false`` from a throttled node; parsing that as a reply
+        # produced the right verdict for the wrong reason, and a receipt that
+        # said the model *answered*. It did not. Classify before parsing.
+        if "error" in data:
+            return (Verdict.NO_VERDICT, f"VLM error: {data['error']}")
+        output = str(data.get("response") or "").strip()
+        if data.get("done", True) is not True:
+            return (
+                Verdict.NO_VERDICT,
+                f"VLM error: generation aborted (done=false, reply {output[:32]!r})",
+            )
         # RL-007: this is advisory evidence, never a gate on its own. dx merge
         # requires a GPG signature regardless of what the model says here.
         verdict, _ = parse_vlm_reply(output)

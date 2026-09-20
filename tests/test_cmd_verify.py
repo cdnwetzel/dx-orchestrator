@@ -545,3 +545,65 @@ def test_merge_records_no_verdict_distinctly_from_a_no(monkeypatch, tmp_path, ca
     err = capsys.readouterr().err
     assert "no verdict" in err
     assert "GUI verification failed" not in err
+
+
+class TestAbortedGenerationIsAnError:
+    """A 200 from Ollama is not an answer. The first live run through the
+    three-valued path got `done: false` and 31 question marks from a throttled
+    node; parsing that as a reply gave the right verdict for the wrong reason
+    and a receipt claiming the model answered. Classify before parsing."""
+
+    GARBAGE = "?" * 31
+
+    @staticmethod
+    def _post(body):
+        class _R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return body
+
+        return lambda url, json, timeout: _R()
+
+    def _verify(self, monkeypatch, body):
+        import dx.cmd_verify as cv
+
+        monkeypatch.setattr("requests.post", self._post(body))
+        return cv._verify_with_vlm(b"\x89PNG", "x", "http://vlm.invalid/api/generate", "m")
+
+    def test_done_false_is_a_vlm_error_not_a_reply(self, monkeypatch):
+        verdict, out = self._verify(monkeypatch, {"model": "m", "done": False, "response": self.GARBAGE})
+        assert verdict is Verdict.NO_VERDICT
+        assert out.startswith("VLM error: generation aborted")
+        assert "done=false" in out and "???" in out  # the placeholder is kept as evidence
+        assert parse_vlm_reply(out) == (Verdict.NO_VERDICT, "transport error")
+
+    def test_an_error_body_with_200_is_a_vlm_error(self, monkeypatch):
+        verdict, out = self._verify(monkeypatch, {"error": "model 'm' not found"})
+        assert verdict is Verdict.NO_VERDICT and out == "VLM error: model 'm' not found"
+
+    def test_done_true_is_parsed_as_before(self, monkeypatch):
+        assert self._verify(monkeypatch, {"done": True, "response": "YES — matches"})[0] is Verdict.MET
+        assert self._verify(monkeypatch, {"done": True, "response": "NO — blank"})[0] is Verdict.NOT_MET
+
+    def test_a_body_without_done_is_tolerated(self, monkeypatch):
+        """A proxy that drops the key must not turn every answer into an error."""
+        assert self._verify(monkeypatch, {"response": "YES — matches"})[0] is Verdict.MET
+
+    def test_the_receipt_says_the_model_did_not_answer(self, monkeypatch, tmp_path, capsys):
+        shot = tmp_path / "screen.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\n realish")
+        monkeypatch.setattr("requests.post", self._post({"done": False, "response": self.GARBAGE}))
+        ev = tmp_path / "ev"
+        args = build_parser().parse_args(
+            ["verify-gui", "--screenshot", str(shot), "--json", "--evidence-dir", str(ev)]
+        )
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert exc.value.code == 1 and payload["verdict"] == "no_verdict"
+        m = json.loads((Path(payload["evidence"]) / "manifest.json").read_text())
+        assert m["checks"]["vlm_answered"]["ok"] is False  # was True before this change
+        assert m["checks"]["verdict_reached"]["detail"] == "transport error"
+        assert m["gui_verification"]["vlm_answer"].startswith("VLM error: generation aborted")

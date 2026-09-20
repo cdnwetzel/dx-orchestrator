@@ -89,6 +89,22 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A vision model that stopped mid-generation was recorded as having answered,
+  and a resident model answering `?` for every token read green to `doctor`.**
+  Both found on the first live run of the three-valued verdict, against a
+  throttled 8 GB node. Ollama returned HTTP 200 with `done: false` and 31
+  question marks; `dx verify-gui` parsed the placeholder, reached `no_verdict`
+  for the wrong reason, and the receipt's `vlm_answered` check said true.
+  `_verify_with_vlm` now classifies the body before parsing: `done: false` is
+  `VLM error: generation aborted`, an `error` body is `VLM error: …`, and a body
+  without a `done` key is tolerated. The receipt then says the model did not
+  answer, and keeps the placeholder as evidence. `doctor --deep` gains a sanity
+  check on its 1-token ping — `Latency.sane` is false when the generation was
+  aborted, the text is empty, or it is nothing but `?`/U+FFFD — and prints the
+  line amber with "model may be degraded, reload it". `ok` keeps meaning the
+  call returned; unknown response shapes are reported sane, not insane: this
+  flags garbage, it does not certify sense.
+
 - **`dx doctor` matched model names by exact membership, so an Ollama binding
   written the way Ollama itself resolves names read `not-served`.** `qwen2.5-coder`
   against a node serving `qwen2.5-coder:latest` — or `Qwen2.5-Coder`, or

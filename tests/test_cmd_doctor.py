@@ -258,3 +258,43 @@ class TestObserverHealthProbe:
             _doctor()
         assert not called
         assert "observer →" not in capsys.readouterr().out
+
+
+class TestDeepPingSanity:
+    """--deep once read ✅ on a resident model answering `?` for every token.
+    `sane` is the garbage detector; doctor must show it amber."""
+
+    def _deep(self, monkeypatch, capsys, sane):
+        from dx.model_probe import RESIDENT, Latency, ModelAvailability
+
+        class _Conn:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(socket, "create_connection", lambda addr, timeout=None: _Conn())
+        monkeypatch.setattr(
+            "dx.cmd_doctor.probe_model",
+            lambda ep, provider, model: ModelAvailability(RESIDENT, f"{model} is resident"),
+        )
+        monkeypatch.setattr(
+            "dx.cmd_doctor.probe_model_autodetect",
+            lambda ep, model: ModelAvailability(RESIDENT, f"{model} is resident"),
+        )
+        lat = Latency(
+            ok=True, slow=False, elapsed_ms=120.0,
+            detail="120 ms" + ("" if sane else " — answered '?' only: model may be degraded, reload it"),
+            sane=sane,
+        )
+        monkeypatch.setattr("dx.cmd_doctor.measure_latency", lambda *a, **k: lat)
+        monkeypatch.setattr("dx.cmd_doctor.measure_latency_autodetect", lambda *a, **k: lat)
+        with pytest.raises(SystemExit):
+            _doctor("--deep")
+        return [ln for ln in capsys.readouterr().out.splitlines() if "latency:" in ln]
+
+    def test_a_garbage_ping_is_amber_even_when_fast(self, all_green, monkeypatch, capsys):
+        lines = self._deep(monkeypatch, capsys, sane=False)
+        assert lines and all("⚠️" in ln and "reload it" in ln for ln in lines), lines
+
+    def test_a_healthy_fast_ping_is_green(self, all_green, monkeypatch, capsys):
+        lines = self._deep(monkeypatch, capsys, sane=True)
+        assert lines and all("✅" in ln for ln in lines), lines

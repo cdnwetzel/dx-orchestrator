@@ -273,7 +273,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 # a fact residency can't see, not a diagnosis of the cause.
                 if args.deep and avail.ok:
                     lat = measure_latency(ep, provider, model, warn_ms=args.latency_warn_ms)
-                    print(f"   {'⚠️' if (lat.slow or not lat.ok) else '✅'} latency: {lat.detail}")
+                    print(f"   {'⚠️' if (lat.slow or not lat.ok or not lat.sane) else '✅'} latency: {lat.detail}")
         except Exception as exc:
             print(f"⚠️  could not probe model availability: {exc}")
 
@@ -291,7 +291,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 print(f"{icon} psoperator model {model} @ {ep}: {avail.detail}")
                 if args.deep and avail.ok:
                     lat = measure_latency_autodetect(str(ep), str(model), warn_ms=args.latency_warn_ms)
-                    print(f"   {'⚠️' if (lat.slow or not lat.ok) else '✅'} latency: {lat.detail}")
+                    print(f"   {'⚠️' if (lat.slow or not lat.ok or not lat.sane) else '✅'} latency: {lat.detail}")
         except Exception as exc:
             print(f"⚠️  could not probe the psoperator model endpoint: {exc}")
 

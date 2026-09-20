@@ -271,6 +271,48 @@ class Latency:
     slow: bool
     elapsed_ms: float | None
     detail: str
+    #: The ping came back with *something a model would say*. A resident model
+    #: on a throttled node once answered ``?`` for every token, at 1.9 s, and
+    #: read green on residency and latency both. ``ok`` keeps meaning "the call
+    #: returned"; this is the garbage detector beside it, not a correctness check.
+    sane: bool = True
+
+
+_GARBAGE_CHARS = frozenset("?\ufffd")
+
+
+def _ping_sane(provider: str, resp: requests.Response) -> tuple[bool, str]:
+    """Did the 1-token ping come back with something a model would say?
+
+    Insane: the generation reports ``done: false`` (aborted), the text is
+    empty, or it is nothing but ``?`` / U+FFFD. Anything else passes — a
+    letter, a word, punctuation. When the body carries no text at all
+    (a proxy, an unexpected shape) the answer is *unknown*, reported sane:
+    this flags garbage, it does not certify sense."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return True, ""
+    if not isinstance(data, dict):
+        return True, ""
+    if data.get("done", True) is not True:
+        return False, "generation aborted (done=false)"
+    text: object = None
+    if provider == "ollama":
+        text = data.get("response")
+    else:
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            text = None
+    if text is None:
+        return True, ""
+    stripped = str(text).strip()
+    if not stripped:
+        return False, "answered nothing"
+    if set(stripped) <= _GARBAGE_CHARS:
+        return False, f"answered {stripped[:8]!r} only"
+    return True, ""
 
 
 def measure_latency(
@@ -303,10 +345,11 @@ def measure_latency(
         resp.raise_for_status()
         elapsed_ms = (time.monotonic() - start) * 1000.0
         slow = elapsed_ms >= warn_ms
+        sane, why = _ping_sane(provider, resp)
         note = f"{elapsed_ms:.0f} ms" + (
             f" — slow (≥ {warn_ms:.0f} ms): node degraded or under load" if slow else ""
-        )
-        return Latency(ok=True, slow=slow, elapsed_ms=elapsed_ms, detail=note)
+        ) + (f" — {why}: model may be degraded, reload it" if not sane else "")
+        return Latency(ok=True, slow=slow, elapsed_ms=elapsed_ms, detail=note, sane=sane)
     except (requests.RequestException, ValueError) as exc:
         return Latency(ok=False, slow=True, elapsed_ms=None, detail=f"call failed ({type(exc).__name__})")
 
