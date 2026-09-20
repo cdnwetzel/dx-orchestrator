@@ -389,3 +389,56 @@ def test_a_hint_never_promotes_the_status():
 def test_hint_candidates_is_empty_for_an_empty_name():
     assert hint_candidates("", ["qwen2.5-coder:7b"]) == ()
     assert hint_candidates("   ", ["qwen2.5-coder:7b"]) == ()
+
+
+# --- --deep ping sanity ------------------------------------------------------
+# A resident model on a throttled node answered `?` for every token at 1.9 s
+# and read ✅ on residency and ✅ on latency. `ok` still means the call
+# returned; `sane` is the garbage detector beside it.
+
+_GARBAGE = "?" * 31  # the exact reply captured on orin1, 2026-09-19
+
+
+@pytest.mark.parametrize(
+    "provider, body, sane, why",
+    [
+        ("ollama", {"response": "Pong", "done": True}, True, ""),
+        ("ollama", {"response": "P", "done": True}, True, ""),
+        ("ollama", {"response": _GARBAGE, "done": True}, False, "answered '????????' only"),
+        ("ollama", {"response": _GARBAGE, "done": False}, False, "generation aborted (done=false)"),
+        # a provider can put a failure inside a 200; textless is not the same as fine
+        ("ollama", {"error": "model 'm' not found"}, False, "error body: model 'm' not found"),
+        ("openai", {"error": {"message": "overloaded"}}, False, "error body:"),
+        ("ollama", {"response": "", "done": True}, False, "answered nothing"),
+        ("ollama", {"response": "��", "done": True}, False, "only"),
+        ("openai", {"choices": [{"message": {"content": "Pong"}}]}, True, ""),
+        ("openai", {"choices": [{"message": {"content": "?"}}]}, False, "answered '?' only"),
+        ("openai", {"choices": [{"message": {"content": "  "}}]}, False, "answered nothing"),
+        # unknown shapes are *unknown*, not insane — this flags garbage, it does not certify sense
+        ("ollama", {"ok": True}, True, ""),
+        ("openai", {"choices": []}, True, ""),
+    ],
+)
+def test_ping_sanity(provider, body, sane, why):
+    from dx.model_probe import _ping_sane
+
+    got_sane, got_why = _ping_sane(provider, _Resp(body))
+    assert got_sane is sane
+    assert why in got_why
+
+
+def test_a_garbage_ping_is_ok_but_not_sane_and_says_so(monkeypatch):
+    from dx.model_probe import measure_latency
+
+    monkeypatch.setattr(mp.requests, "post", lambda url, json, timeout, headers=None: _Resp({"response": _GARBAGE, "done": True}))
+    lat = measure_latency("http://n:11434", "ollama", "m", warn_ms=5000.0)
+    assert lat.ok and not lat.slow
+    assert lat.sane is False
+    assert "model may be degraded, reload it" in lat.detail
+
+
+def test_a_healthy_ping_is_sane(monkeypatch):
+    from dx.model_probe import measure_latency
+
+    monkeypatch.setattr(mp.requests, "post", lambda url, json, timeout, headers=None: _Resp({"response": "Pong", "done": True}))
+    assert measure_latency("http://n:11434", "ollama", "m").sane is True
