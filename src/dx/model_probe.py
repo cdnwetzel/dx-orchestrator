@@ -295,6 +295,8 @@ def _ping_sane(provider: str, resp: requests.Response) -> tuple[bool, str]:
         return True, ""
     if not isinstance(data, dict):
         return True, ""
+    if "error" in data:
+        return False, f"error body: {str(data['error'])[:60]}"
     if data.get("done", True) is not True:
         return False, "generation aborted (done=false)"
     text: object = None

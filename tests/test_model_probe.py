@@ -406,6 +406,9 @@ _GARBAGE = "?" * 31  # the exact reply captured on orin1, 2026-09-19
         ("ollama", {"response": "P", "done": True}, True, ""),
         ("ollama", {"response": _GARBAGE, "done": True}, False, "answered '????????' only"),
         ("ollama", {"response": _GARBAGE, "done": False}, False, "generation aborted (done=false)"),
+        # a provider can put a failure inside a 200; textless is not the same as fine
+        ("ollama", {"error": "model 'm' not found"}, False, "error body: model 'm' not found"),
+        ("openai", {"error": {"message": "overloaded"}}, False, "error body:"),
         ("ollama", {"response": "", "done": True}, False, "answered nothing"),
         ("ollama", {"response": "��", "done": True}, False, "only"),
         ("openai", {"choices": [{"message": {"content": "Pong"}}]}, True, ""),
