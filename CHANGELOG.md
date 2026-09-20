@@ -9,6 +9,18 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`.coderabbit.yaml` — the review rules written from this repository's own
+  defect history now live where the reviewer reads them.** Ported from PR #27's
+  Greptile configuration after that trial ended: incremental review on every
+  push stated explicitly and pinned by test (a stale review on an old commit is
+  how an unreviewed fix reaches `main`), advisory posture kept (CI and a human
+  decide a merge), ten rules — hand-maintained guard lists, negative controls,
+  declared-never-silent, the address red line, append-only evidence,
+  verifier-derived mechanism, static fit, prose-matches-artifacts, models never
+  gate / policy text is its own PR, severity discipline — and the governing
+  documents named as guideline sources. Tests pin the two properties that would
+  otherwise fail silently and that every rule is still present.
+
 - **`dx doctor --deep` times a 1-token call to each serving model.** Residency
   says a model is loaded; it cannot say a *resident* model is slow. `--deep` does a
   real minimal round-trip and flags anything at/over `--latency-warn-ms` (default
