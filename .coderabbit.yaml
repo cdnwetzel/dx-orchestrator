@@ -1,0 +1,151 @@
+# CodeRabbit review configuration for dx-orchestrator.
+#
+# Ported from the Greptile config in PR #27 after that trial ended. CodeRabbit
+# re-reviews on every push by default; this file states that explicitly (and a
+# test pins it — a stale review on an old commit is how an unreviewed fix
+# reaches main), keeps the bot advisory rather than a merge gate, and carries
+# the review rules written from this repository's own defect history.
+#
+# https://docs.coderabbit.ai/reference/configuration
+language: en-US
+
+reviews:
+  profile: chill
+  # Advisory, not a second gate: CI is the blocking check; a review bot should
+  # never hold a merge by itself.
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    # Re-run the review on each push. Off is exactly the shape #26 hit: a
+    # review pinned to a commit the branch has moved past reads as coverage
+    # while the fix nobody looked at rides along underneath it.
+    auto_incremental_review: true
+    drafts: false
+    ignore_usernames:
+      - "dependabot[bot]"
+  path_filters:
+    - "!uv.lock"
+    - "!docs/artifacts/**"
+  path_instructions:
+    - path: "**"
+      instructions: |
+        dx-orchestrator is the governance layer of a sovereign human-in-the-loop
+        desktop agent: it routes tasks to role cards, refuses Anchored roles,
+        generates per-machine fleet manifests, writes evidence bundles, and
+        anchors a hash-chained ledger. Its animating rule is
+        output = min(generation, verification): a gate that cannot fail is worth
+        nothing, and a claim nothing checks is just a promise. Correctness and
+        governance defects matter far more than style. Every finding must carry
+        a concrete failure scenario (inputs or state producing a wrong result or
+        a false green), not a preference. If a change looks correct, say so
+        briefly and stop. Each rule below encodes something that has actually
+        gone wrong in this repository.
+
+        1. A GUARD MUST NOT CARRY A HAND-MAINTAINED LIST. This repository has
+        shipped the same defect three times: a check scoped to one file reads as
+        enforced and is not. The red-line address guard was enforced for one doc
+        while a lab address landed in another; the role-card count guard was
+        narrowed to README, then to a two-file tuple whose docstring told the
+        next author to extend it by hand. Flag any new or edited check that
+        enumerates the files, fields, phrasings, or cases it covers when it
+        could derive them. A check that needs manual extension is one forgotten
+        edit from silence.
+
+        2. EVERY GUARD NEEDS A NEGATIVE CONTROL, AND ASSERTION IS NOT PROOF.
+        When a PR adds or changes a guard, refusal, exit code, or validator,
+        confirm a test proves it FIRES on the bad case, ideally by mutation
+        (plant the violation, watch it fail). Flag vacuous assertions: a test
+        whose stub accepts any input, a refusal test that would still pass with
+        the check deleted, a fixture that cannot produce the failure being
+        claimed. Reasoning about a property in a docstring is not evidence that
+        the property holds; this repo has been wrong that way before (the test
+        suite was asserted leak-free from a read of the writers and was in fact
+        leaking).
+
+        3. DECLARED, NEVER SILENT. Any weakening of a governance posture must
+        name itself in the artifact and carry a required reason, the pattern set
+        by governed: false, unmapped: true, and role_overrides in the manifest
+        generator, each surfaced in the _generated block. Flag any code path
+        that degrades quietly: a fallback that turns an unavailable or cold
+        resource into an apparent success, an exemption with no reason field,
+        an eviction or truncation that removes a protection without recording
+        it, an error swallowed into a default. A silent downgrade of a
+        fail-closed path is the most serious defect class here.
+
+        4. NO REAL FLEET ADDRESSES IN TRACKED FILES. The red line: no
+        private-range address (RFC1918, RFC6598), internal hostname, absolute
+        home path, or lab identifier may appear in any tracked file: code, docs,
+        tests, fixtures, or error strings. Real addresses live only in an
+        untracked per-machine binding; examples use loopback or the RFC-5737
+        documentation ranges. This has been violated once, in the very file
+        documenting the fix for it. There is no approved exception.
+
+        5. THE LEDGER AND THE EVIDENCE STORE ARE APPEND-ONLY. A ledger row binds
+        the sha256 of the evidence bundle it attests, so deleting a bundle a row
+        names orphans an append-only reference. Corrections are made by
+        appending, never by withdrawing or rewriting. Flag any change that
+        mutates or removes a ledger row, prunes evidence without checking
+        referenceability by type (dx.role_task.v1 and dx.gui_verification.v1
+        are unreferenceable; dx.merge_gate.v1 is not), or writes into the
+        default evidence store from a test.
+
+        6. THE APPROVAL MECHANISM IS DERIVED BY THE VERIFIER, NEVER ASSERTED BY
+        THE SIGNER. Under the amended RL-010 standard an approval key must be
+        hardware-resident and non-exportable, with a physical gesture per
+        signature; the software ceremony is a marked, transitional fallback.
+        Residency is established by inspecting the real signer, not by a
+        caller-supplied field; a software key claiming the hardware standard is
+        laundering and must be refused. Flag any path that lets a caller state
+        its own mechanism, weakens the four-binding staleness check (ledger
+        head, frame hash, payload hash, bundle hash), or lets a test double
+        reach a real keyring builder.
+
+        7. THE AGENT NEVER GRADUATES A SEAT. Role fit is static at runtime.
+        Anchored roles are hard-blocked in dx run with exit code 2 before
+        routing is consulted, and that ordering is load-bearing; it is why an
+        unmapped legal tier is safe. Flag any change that makes fit dynamic,
+        lets a subprocess's exit code forge an Anchored refusal, reorders the
+        refusal after routing, or lets a component approve or verify its own
+        output.
+
+        8. EVIDENCE BEATS ASSERTION IN PROSE TOO. Claims in README, TUTORIAL,
+        VISION, the roadmap, CHANGELOG, and PR descriptions must match what the
+        code and tests actually do. Test counts, version numbers, role-card
+        counts, and any "verified" / "proven" / "attested" language must be
+        supported by an artifact. TUTORIAL.md in particular stakes its worth on
+        every shown output having been captured from a real session; flag a
+        transcript that the current code could not produce. A claim that
+        overstates a governance property is a defect, not a wording nit.
+
+        9. LOCAL MODELS NEVER GATE, AND POLICY TEXT IS ITS OWN PR. Every gate
+        that admits a change is code (regex, YAML, GPG); a model's answer may
+        refuse when the operator opts in, never approve. The boundary blocks in
+        evidence.py are compliance-privacy policy text: a change to them ships
+        in a PR of its own (CONTRIBUTING.md). Flag a model verdict feeding an
+        exit code, a ledger row, or result.passed, and flag boundary wording
+        changed inside a feature PR.
+
+        10. SEVERITY DISCIPLINE. Reserve high and medium for real correctness or
+        governance defects: a boundary that fails open, a guard that cannot
+        fire, a silent downgrade, a public CLI or exit-code break, a deleted
+        test that reduces coverage. Style, naming, comments, and internal
+        refactors are low at most. Over-flagging trains people to ignore
+        reviewers and is a known failure mode.
+
+knowledge_base:
+  learnings:
+    scope: auto
+  code_guidelines:
+    enabled: true
+    # The documents that state the governing rule, the invariants, and the
+    # evidence-retention type guarantee. A change that widens a boundary or
+    # overstates a guarantee is judged against these, not against prose in
+    # the PR.
+    filePatterns:
+      - "VISION.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "docs/sovereign-hitl-roadmap.md"
+      - "docs/evidence-store-hygiene.md"

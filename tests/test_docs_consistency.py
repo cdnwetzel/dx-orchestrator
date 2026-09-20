@@ -1060,3 +1060,59 @@ class TestUsageAndSpecTemplate:
         ):
             assert heading in example, f"example spec is missing {heading}"
         assert "dx run --required_role" in example  # shows how to run itself
+
+
+class TestReviewBotConfiguration:
+    """`.coderabbit.yaml` carries the review rules written from this repo's own
+    defect history (ported from PR #27's Greptile config after that trial
+    ended). Two properties would fail silently if lost, so they are pinned."""
+
+    CONFIG = ROOT / ".coderabbit.yaml"
+
+    def _config(self):
+        import yaml
+
+        assert self.CONFIG.is_file(), ".coderabbit.yaml is missing; the review rules are gone"
+        try:
+            return yaml.safe_load(self.CONFIG.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:  # pragma: no cover - the message is the point
+            raise AssertionError(f".coderabbit.yaml is not valid YAML: {exc}") from None
+
+    def test_it_re_reviews_when_a_fix_is_pushed(self):
+        """A review pinned to a commit the branch has moved past reads as
+        coverage while the fix nobody looked at rides along underneath it."""
+        auto = self._config()["reviews"]["auto_review"]
+        assert auto.get("enabled") is True
+        assert auto.get("auto_incremental_review") is True, (
+            "auto_incremental_review must stay on, or a post-review fix goes unreviewed"
+        )
+
+    def test_it_stays_advisory(self):
+        """A review bot informs a merge; CI and a human decide it."""
+        assert self._config()["reviews"].get("request_changes_workflow") is False
+
+    def test_every_rule_from_the_repos_history_is_present(self):
+        """The rules exist because each encodes a defect that shipped here. If
+        one is edited out, the config still parses and nothing else notices."""
+        # The block scalar is hard-wrapped; a marker may span a line break.
+        text = " ".join(self._config()["reviews"]["path_instructions"][0]["instructions"].split())
+        for marker in (
+            "A GUARD MUST NOT CARRY A HAND-MAINTAINED LIST",
+            "EVERY GUARD NEEDS A NEGATIVE CONTROL",
+            "DECLARED, NEVER SILENT",
+            "NO REAL FLEET ADDRESSES IN TRACKED FILES",
+            "THE LEDGER AND THE EVIDENCE STORE ARE APPEND-ONLY",
+            "DERIVED BY THE VERIFIER, NEVER ASSERTED BY THE SIGNER",
+            "THE AGENT NEVER GRADUATES A SEAT",
+            "EVIDENCE BEATS ASSERTION IN PROSE TOO",
+            "LOCAL MODELS NEVER GATE",
+            "SEVERITY DISCIPLINE",
+        ):
+            assert marker in text, f"review rule missing: {marker}"
+        assert len(text) <= 20_000, "CodeRabbit caps path instructions at 20,000 characters"
+
+    def test_the_guideline_documents_it_cites_exist(self):
+        """A code_guidelines pattern naming a file that is not there is a rule
+        that silently reads nothing."""
+        for pattern in self._config()["knowledge_base"]["code_guidelines"]["filePatterns"]:
+            assert list(ROOT.glob(pattern)), f"code_guidelines names a missing file: {pattern}"
