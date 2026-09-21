@@ -219,6 +219,62 @@ remote one does not; both are tested.
 
 Not required for "full", required for "unattended".
 
+### 2.5 — Repository creation is an approved act, not a side effect
+
+**Today `dx` refuses and a human types `git init` off the record.** That is the
+same gap redlines had until 2026-09-21: something real happens to the estate and
+the ledger does not know. A new repository is the start of a project — where
+code will be written, what scope an executor is granted, what gets pushed to a
+remote — and it is created today by whoever happens to be at a shell.
+
+cwe, 2026-09-21: *"an approver expressly approving the creation of a git repo
+from `git init` all the way to push is the gate, it's not being done
+automatically, it's a gated approval."*
+
+**What closes it:** repository creation becomes a task like any other. Admitted
+under a named human with a title and a project, reviewed, approved by a second
+keyholder, and only then does `git init` run and a remote get added. The ledger
+carries the act; nobody types it into a terminal off-record, and nobody's script
+does it silently either.
+
+**The design question that has to be answered first,** because it does not have
+an obvious answer: an approval signs `task_id + ledger_head + role`, and a
+reviewer of ordinary work reads a diff. **There is no diff for a repository that
+does not exist yet.** So what is being approved, and what does the reviewer
+look at? Candidates: the name and remote (is this going to a public GitHub?),
+the scope grant that follows it, the visibility, the licence. That set is the
+proposal, not an implementation detail — approving "a repo called X, private,
+scoped to Y" is a different act from approving code.
+
+**Why it is not merely a refusal with a better message.** `_git()` now explains
+itself when the ledger path is not a repository (fixed 2026-09-21) — that is
+correct for a *misconfiguration*, which is the likeliest cause there. This is
+the other case: a repository that genuinely should exist, which today gets
+created outside every control this project has.
+
+**Acceptance:** a repository created end to end through the gate, with the
+ADMITTED / SIGNED / EXECUTED rows to show for it, and `git init` reachable no
+other way in the governed path. Per the rule at the foot of this file, the gate
+and its test land together, and the test covers the way the gate can wrongly
+pass — approve-private-create-public being the one that matters.
+
+**Designed 2026-09-21:** AskPS `docs/general/gated-repo-creation-design.md`. The
+answer to "what is being approved" is a seven-field manifest — name, path,
+visibility, remote, scope_grant, licence, seed — and because it is small and
+declarative its hash can be carried in the ADMITTED row and rechecked at
+creation. So this approval **binds to what was approved**, which the code path
+does not: a manifest altered after signing is arithmetic, not trust.
+
+Two decisions are open and are in the doc, not here: whether `public` needs both
+keyholders (recommended: yes, it is the only irreversible field), and whether
+`scope_grant` rides this approval or stays a separate gated `roles.json` edit
+(recommended: separate, or the 2026-09-19 scope narrowing becomes something a
+new repo can quietly undo).
+
+**Effort:** the mechanism is small; agreeing the fields is the work. **Blocked
+by:** nothing hard — the approval service makes it convenient, but the existing
+right-click flow would serve a first one.
+
 ### 3.1 — PSOperator process-separated mode — 🟡 observer done (opti3090)
 
 systemd/OpenRC units so observer, gatekeeper and executor start on boot rather
@@ -275,6 +331,7 @@ rather than a property of the operator's discipline.
 2.4 pxx budgets ─── independent, half a day, do it while waiting
 3.1 PSOperator units ──> 1.3 verify-gui live
 2.3 plugin.json ─── rides the next sdlc-agent-roles release
+2.5 gated repo creation ─── designed 2026-09-21; two decisions open, then build
 2.2 history ─── closed by decision, no work
 ```
 
