@@ -259,17 +259,23 @@ and its test land together, and the test covers the way the gate can wrongly
 pass — approve-private-create-public being the one that matters.
 
 **Designed 2026-09-21:** AskPS `docs/general/gated-repo-creation-design.md`. The
-answer to "what is being approved" is a seven-field manifest — name, path,
-visibility, remote, scope_grant, licence, seed — and because it is small and
-declarative its hash can be carried in the ADMITTED row and rechecked at
-creation. So this approval **binds to what was approved**, which the code path
-does not: a manifest altered after signing is arithmetic, not trust.
+answer to "what is being approved" is a **four-field manifest** — name, path,
+scope_grant, seed — and because it is small and declarative its hash is carried
+in the ADMITTED row and rechecked at creation. So this approval **binds to what
+was approved**, which the code path does not: a manifest altered after signing
+is arithmetic, not trust.
 
-Two decisions are open and are in the doc, not here: whether `public` needs both
-keyholders (recommended: yes, it is the only irreversible field), and whether
-`scope_grant` rides this approval or stays a separate gated `roles.json` edit
-(recommended: separate, or the 2026-09-19 scope narrowing becomes something a
-new repo can quietly undo).
+It started at seven fields and two open decisions. Two firm facts removed three
+fields and one decision: the firm makes no public repos, and firm work goes to
+the `cwe-ps` account. Both become constants the creator enforces rather than
+choices an approver weighs — an option that is not implemented cannot be taken
+by someone with a reason on the day, and a repo that genuinely belongs elsewhere
+is a reviewed code change rather than a dropdown.
+
+**One decision left:** whether `scope_grant` rides this approval or stays a
+separate gated `roles.json` edit. Recommended: separate, or the 2026-09-19 scope
+narrowing becomes something a new repo can quietly undo. It is also the only
+field left that grants anything, which makes it the whole review.
 
 **Effort:** the mechanism is small; agreeing the fields is the work. **Blocked
 by:** nothing hard — the approval service makes it convenient, but the existing
