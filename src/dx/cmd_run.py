@@ -5,10 +5,12 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
 from ._argtypes import SubParsers
+from .salvage import report, salvage_discarded_work
 from .config_loader import get_roles_path, get_route_for_role
 from .evidence import Check, EvidenceError, RoleTaskBundle, write_bundle
 from .psoperator_client import PSOperatorClient
@@ -373,6 +375,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         if args.no_evidence
         else ((_git(args.scope, "rev-parse", "HEAD") or "").strip() or None)
     )
+    # Noted BEFORE the run so a discarded run's artifact can be found again by
+    # mtime. pxx resets the scope to its pxx-pre tag on any non-COMPLETED
+    # outcome, and a governance refusal is one of those — see dx.salvage.
+    run_started_at = time.time()
     # unbounded: this is the model doing the work. A large refactor on a slow
     # local endpoint legitimately runs for minutes, and cutting it off at an
     # arbitrary deadline would destroy in-flight edits. Ctrl-C is the control.
@@ -417,6 +423,22 @@ def cmd_run(args: argparse.Namespace) -> None:
                 file=sys.stderr,
                 flush=True,
             )
+            # "The scope did not change" can mean the model wrote nothing, or
+            # that it wrote something good and pxx reset it away because one
+            # later action was refused. Those look identical from here and are
+            # not the same thing, so look in the run artifact before accepting
+            # the first reading. T-0022 lost 156 correct lines to that
+            # ambiguity on 2026-09-21.
+            try:
+                sal = salvage_discarded_work(Path(args.scope), run_started_at)
+                if sal.recovered:
+                    print(report(sal), file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001
+                # Best-effort by design: a failed salvage must never turn a
+                # failed run into a crashed one, or mask the real exit code.
+                print(f"   (could not check for discarded work: "
+                      f"{type(exc).__name__}: {exc})", file=sys.stderr,
+                      flush=True)
         sys.exit(EXIT_TASK_FAILED)
 
     if args.gui:
