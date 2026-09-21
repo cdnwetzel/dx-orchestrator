@@ -194,14 +194,25 @@ class MergeLock:
             except (OSError, json.JSONDecodeError):
                 held = {}
             holder = held.get("task_id")
-            if holder != self.task_id:
+            # A lock that says it was RELEASED is not held. dx's own release()
+            # deletes the file, but the ledger predates dx and its tooling
+            # marks state instead -- devswarm-ledger has carried
+            # {"state": "released", "task_id": "T-0004"} since August. Reading
+            # only task_id meant the FIRST successful merge locked the ledger
+            # permanently: every later task saw a stale holder and refused, with
+            # a message telling the operator not to delete a lock they did not
+            # take. Correct advice, wrong situation.
+            if str(held.get("state", "")).lower() == "released":
+                holder = None
+            if holder is not None and holder != self.task_id:
                 raise LedgerWriteError(
                     f"MERGE_LOCK.json is held by {holder!r}. Another merge is in "
                     f"progress, or a previous one did not release. Resolve it "
                     f"deliberately — deleting a lock you did not take is how two "
                     f"merges end up interleaved."
                 )
-            return
+            if holder == self.task_id:
+                return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
             json.dumps(
