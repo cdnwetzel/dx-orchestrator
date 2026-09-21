@@ -123,9 +123,28 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise LedgerWriteError(f"git {' '.join(args)} failed in {repo}: {exc}") from exc
     if check and result.returncode != 0:
+        err = result.stderr.strip()
+        if "not a git repository" in err:
+            # Deliberately NOT auto-`git init`. The ledger's durability IS its
+            # git history -- append-only, hash-chained, committed -- so creating
+            # an empty repository here would make "no history" and "valid but
+            # empty" indistinguishable, and would do it silently, mid-merge.
+            #
+            # The likeliest cause is a ledger path pointing somewhere it should
+            # not, and quietly initialising that directory turns a
+            # misconfiguration into a plausible-looking ledger. Say what is
+            # wrong and let a person decide.
+            raise LedgerWriteError(
+                f"{repo} is not a git repository.\n"
+                f"The ledger's durability depends on its git history, so this is "
+                f"not created automatically.\n"
+                f"  * if the path is wrong, fix DX_LEDGER_REPO or `ledger.repo` "
+                f"in the hardware manifest;\n"
+                f"  * if this really is a new ledger, run `git init` there "
+                f"yourself, deliberately."
+            )
         raise LedgerWriteError(
-            f"git {' '.join(args)} failed in {repo} "
-            f"(exit {result.returncode}): {result.stderr.strip()}"
+            f"git {' '.join(args)} failed in {repo} (exit {result.returncode}): {err}"
         )
     return result
 
