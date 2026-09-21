@@ -10,8 +10,9 @@ import sys
 from pathlib import Path
 
 from ._argtypes import SubParsers
+from .executed import ExecutedError, record_executed
 from .salvage import report, salvage_discarded_work
-from .config_loader import get_roles_path, get_route_for_role
+from .config_loader import get_ledger_repo_path, get_roles_path, get_route_for_role
 from .evidence import Check, EvidenceError, RoleTaskBundle, write_bundle
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
@@ -440,6 +441,23 @@ def cmd_run(args: argparse.Namespace) -> None:
                       f"{type(exc).__name__}: {exc})", file=sys.stderr,
                       flush=True)
         sys.exit(EXIT_TASK_FAILED)
+
+    # The run succeeded. Say so in the ledger, now, while the executor still
+    # knows: ADMITTED used to be the last row a task ever got, so "work was
+    # done, awaiting review" and "nothing happened" were indistinguishable.
+    # Fourteen tasks sat in that ambiguity on 2026-09-21 and were classified by
+    # hand afterwards, from memory and git archaeology.
+    if produced_changes and not args.no_evidence:
+        try:
+            recorded = record_executed(
+                get_ledger_repo_path(), Path(args.scope), args.task_id)
+            print(f"📒 Ledger: EXECUTED {args.task_id} @ {recorded}", flush=True)
+        except ExecutedError as exc:
+            # Loud, and NOT fatal. The work is committed in git either way, and
+            # failing the run here would throw away a good result over a
+            # bookkeeping problem — the same trade pxx gets wrong by resetting.
+            print(f"⚠️  Could not record EXECUTED for {args.task_id}: {exc}",
+                  file=sys.stderr, flush=True)
 
     if args.gui:
         print("🖥️  Launching GUI via PSOperator...", flush=True)
