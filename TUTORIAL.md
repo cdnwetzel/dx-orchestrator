@@ -349,26 +349,31 @@ cd / && rm -rf /tmp/dx-live-test
 
 ## 7. The merge gate: `dx merge`
 
-`dx merge` currently enforces three RL-003 signature checks (per `devswarm-ledger/SCHEMA.md § approvals/`). It does **not** yet perform the actual git merge or append `SIGNED`/`MERGED` rows to the ledger — those are deliberately stubbed until DevSwarmX Gate 1 unpauses.
+`dx merge` enforces the three RL-003 signature checks (per `devswarm-ledger/SCHEMA.md § approvals/`) and, before any of them can matter, checks that the task is fit to approve and names one candidate commit. It then appends `SIGNED` and `MERGED`, and with `--repo` performs the `git merge --no-ff`.
 
-The three checks:
+The checks, in the order they are decided:
 
 1. **Chain verify** — shells out to `devswarm-ledger/tools/verify_chain.py` to get the current head hash.
-2. **Signature verify** — imports every key from `devswarm-ledger/docs/keys/*.asc` into a scratch keyring and runs `gpg --verify <sig> <msg>`.
-3. **Payload + separation** — checks that the signed message equals `task_id + current_head + role` exactly, and that the signer's name differs from the task's `author_human` recorded in the ledger.
+2. **Task state + candidate** — the task's latest status row is not `REDLINE`, `INCOMPLETE`, `ESCALATED`, `SIGNED`, `MERGED` or `ABANDONED`; an `EXECUTED` row after its latest `ADMITTED` names a commit; the queue file's `sha` names the same one; with `--repo`, that commit exists there. Every refusal here happens before any row is written. (Until 2026-09-21 none of this was checked: a signature over a redlined task merged, and the candidate was read only *after* `SIGNED` had been appended.)
+3. **Signature verify** — imports every key from `devswarm-ledger/docs/keys/*.asc` into a scratch keyring and runs `gpg --verify <sig> <msg>`.
+4. **Payload + separation** — checks that the signed message equals `task_id + current_head + role` exactly, and that the signer's name differs from the task's `author_human` recorded in the ledger.
 
 `setup_dependencies.sh` clones `devswarm-ledger-reference`, a public ledger whose
-three rows are synthetic and whose one approval is a real GPG signature. It exists
+four rows are synthetic and whose one approval is a real GPG signature. It exists
 so you can run every branch of this gate without an operational ledger of your own.
+Because dx *falls back* to that ledger when nothing is configured, `dx merge`
+refuses it unless you say you mean it — a merge gated against synthetic rows is
+green over nothing:
 
 ```bash
-dx merge T-0001
+dx merge T-0001 --allow-reference-ledger
 ```
 
 Actual output on this box:
 
 ```
 ✅ Ledger chain verifies. Head: b8b8baca959ddfbe…
+✅ Task is EXECUTED; candidate 000000000000 matches its EXECUTED row.
 ✅ Signature verified. Signer: Rex Reviewer <reviewer@example.invalid>
 ✅ Signed message binds task_id + current head + role.
 ✅ Separation of duties: author 'Ada Author' ≠ signer 'Rex Reviewer'.
@@ -379,11 +384,11 @@ Actual output on this box:
 ✅ T-0001 merged and recorded.
 ```
 
-Exit code: `0`. Four checks, each of which can fail on its own — then two appends.
+Exit code: `0`. Five checks, each of which can fail on its own — then two appends.
 
 The head hashes will differ on your machine: rows carry a timestamp, so your
 chain diverges from this transcript the moment you run it. It still verifies
-(`python3 tools/verify_chain.py`), now with five rows.
+(`python3 tools/verify_chain.py`), now with six rows.
 
 Pass `--repo <path>` to also perform the `git merge --no-ff` of the queue file's
 `sha` in that repository. Without it, `dx` records the approval and says plainly
@@ -401,6 +406,7 @@ re-run:
 
 ```
 ✅ Ledger chain verifies. Head: ed127b72ca5642a3…
+✅ Task is EXECUTED; candidate 000000000000 matches its EXECUTED row.
 ✅ Signature verified. Signer: Rex Reviewer <reviewer@example.invalid>
 ❌ Stale signature (RL-003). Signed head b8b8baca959ddfbe… but current head is ed127b72ca5642a3…. Re-sign after re-verifying the chain.
 ```

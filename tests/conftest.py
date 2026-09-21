@@ -118,8 +118,10 @@ _ROWS, LEDGER_HEAD = _chain(
     [
         {"ts": "2026-09-01T00:00:00Z", "task_id": "T-TEST", "action": "ADMITTED",
          "author_human": "Alice Author", "author_seat": "S4"},
+        # The candidate: dx merge refuses a task whose EXECUTED row names no
+        # commit, and requires the queue file to name the same one.
         {"ts": "2026-09-02T00:00:00Z", "task_id": "T-TEST", "action": "EXECUTED",
-         "author_human": "Alice Author", "author_seat": "S4"},
+         "author_human": "Alice Author", "author_seat": "S4", "sha": "e" * 40},
         {"ts": "2026-09-03T00:00:00Z", "task_id": "T-OTHER", "action": "ADMITTED",
          "author_human": "Bob Other", "author_seat": "S6"},
     ]
@@ -149,7 +151,8 @@ def fake_ledger(tmp_path) -> Path:
     )
 
     (repo / "queue" / "T-TEST.json").write_text(
-        json.dumps({"task_id": "T-TEST", "approve_role": "code_review", "state": "REVIEWED"}),
+        json.dumps({"task_id": "T-TEST", "approve_role": "code_review",
+                    "state": "REVIEWED", "sha": "e" * 40}),
         encoding="utf-8",
     )
     (repo / "queue" / "T-NOROLE.json").write_text(

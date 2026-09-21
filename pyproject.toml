@@ -66,5 +66,5 @@ ignore = ["E501"]
 [[tool.mypy.overrides]]
 # psoperator and Pillow are optional, untyped deps used only by the observer
 # attestation path (dx.observer). They ship no stubs.
-module = ["psoperator.*", "PIL.*"]
+module = ["psoperator.*", "PIL.*", "pxx.*"]
 ignore_missing_imports = true

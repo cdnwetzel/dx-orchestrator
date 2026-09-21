@@ -184,13 +184,22 @@ def _ledger_for_merge(repo: Path, which: str) -> Path:
     (repo / "tools" / "verify_chain.py").write_text(
         f"print('Ledger head hash: {HEAD}')\n", encoding="utf-8"
     )
+    # A task with something to approve: dx merge refuses one with no EXECUTED
+    # row naming a commit, and requires the queue to name the same one. The
+    # stub verifier reports HEAD regardless of rows, so the fixture signature
+    # over `T-TEST + HEAD + code_review` stays valid.
+    candidate = "e" * 40
     (repo / "ledger.jsonl").write_text(
         json.dumps({"ts": "2026-09-01T00:00:00Z", "task_id": "T-TEST",
-                    "action": "ADMITTED", "author_human": "Alice Author"}) + "\n",
+                    "action": "ADMITTED", "author_human": "Alice Author"}) + "\n"
+        + json.dumps({"ts": "2026-09-02T00:00:00Z", "task_id": "T-TEST",
+                      "action": "EXECUTED", "author_human": "Alice Author",
+                      "sha": candidate}) + "\n",
         encoding="utf-8",
     )
     (repo / "queue" / "T-TEST.json").write_text(
-        json.dumps({"task_id": "T-TEST", "approve_role": "code_review"}), encoding="utf-8"
+        json.dumps({"task_id": "T-TEST", "approve_role": "code_review",
+                    "sha": candidate}), encoding="utf-8"
     )
     # The fixture payload IS task_id + head + role, byte for byte.
     shutil.copy(GPG_FIXTURES / "payload.bin", repo / "approvals" / "T-TEST.code_review.msg")
@@ -327,8 +336,15 @@ def test_merge_rejects_author_approving_their_own_task(
 ):
     """Real signature from a valid key — but the signer authored the task."""
     repo = _ledger_for_merge(ledger_with_keys, "valid")
+    # The same admitted-and-executed shape as the fixture, authored by the
+    # signer. (This used to be a single row with no `action` at all — the gate
+    # scanned only for author_human, so it never noticed.)
     (repo / "ledger.jsonl").write_text(
-        json.dumps({"task_id": "T-TEST", "author_human": "Bob Reviewer"}) + "\n",
+        json.dumps({"ts": "2026-09-01T00:00:00Z", "task_id": "T-TEST",
+                    "action": "ADMITTED", "author_human": "Bob Reviewer"}) + "\n"
+        + json.dumps({"ts": "2026-09-02T00:00:00Z", "task_id": "T-TEST",
+                      "action": "EXECUTED", "author_human": "Bob Reviewer",
+                      "sha": "e" * 40}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("DX_LEDGER_REPO", str(repo))

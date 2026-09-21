@@ -37,10 +37,13 @@ import re
 import subprocess
 from pathlib import Path
 
+from .ledger_state import LedgerStateError, current_state, task_rows
 from .ledger_writer import append_row, read_head
 
 #: Rows meaning this task is past the point where execution can be recorded.
-CLOSED_ACTIONS = ("EXECUTED", "SIGNED", "MERGED")
+#: Kept as a name for the tests that enumerate it; the decision itself is
+#: made by ledger_state.current_state, which every other writer also asks.
+CLOSED_ACTIONS = ("EXECUTED", "SIGNED", "MERGED", "ABANDONED")
 #: A commit, not a ref name — see the rev-parse note below.
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
@@ -56,20 +59,6 @@ def _git(scope: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _rows_for(ledger: Path, task_id: str) -> list[dict]:
-    path = ledger / "ledger.jsonl"
-    if not path.is_file():
-        raise ExecutedError(f"no ledger at {path}")
-    out = []
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        if row.get("task_id") == task_id:
-            out.append(row)
-    return out
-
-
 def record_executed(
     ledger: Path, scope: Path, task_id: str, *, sha: str | None = None,
 ) -> str:
@@ -79,14 +68,26 @@ def record_executed(
     caller: the person accountable for a task is the one who opened it, and a
     runner that could name someone else is a runner that can forge provenance.
     """
-    rows = _rows_for(ledger, task_id)
+    try:
+        rows = task_rows(ledger, task_id)
+    except LedgerStateError as exc:
+        raise ExecutedError(str(exc)) from exc
     if not rows:
         raise ExecutedError(f"{task_id} has no rows — nothing to record against")
 
-    closed = [r["action"] for r in rows if r.get("action") in CLOSED_ACTIONS]
+    state = current_state(rows, task_id)
+    # One reading of "closed", shared with dx merge and the bridge: a task
+    # that already has a candidate for its current admission, a signature, or
+    # a terminal row is not re-executed. A re-admitted task (INCOMPLETE then
+    # ADMITTED again) may be — the new admission has no candidate yet.
+    closed = (
+        "EXECUTED" if state.execution_recorded else
+        "SIGNED" if state.signed else
+        state.action if state.terminal else ""
+    )
     if closed:
         raise ExecutedError(
-            f"{task_id} already has {closed[0]} — appending a second would "
+            f"{task_id} already has {closed} — appending a second would "
             f"rewrite history. RL-009: append a CORRECTION naming that row.")
 
     author = next((r.get("author_human") for r in rows if r.get("author_human")), "")
@@ -111,8 +112,7 @@ def record_executed(
     subject = _git(scope, "log", "-1", "--format=%s", head).stdout.strip()
 
     append_row(ledger, {
-        "ts": datetime.datetime.now(datetime.timezone.utc)
-                .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ts": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "task_id": task_id,
         "author_seat": seat,
         "author_human": author,
@@ -130,7 +130,11 @@ def record_executed(
         try:
             q = json.loads(qf.read_text())
             q["state"] = "EXECUTED"
-            q["executed_sha"] = head
+            # `sha` — the one field name. `dx merge` reads it; until
+            # 2026-09-21 this wrote `executed_sha` and merge read `sha`, so
+            # every bridge task reached the gate with no candidate.
+            q["sha"] = head
+            q.pop("executed_sha", None)
             qf.write_text(json.dumps(q, indent=2, sort_keys=True) + "\n")
         except (OSError, ValueError) as exc:
             # The ledger is the record; the queue is a convenience view of it.

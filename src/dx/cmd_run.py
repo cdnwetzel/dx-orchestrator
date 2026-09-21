@@ -5,19 +5,19 @@ import json
 import os
 import shutil
 import subprocess
-import time
 import sys
+import time
 from pathlib import Path
 
 from ._argtypes import SubParsers
-from .executed import ExecutedError, record_executed
-from .salvage import report, salvage_discarded_work
 from .config_loader import get_ledger_repo_path, get_roles_path, get_route_for_role
 from .evidence import Check, EvidenceError, RoleTaskBundle, write_bundle
+from .executed import ExecutedError, record_executed
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
 from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
 from .role_validate import validate_card
+from .salvage import report, salvage_discarded_work
 
 #: Evidence lands outside the repository under edit. Writing it inside would
 #: put receipts in the tree pxx is committing, which is how an evidence store

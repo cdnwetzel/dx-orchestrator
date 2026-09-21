@@ -74,7 +74,7 @@ def _admit(ledger: Path, task_id: str, action: str = "ADMITTED") -> None:
 
 
 def _last(ledger: Path) -> dict:
-    lines = [l for l in (ledger / "ledger.jsonl").read_text().splitlines() if l.strip()]
+    lines = [ln for ln in (ledger / "ledger.jsonl").read_text().splitlines() if ln.strip()]
     return json.loads(lines[-1])
 
 
@@ -125,7 +125,24 @@ class TestRecording:
 
         q = json.loads(qf.read_text())
         assert q["state"] == "EXECUTED"
-        assert q["executed_sha"]
+        # The field is `sha`, because that is what `dx merge` reads. Writing
+        # `executed_sha` here is how every bridge task reached the merge gate
+        # with no candidate on 2026-09-21.
+        assert q["sha"] and q["sha"] == _last(ledger)["sha"]
+        assert "executed_sha" not in q
+
+    def test_a_re_admitted_task_may_be_executed_again(
+        self, ledger: Path, scope: Path,
+    ):
+        """INCOMPLETE then ADMITTED again is a new admission with no candidate."""
+        _admit(ledger, "T-0104")
+        _admit(ledger, "T-0104", action="EXECUTED")
+        _admit(ledger, "T-0104", action="INCOMPLETE")
+        _admit(ledger, "T-0104")
+
+        record_executed(ledger, scope, "T-0104")
+
+        assert _last(ledger)["action"] == "EXECUTED"
 
 
 class TestRefusals:
@@ -172,8 +189,8 @@ class TestRefusals:
         _admit(ledger, "T-0203")
         record_executed(ledger, scope, "T-0203")
         actions = {
-            json.loads(l)["action"]
-            for l in (ledger / "ledger.jsonl").read_text().splitlines() if l.strip()
+            json.loads(ln)["action"]
+            for ln in (ledger / "ledger.jsonl").read_text().splitlines() if ln.strip()
         }
         assert "SIGNED" not in actions
         assert "MERGED" not in actions

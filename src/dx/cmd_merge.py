@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,6 +27,13 @@ from .evidence import (
     MergeGateBundle,
     bundle_digest,
     write_merge_bundle,
+)
+from .ledger_state import (
+    LedgerStateError,
+    candidate_for_merge,
+    current_state,
+    is_reference_ledger,
+    task_rows,
 )
 from .ledger_utils import (
     LedgerError,
@@ -99,6 +107,16 @@ def register_merge_subcommand(subparsers: SubParsers) -> None:
         help=(
             "Bypass ALL merge gates — the RL-003 signature check AND GUI "
             "verification. Audit-visible; use only for emergency rollback."
+        ),
+    )
+    parser.add_argument(
+        "--allow-reference-ledger",
+        action="store_true",
+        help=(
+            "Run the gate against devswarm-ledger-reference. Its rows are "
+            "synthetic, so a green merge there attests to nothing; refused "
+            "without this flag because dx falls back to it when no ledger is "
+            "configured."
         ),
     )
     parser.add_argument(
@@ -297,6 +315,16 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                 "Clone it or set DX_LEDGER_REPO."
             )
 
+        if is_reference_ledger(ledger_repo) and not args.allow_reference_ledger:
+            rec["failure"] = "reference_ledger"
+            _fail(
+                f"{ledger_repo} is the public reference ledger. Its rows are "
+                f"synthetic and attest to no real work; a merge gated against "
+                f"it is green over nothing. Point DX_LEDGER_REPO or the "
+                f"manifest's ledger.repo at the real ledger, or pass "
+                f"--allow-reference-ledger to exercise the gate deliberately."
+            )
+
         queue = get_task_queue(args.task_id, ledger_repo)
         role = queue.get("approve_role")
         rec["role"] = role
@@ -321,6 +349,37 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
         current_head = get_ledger_head(ledger_repo)
         rec["head_before"] = current_head
         _ok(f"Ledger chain verifies. Head: {current_head[:16]}…")
+
+        # (0b) The task is approvable and names one candidate. RL-003 binds a
+        # signature to a head; it assumes the thing under that head is fit to
+        # approve. Until 2026-09-21 nothing checked that: a signature over a
+        # redlined task merged, and the candidate commit was read from the
+        # queue alone, under a field name the bridge path never wrote, AFTER
+        # the SIGNED row had been appended. Every refusal here happens before
+        # any row is written.
+        try:
+            state = current_state(task_rows(ledger_repo, args.task_id), args.task_id)
+            rec["task_state"] = state.action
+            task_sha = candidate_for_merge(queue, state)
+        except LedgerStateError as exc:
+            rec["failure"] = "task_not_mergeable"
+            _fail(f"{args.task_id} cannot be merged: {exc}")
+        rec["candidate_sha"] = task_sha
+        _ok(f"Task is {state.action}; candidate {task_sha[:12]} matches its "
+            f"EXECUTED row.")
+        if args.repo:
+            target = Path(args.repo).expanduser()
+            kind = subprocess.run(
+                ["git", "-C", str(target), "cat-file", "-t", task_sha],
+                capture_output=True, text=True, timeout=60,
+            )
+            if kind.returncode != 0 or kind.stdout.strip() != "commit":
+                rec["failure"] = "candidate_not_in_repo"
+                _fail(
+                    f"candidate {task_sha[:12]} is not a commit in {target} — "
+                    f"the approved work is not where the merge would happen"
+                )
+            _ok(f"Candidate {task_sha[:12]} is a commit in {target}.")
 
         # (1) Signature verifies against a currently-valid key in docs/keys/
         signer = verify_detached_signature(sig_path, msg_path, ledger_repo)
@@ -406,7 +465,7 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                     author_human="(reviewer)",
                     author_seat=queue.get("author_seat"),
                     reviewer_seat=queue.get("reviewer_seat"),
-                    sha=queue.get("sha"),
+                    sha=task_sha,
                     evidence=(
                         f"detached signature over task_id+{current_head}+{role} "
                         f"at {sig_path.name}, verified against that head; "
@@ -418,12 +477,9 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
 
             merged_sha = None
             if args.repo:
-                target = Path(args.repo).expanduser()
-                task_sha = queue.get("sha")
-                if not task_sha:
-                    rec["failure"] = "no_sha_to_merge"
-                    _fail(f"queue file for {args.task_id} has no 'sha' to merge")
-                merged_sha = git_merge_no_ff(target, str(task_sha), task_id=args.task_id)
+                # task_sha was established and checked against this repo in
+                # (0b), before SIGNED was written. Nothing is re-read here.
+                merged_sha = git_merge_no_ff(target, task_sha, task_id=args.task_id)
                 rec["merged"] = {
                     "repo": str(target),
                     "task_sha": str(task_sha),
@@ -443,7 +499,7 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                     prev_hash=head_after_signed,
                     author_seat=queue.get("author_seat"),
                     reviewer_seat=queue.get("reviewer_seat"),
-                    sha=merged_sha or queue.get("sha"),
+                    sha=merged_sha or task_sha,
                     evidence=(
                         f"git merge --no-ff into {args.repo} at {merged_sha}"
                         if merged_sha
