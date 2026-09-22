@@ -24,9 +24,6 @@ from .salvage import find_run_dir, report, salvage_discarded_work
 #: put receipts in the tree pxx is committing, which is how an evidence store
 #: ends up attesting to itself.
 DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
-#: edit→test rounds for `pxx loop`. Four: the from-scratch sqlinv build
-#: needed one round to write and up to three to make its own tests honest.
-DEFAULT_LOOP_ROUNDS = 4
 
 
 def _evidence_root(args: argparse.Namespace) -> Path:
@@ -198,16 +195,6 @@ def register_run_subcommand(subparsers: SubParsers) -> None:
         "--no-commit",
         action="store_true",
         help="Do not auto-commit pxx changes",
-    )
-    parser.add_argument(
-        "--loop-rounds",
-        type=int,
-        default=DEFAULT_LOOP_ROUNDS,
-        help=(
-            "edit→test rounds pxx loop may take (each round is a fresh model "
-            f"context; default {DEFAULT_LOOP_ROUNDS}). The per-round turn and "
-            "token budgets come from the repository's pxx.toml."
-        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -382,9 +369,16 @@ def cmd_run(args: argparse.Namespace) -> None:
     # model chose to run and say; on 2026-09-22 four reworks of one task each
     # ended a step short that way. --sandbox confines the loop's own test run
     # to the scope (pxx 2.5.5+ps2; fails closed without a sandboxer).
+    #
+    # No --budget-rounds: in pxx 2.5.5 that one flag is BOTH the loop's
+    # edit->test round cap and a tighten-only override of the session's
+    # model-turn budget. T-0050 (2026-09-22) was run with `--budget-rounds 4`
+    # and ended after four model turns -- list, read, read, read -- before a
+    # single edit. The loop's round cap stays pxx's default; every budget
+    # comes from the repository's pxx.toml, where it is reviewed.
     cmd = [
         pxx_bin, "loop", "--scope", args.scope, "--message", enhanced_prompt,
-        "--sandbox", "--budget-rounds", str(args.loop_rounds),
+        "--sandbox",
     ]
     if not args.no_commit:
         cmd.append("--commit")
@@ -401,7 +395,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  PXX_PROVIDER:  {route.provider or '(unset, pxx default: ollama)'}")
         print(f"  pxx:           {pxx_bin}")
         print(f"  command:       {pxx_bin} loop --scope {args.scope} --sandbox "
-              f"--budget-rounds {args.loop_rounds} [--commit] <prompt>")
+              f"[--commit] <prompt>")
         return
 
     # Flushed before handing stdout to the subprocess. pxx writes straight to

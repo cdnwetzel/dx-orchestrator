@@ -255,7 +255,7 @@ DRY RUN
   PXX_MODEL:     qwen3.8-27b
   PXX_PROVIDER:  vllm
   pxx:           /home/cwe/ai/dx-orchestrator/.venv/bin/pxx
-  command:       /home/cwe/ai/dx-orchestrator/.venv/bin/pxx loop --scope . --sandbox --budget-rounds 4 [--commit] <prompt>
+  command:       /home/cwe/ai/dx-orchestrator/.venv/bin/pxx loop --scope . --sandbox [--commit] <prompt>
 ```
 
 Now the real run against T5810:
@@ -341,7 +341,7 @@ cd / && rm -rf /tmp/dx-live-test
 1. `dx run` loaded `backend-engineer.md` from the role registry.
 2. It built a prompt: `[ROLE: backend-engineer (Fit: High)] MANDATE: ... MUST NOT: ... USER INSTRUCTION: ...`
 3. It looked up `backend-engineer` in the manifest, set `PXX_BASE_URL=http://t5810.lab:8007`, `PXX_MODEL=qwen3.8-27b`, `PXX_PROVIDER=vllm`.
-4. It ran `pxx loop --scope . --sandbox --budget-rounds 4 --message '<prompt>'` under
+4. It ran `pxx loop --scope . --sandbox --message '<prompt>'` under
    those env vars. `loop`, not `edit`: pxx runs the repository's `test_command`
    itself between rounds, inside the same sandbox its `run_shell` uses, feeds
    the failing set back into a fresh model context, and stops on

@@ -35,7 +35,6 @@ def test_dry_run_shows_a_sandboxed_pxx_loop_not_an_edit(capsys):
     _run("T-001", "--required_role", "widget-engineer", "-m", "hello", "--dry-run")
     out = capsys.readouterr().out
     assert "pxx loop --scope" in out and "--sandbox" in out
-    assert f"--budget-rounds {cmd_run.DEFAULT_LOOP_ROUNDS}" in out
     assert " edit " not in out
 
 
@@ -52,10 +51,12 @@ def test_the_real_command_is_loop_sandbox_and_commit(monkeypatch, tmp_path):
     monkeypatch.setattr("dx.cmd_run.subprocess.run", fake_run)
     monkeypatch.setattr("dx.cmd_run.record_executed", lambda *a, **k: None)
     _run("T-004", "--required_role", "widget-engineer", "-m", "hi",
-         "--no-evidence", "--loop-rounds", "2", "--scope", str(tmp_path))
+         "--no-evidence", "--scope", str(tmp_path))
     cmd = seen["cmd"]
     assert cmd[1] == "loop" and "--sandbox" in cmd and "--commit" in cmd
-    assert cmd[cmd.index("--budget-rounds") + 1] == "2"
+    # pxx's --budget-rounds also tightens the session's model-turn budget
+    # (T-0050 died after four turns); budgets come from pxx.toml only.
+    assert "--budget-rounds" not in cmd
 
 
 def test_dry_run_uses_the_default_route_for_an_unrouted_role(capsys):
