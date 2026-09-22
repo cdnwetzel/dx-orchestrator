@@ -19,6 +19,7 @@ from .role_registry import failed_slug, get_parse_failures, get_role, load_regis
 from .role_validate import validate_card
 from .run_facts import collect as collect_run_facts
 from .salvage import find_run_dir, report, salvage_discarded_work
+from .seed import SeedError, seed_from_patch
 
 #: Evidence lands outside the repository under edit. Writing it inside would
 #: put receipts in the tree pxx is committing, which is how an evidence store
@@ -56,6 +57,7 @@ def _emit_evidence(
     source_head: str | None,
     returncode: int,
     run_started_at: float | None = None,
+    seed: object | None = None,
 ) -> tuple[Path, bool]:
     """Build and write the `dx.role_task.v1` bundle for this run.
 
@@ -130,6 +132,18 @@ def _emit_evidence(
         find_run_dir(run_started_at) if run_started_at is not None else None
     )
     artifacts.update(facts.artifacts)
+    if seed is not None:
+        # The seed commit is inside source_head..HEAD, so changes.patch already
+        # shows its lines; the check names where they came from.
+        try:
+            artifacts["seed.patch"] = Path(args.seed_patch).read_text(errors="replace")
+        except OSError:
+            pass
+        checks["seeded_from"] = Check(
+            ok=True, path="artifacts/seed.patch",
+            detail=f"{args.seed_from} -> commit {seed.sha[:12]}, unverified"
+                   + (f"; left as found: {', '.join(seed.excluded)}" if seed.excluded else ""),
+        )
     checks["tests_recorded"] = Check(
         ok=facts.tests is not None,
         path="artifacts/pxx-outcome.json" if "pxx-outcome.json" in facts.artifacts else None,
@@ -200,6 +214,18 @@ def register_run_subcommand(subparsers: SubParsers) -> None:
         "--dry-run",
         action="store_true",
         help="Print the pxx command without executing",
+    )
+    parser.add_argument(
+        "--seed-patch",
+        help=(
+            "A predecessor run's recorded diff (a bundle's artifacts/run-diff.patch) "
+            "to apply and commit on the task line, as dx, before the run starts. "
+            "Refuses to run if it does not apply. Requires --seed-from."
+        ),
+    )
+    parser.add_argument(
+        "--seed-from",
+        help="The task id the seed patch came from (recorded in the commit and the bundle)",
     )
     parser.add_argument(
         "--force",
@@ -414,6 +440,31 @@ def cmd_run(args: argparse.Namespace) -> None:
         if args.no_evidence
         else ((_git(args.scope, "rev-parse", "HEAD") or "").strip() or None)
     )
+    # A rework starts from its predecessor's recorded work, committed here as
+    # dx BEFORE pxx ties its safety net, so the run's HEAD includes it and the
+    # task's base (recorded at ADMITTED, before this) to candidate covers it.
+    seed = None
+    if args.seed_patch or args.seed_from:
+        if not (args.seed_patch and args.seed_from):
+            print("ERROR: --seed-patch and --seed-from go together", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+        try:
+            seed = seed_from_patch(
+                Path(args.scope), Path(args.seed_patch),
+                task_id=args.task_id, from_task=args.seed_from,
+                run_id=Path(args.seed_patch).parent.parent.name,
+            )
+        except SeedError as exc:
+            # Fail closed: a rework told to start from its predecessor must not
+            # silently start from scratch and be reviewed as if it had.
+            print(f"❌ seed from {args.seed_from} refused: {exc}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+        print(
+            f"🌱 seeded {args.task_id} from {args.seed_from}: commit {seed.sha[:12]}, "
+            f"{len(seed.files)} file(s)"
+            + (f", left as found: {', '.join(seed.excluded)}" if seed.excluded else ""),
+            flush=True,
+        )
     # Noted BEFORE the run so a discarded run's artifact can be found again by
     # mtime. pxx resets the scope to its pxx-pre tag on any non-COMPLETED
     # outcome, and a governance refusal is one of those — see dx.salvage.
@@ -430,7 +481,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         try:
             bundle_path, produced_changes = _emit_evidence(
                 args, card.fit.value, route, enhanced_prompt, cmd,
-                source_head, result.returncode, run_started_at,
+                source_head, result.returncode, run_started_at, seed,
             )
         except EvidenceError as exc:
             print(

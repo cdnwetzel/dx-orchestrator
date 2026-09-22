@@ -119,6 +119,38 @@ def _patch_files(patch: Path) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))
 
 
+def apply_patch_tolerant(scope: Path, patch: Path) -> tuple[list[str], str | None]:
+    """``git apply`` a recorded patch, stepping over files the run left on disk.
+
+    Files a run CREATED survive pxx's reset (git reset --hard leaves untracked
+    files alone), so a patch that re-creates them fails ``--check`` with
+    "already exists in working directory". Those paths are the run's own
+    files, already on disk in the run's version: they are excluded and the
+    rest is applied. Returns (excluded paths, error) -- error None on success,
+    and nothing is applied when it is not. T-0052 (2026-09-22): a leftover
+    debug_bytes.py refused the 181-line loop diff that held the real work.
+    """
+    excluded: list[str] = []
+    check = _git(scope, "apply", "--check", str(patch))
+    if check.returncode != 0:
+        excluded = [
+            m.group(1) for m in re.finditer(
+                r"^error: (.+?): already exists in working directory$",
+                check.stderr or "", re.MULTILINE)
+            if (scope / m.group(1)).is_file()
+        ]
+        if excluded:
+            check = _git(scope, "apply", "--check",
+                         *(f"--exclude={p}" for p in excluded), str(patch))
+    if check.returncode != 0:
+        return excluded, (f"the recorded patch does not apply to HEAD: "
+                          f"{(check.stderr or '').strip()[:120]}")
+    applied = _git(scope, "apply", *(f"--exclude={p}" for p in excluded), str(patch))
+    if applied.returncode != 0:
+        return excluded, f"apply failed: {(applied.stderr or '').strip()[:120]}"
+    return excluded, None
+
+
 def salvage_discarded_work(
     scope: Path, started_at: float, runs: Path | None = None,
 ) -> Salvage:
@@ -146,34 +178,9 @@ def salvage_discarded_work(
         return Salvage(None, (), 0,
                        "the scope has modified tracked files — left untouched")
 
-    # Files the run CREATED survive pxx's reset (git reset --hard leaves
-    # untracked files alone), so a patch that re-creates them fails
-    # `--check` with "already exists in working directory". Those paths are
-    # the run's own files, already on disk in the run's version: exclude
-    # them and recover the rest. T-0052 (2026-09-22): a leftover
-    # debug_bytes.py refused the 181-line loop diff that held the real work.
-    excluded: list[str] = []
-    check = _git(scope, "apply", "--check", str(patch))
-    if check.returncode != 0:
-        excluded = [
-            m.group(1) for m in re.finditer(
-                r"^error: (.+?): already exists in working directory$",
-                check.stderr or "", re.MULTILINE)
-            if (scope / m.group(1)).is_file()
-        ]
-        if excluded:
-            check = _git(scope, "apply", "--check",
-                         *(f"--exclude={p}" for p in excluded), str(patch))
-    if check.returncode != 0:
-        return Salvage(
-            None, (), 0,
-            f"the recorded patch does not apply to HEAD: "
-            f"{(check.stderr or '').strip()[:120]}")
-
-    applied = _git(scope, "apply", *(f"--exclude={p}" for p in excluded), str(patch))
-    if applied.returncode != 0:
-        return Salvage(None, (), 0,
-                       f"apply failed: {(applied.stderr or '').strip()[:120]}")
+    excluded, err = apply_patch_tolerant(scope, patch)
+    if err:
+        return Salvage(None, (), 0, err)
 
     files = tuple(f for f in _patch_files(patch) if f not in excluded)
     lines = sum(
@@ -204,5 +211,5 @@ def report(s: Salvage) -> str:
     ])
 
 
-__all__ = ["Salvage", "salvage_discarded_work", "find_run_dir",
-           "pxx_runs_dir", "report"]
+__all__ = ["Salvage", "apply_patch_tolerant", "salvage_discarded_work",
+           "find_run_dir", "pxx_runs_dir", "report"]

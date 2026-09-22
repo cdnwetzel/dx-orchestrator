@@ -416,3 +416,45 @@ class TestRunEvidenceIsRedacted:
         m = json.loads((bundles[0] / "manifest.json").read_text())
         assert set(m["redaction"]["findings"]) >= {"artifacts/prompt.txt", "artifacts/command.txt"}
         assert "[REDACTED:openai-key]" in (bundles[0] / "artifacts" / "prompt.txt").read_text()
+
+
+def test_seed_flags_go_together(capsys):
+    with pytest.raises(SystemExit) as exc:
+        _run("T-005", "--required_role", "widget-engineer", "-m", "hi",
+             "--no-evidence", "--seed-patch", "/nonexistent.patch")
+    assert exc.value.code == 1
+    assert "go together" in capsys.readouterr().err
+
+
+def test_an_unapplicable_seed_refuses_the_run_before_pxx(monkeypatch, tmp_path, capsys):
+    """A rework told to start from its predecessor must not silently start
+    from scratch: no pxx, exit 1, the reason on stderr."""
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "a.py").write_text("x = 0\n")
+    sp.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    sp.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-qm", "base"], check=True)
+    patch = tmp_path / "p.patch"
+    patch.write_text("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+                     "@@ -1 +1 @@\n-nope\n+x = 1\n")
+
+    def explode(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError("pxx ran after a refused seed")
+
+    # Replace the `subprocess` NAME inside cmd_run only: patching
+    # subprocess.run itself would also break dx.seed's own git calls, and the
+    # thing under test is that the pxx launch never happens.
+    import types
+
+    monkeypatch.setattr("dx.cmd_run._git", lambda *a: "")
+    monkeypatch.setattr("dx.cmd_run.subprocess",
+                        types.SimpleNamespace(run=explode, TimeoutExpired=sp.TimeoutExpired))
+    with pytest.raises(SystemExit) as exc:
+        _run("T-006", "--required_role", "widget-engineer", "-m", "hi", "--no-evidence",
+             "--scope", str(repo), "--seed-patch", str(patch), "--seed-from", "T-000")
+    assert exc.value.code == 1
+    assert "seed from T-000 refused" in capsys.readouterr().err
