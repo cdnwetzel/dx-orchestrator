@@ -130,14 +130,20 @@ def salvage_discarded_work(
     if not patch.is_file() or patch.stat().st_size < _MIN_PATCH_BYTES:
         return Salvage(None, (), 0, "the run recorded no changes to recover")
 
-    # If the tree is dirty the reset did not happen, or something else wrote
-    # here. Either way this is not ours to overwrite.
-    status = _git(scope, "status", "--porcelain")
+    # If TRACKED files are modified the reset did not happen, or something
+    # else wrote here; either way this is not ours to overwrite. Untracked
+    # files are not a reason to refuse: pxx's reset leaves them behind (the
+    # scratch script an agent wrote beside its real edits), a patch that does
+    # not touch them cannot harm them, and one that would create them fails
+    # `git apply --check` below. On 2026-09-22 a leftover debug_bytes.py made
+    # this refuse to recover the nine test edits that were the run's actual
+    # work.
+    status = _git(scope, "status", "--porcelain", "--untracked-files=no")
     if status.returncode != 0:
         return Salvage(None, (), 0, f"{scope} is not a readable git repository")
     if status.stdout.strip():
         return Salvage(None, (), 0,
-                       "the scope has uncommitted changes — left untouched")
+                       "the scope has modified tracked files — left untouched")
 
     check = _git(scope, "apply", "--check", str(patch))
     if check.returncode != 0:

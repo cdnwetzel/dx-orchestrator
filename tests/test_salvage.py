@@ -84,6 +84,29 @@ class TestRecovery:
 class TestRefusals:
     """Each of these is a way automatic recovery could destroy something."""
 
+    def test_an_untracked_leftover_does_not_block_salvage(self, tmp_path: Path, repo: Path):
+        """pxx's reset leaves untracked files behind -- the scratch script an
+        agent wrote beside its real edits. On 2026-09-22 a debug_bytes.py made
+        salvage refuse to recover the nine test edits that were the run's
+        actual work. A patch that does not touch the file cannot harm it."""
+        runs = tmp_path / "runs"
+        run_dir = runs / "20260922T162541Z-abcd"
+        run_dir.mkdir(parents=True)
+        (repo / "a.py").write_text("x\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "base")
+        (repo / "a.py").write_text("x\ny\n")
+        patch = _git(repo, "diff").stdout
+        _git(repo, "checkout", "--", "a.py")
+        (run_dir / "diff.patch").write_text(patch)
+        (repo / "debug_bytes.py").write_text("print('scratch')\n")   # untracked, stays
+
+        s = salvage_discarded_work(repo, time.time() - 5, runs)
+
+        assert s.recovered, s.reason
+        assert (repo / "a.py").read_text() == "x\ny\n"
+        assert (repo / "debug_bytes.py").is_file(), "the leftover is not ours to remove"
+
     def test_a_dirty_scope_is_left_alone(self, tmp_path: Path, repo: Path):
         started = time.time()
         runs = _run_dir_with_patch(tmp_path, repo, "work\n")
@@ -92,7 +115,7 @@ class TestRefusals:
         s = salvage_discarded_work(repo, started, runs)
 
         assert not s.recovered
-        assert "uncommitted" in s.reason
+        assert "modified tracked files" in s.reason
         assert (repo / "src.py").read_text() == "SOMEONE ELSE WAS HERE\n"
 
     def test_a_patch_that_does_not_apply_is_refused(
