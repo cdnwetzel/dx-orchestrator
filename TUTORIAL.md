@@ -255,7 +255,7 @@ DRY RUN
   PXX_MODEL:     qwen3.8-27b
   PXX_PROVIDER:  vllm
   pxx:           /home/cwe/ai/dx-orchestrator/.venv/bin/pxx
-  command:       /home/cwe/ai/dx-orchestrator/.venv/bin/pxx edit --scope . [--commit] <prompt>
+  command:       /home/cwe/ai/dx-orchestrator/.venv/bin/pxx loop --scope . --sandbox --budget-rounds 4 [--commit] <prompt>
 ```
 
 Now the real run against T5810:
@@ -341,7 +341,13 @@ cd / && rm -rf /tmp/dx-live-test
 1. `dx run` loaded `backend-engineer.md` from the role registry.
 2. It built a prompt: `[ROLE: backend-engineer (Fit: High)] MANDATE: ... MUST NOT: ... USER INSTRUCTION: ...`
 3. It looked up `backend-engineer` in the manifest, set `PXX_BASE_URL=http://t5810.lab:8007`, `PXX_MODEL=qwen3.8-27b`, `PXX_PROVIDER=vllm`.
-4. It ran `pxx edit --scope . --message '<prompt>'` under those env vars.
+4. It ran `pxx loop --scope . --sandbox --budget-rounds 4 --message '<prompt>'` under
+   those env vars. `loop`, not `edit`: pxx runs the repository's `test_command`
+   itself between rounds, inside the same sandbox its `run_shell` uses, feeds
+   the failing set back into a fresh model context, and stops on
+   `NO_TEST_PROGRESS` or `TEST_REGRESSION`. The bundle's `result.tests` is
+   read from that record (`dx.run_facts`); nothing the model *said* about
+   tests reaches the bundle.
 5. pxx tagged `pxx-pre/<timestamp>` (its safety net), edited `hello.py`, then hit its shell-verify gate and exited non-zero.
 6. The edit survived — pxx's atomic write happens before the verify step.
 

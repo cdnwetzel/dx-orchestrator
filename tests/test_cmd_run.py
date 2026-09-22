@@ -29,6 +29,35 @@ def test_dry_run_reports_the_resolved_route(capsys):
     assert "High" in out
 
 
+def test_dry_run_shows_a_sandboxed_pxx_loop_not_an_edit(capsys):
+    """The executor is `pxx loop --sandbox`: the loop runs the repository's
+    test_command itself, confined, between rounds. `pxx edit` runs none."""
+    _run("T-001", "--required_role", "widget-engineer", "-m", "hello", "--dry-run")
+    out = capsys.readouterr().out
+    assert "pxx loop --scope" in out and "--sandbox" in out
+    assert f"--budget-rounds {cmd_run.DEFAULT_LOOP_ROUNDS}" in out
+    assert " edit " not in out
+
+
+def test_the_real_command_is_loop_sandbox_and_commit(monkeypatch, tmp_path):
+    seen = {}
+
+    class _R:
+        returncode = 0
+
+    def fake_run(cmd, env=None, **kw):
+        seen["cmd"] = cmd
+        return _R()
+
+    monkeypatch.setattr("dx.cmd_run.subprocess.run", fake_run)
+    monkeypatch.setattr("dx.cmd_run.record_executed", lambda *a, **k: None)
+    _run("T-004", "--required_role", "widget-engineer", "-m", "hi",
+         "--no-evidence", "--loop-rounds", "2", "--scope", str(tmp_path))
+    cmd = seen["cmd"]
+    assert cmd[1] == "loop" and "--sandbox" in cmd and "--commit" in cmd
+    assert cmd[cmd.index("--budget-rounds") + 1] == "2"
+
+
 def test_dry_run_uses_the_default_route_for_an_unrouted_role(capsys):
     _run("T-002", "--required_role", "rotating-reviewer", "-m", "hi", "--dry-run")
     out = capsys.readouterr().out

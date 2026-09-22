@@ -242,6 +242,9 @@ class RoleTaskBundle:
     #: relative-path -> text content, written under ``artifacts/``
     artifacts: dict[str, str] = field(default_factory=dict)
     boundary: tuple[str, ...] = DEFAULT_BOUNDARY
+    #: what the executor's OWN test run recorded (dx.run_facts), or None when
+    #: it recorded none. Never derived from anything the model said.
+    tests: dict | None = None
 
 
 @dataclass
@@ -376,6 +379,8 @@ def _render_readme(bundle: RoleTaskBundle, generated_utc: str) -> str:
         lines += ["## Routing", ""]
         lines += [f"- **{k}:** `{v}`" for k, v in bundle.routing.items() if v]
         lines += [""]
+    lines += ["## Tests — the executor's own run", ""]
+    lines += [_render_tests_line(bundle.tests), ""]
     if bundle.checks:
         lines += ["## Checks", "", "| Check | Result | Artifact |", "| --- | --- | --- |"]
         for name, check in bundle.checks.items():
@@ -394,6 +399,22 @@ def _render_readme(bundle: RoleTaskBundle, generated_utc: str) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _render_tests_line(tests: dict | None) -> str:
+    """One sentence, from the recorded gate events only."""
+    if not tests:
+        return ("The executor recorded no test run. Nothing here says the tests "
+                "passed; nothing here says they were run.")
+    state = "passed" if tests.get("passed") else f"{tests.get('failing')} failing"
+    sandboxed = tests.get("sandboxed")
+    where = ("sandboxed" if sandboxed is True
+             else "UNSANDBOXED" if sandboxed is False else "sandboxing unknown")
+    intro = tests.get("introduced_failures")
+    return (f"pxx ran the project's test command {tests.get('runs')} time(s), "
+            f"{where}; last run: {state}"
+            + (f"; {intro} failure(s) introduced over the baseline" if intro is not None else "")
+            + f" (pxx run `{tests.get('run_id')}`).")
 
 
 def _check_boundary(boundary: tuple[str, ...]) -> None:
@@ -547,7 +568,7 @@ def write_bundle(bundle: RoleTaskBundle, root: Path, *, now: str | None = None) 
         "task_id": bundle.task_id,
         "source_head": bundle.source_head,
         "generated_utc": generated_utc,
-        "result": {"passed": bundle.passed},
+        "result": {"passed": bundle.passed, "tests": bundle.tests},
         "role": bundle.role,
         "routing": bundle.routing,
         "checks": {k: v.as_json() for k, v in bundle.checks.items()},

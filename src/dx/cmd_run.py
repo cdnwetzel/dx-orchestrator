@@ -17,12 +17,16 @@ from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
 from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
 from .role_validate import validate_card
-from .salvage import report, salvage_discarded_work
+from .run_facts import collect as collect_run_facts
+from .salvage import find_run_dir, report, salvage_discarded_work
 
 #: Evidence lands outside the repository under edit. Writing it inside would
 #: put receipts in the tree pxx is committing, which is how an evidence store
 #: ends up attesting to itself.
 DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+#: edit→test rounds for `pxx loop`. Four: the from-scratch sqlinv build
+#: needed one round to write and up to three to make its own tests honest.
+DEFAULT_LOOP_ROUNDS = 4
 
 
 def _evidence_root(args: argparse.Namespace) -> Path:
@@ -54,6 +58,7 @@ def _emit_evidence(
     cmd: list[str],
     source_head: str | None,
     returncode: int,
+    run_started_at: float | None = None,
 ) -> tuple[Path, bool]:
     """Build and write the `dx.role_task.v1` bundle for this run.
 
@@ -121,6 +126,23 @@ def _emit_evidence(
     if status is not None:
         artifacts["git-status.txt"] = status
 
+    # The executor's own test record, read from pxx's run directory. A bundle
+    # whose only test fact was "the model said so" is what let T-0046 reach
+    # review reporting "10 passed" over a suite that failed 4 of 16.
+    facts = collect_run_facts(
+        find_run_dir(run_started_at) if run_started_at is not None else None
+    )
+    artifacts.update(facts.artifacts)
+    checks["tests_recorded"] = Check(
+        ok=facts.tests is not None,
+        path="artifacts/pxx-outcome.json" if "pxx-outcome.json" in facts.artifacts else None,
+        detail=(
+            f"pxx ran the test command {facts.tests['runs']}x, "
+            f"last: {'passed' if facts.tests['passed'] else str(facts.tests['failing']) + ' failing'}"
+            if facts.tests is not None else "no test gate in the run record"
+        ),
+    )
+
     bundle = RoleTaskBundle(
         task_id=args.task_id,
         title=f"{args.task_id} — {args.required_role}",
@@ -130,6 +152,7 @@ def _emit_evidence(
         routing={"endpoint": endpoint, "model": model, "provider": provider},
         checks=checks,
         artifacts=artifacts,
+        tests=facts.tests,
     )
     return write_bundle(bundle, _evidence_root(args)), produced
 
@@ -175,6 +198,16 @@ def register_run_subcommand(subparsers: SubParsers) -> None:
         "--no-commit",
         action="store_true",
         help="Do not auto-commit pxx changes",
+    )
+    parser.add_argument(
+        "--loop-rounds",
+        type=int,
+        default=DEFAULT_LOOP_ROUNDS,
+        help=(
+            "edit→test rounds pxx loop may take (each round is a fresh model "
+            f"context; default {DEFAULT_LOOP_ROUNDS}). The per-round turn and "
+            "token budgets come from the repository's pxx.toml."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -342,7 +375,17 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
         sys.exit(EXIT_ERROR)
 
-    cmd = [pxx_bin, "edit", "--scope", args.scope, "--message", enhanced_prompt]
+    # `pxx loop`, not `pxx edit`: the loop runs the repository's test_command
+    # ITSELF between rounds, feeds the failing set back into a fresh context,
+    # and stops on NO_TEST_PROGRESS / TEST_REGRESSION. `edit` is one session
+    # that runs no tests, so the only test evidence it left was whatever the
+    # model chose to run and say; on 2026-09-22 four reworks of one task each
+    # ended a step short that way. --sandbox confines the loop's own test run
+    # to the scope (pxx 2.5.5+ps2; fails closed without a sandboxer).
+    cmd = [
+        pxx_bin, "loop", "--scope", args.scope, "--message", enhanced_prompt,
+        "--sandbox", "--budget-rounds", str(args.loop_rounds),
+    ]
     if not args.no_commit:
         cmd.append("--commit")
 
@@ -357,7 +400,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  PXX_MODEL:     {route.model or '(unset, pxx default)'}")
         print(f"  PXX_PROVIDER:  {route.provider or '(unset, pxx default: ollama)'}")
         print(f"  pxx:           {pxx_bin}")
-        print(f"  command:       {pxx_bin} edit --scope {args.scope} [--commit] <prompt>")
+        print(f"  command:       {pxx_bin} loop --scope {args.scope} --sandbox "
+              f"--budget-rounds {args.loop_rounds} [--commit] <prompt>")
         return
 
     # Flushed before handing stdout to the subprocess. pxx writes straight to
@@ -392,7 +436,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         try:
             bundle_path, produced_changes = _emit_evidence(
                 args, card.fit.value, route, enhanced_prompt, cmd,
-                source_head, result.returncode,
+                source_head, result.returncode, run_started_at,
             )
         except EvidenceError as exc:
             print(
