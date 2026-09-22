@@ -211,3 +211,29 @@ class TestFindRunDir:
 
         assert found is not None
         assert found.name == "20260921T000002Z-b"
+
+
+def test_a_file_the_run_left_behind_does_not_block_the_rest(tmp_path):
+    """git reset --hard leaves untracked files; a loop diff that re-creates
+    one used to fail --check outright (T-0052). It is excluded and reported."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "b.py").write_text("x = 0\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+    runs = tmp_path / "runs"
+    run = runs / "20260922T182225Z-loop-abc"
+    run.mkdir(parents=True)
+    patch = (
+        "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-x = 0\n+x = 1\n"
+        "diff --git a/debug.py b/debug.py\nnew file mode 100644\n--- /dev/null\n+++ b/debug.py\n"
+        "@@ -0,0 +1 @@\n+print(1)\n"
+    )
+    (run / "diff.patch").write_text(patch)
+    (repo / "debug.py").write_text("print(1)\n")   # the run's leftover, untracked
+    s = salvage_discarded_work(repo, started_at=0.0, runs=runs)
+    assert s.recovered, s.reason
+    assert (repo / "b.py").read_text() == "x = 1\n"
+    assert s.files == ("b.py",) and "debug.py" in s.reason
+    assert "left as found" in report(s)

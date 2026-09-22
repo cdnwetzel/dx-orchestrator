@@ -470,8 +470,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             # ambiguity on 2026-09-21.
             try:
                 sal = salvage_discarded_work(Path(args.scope), run_started_at)
-                if sal.recovered:
-                    print(report(sal), file=sys.stderr, flush=True)
+                # Always: a refusal's reason is worth as much as a recovery.
+                # T-0048/T-0052 salvages were refused silently and the work
+                # looked lost; it was in the run directory the whole time.
+                print(report(sal), file=sys.stderr, flush=True)
             except Exception as exc:  # noqa: BLE001
                 # Best-effort by design: a failed salvage must never turn a
                 # failed run into a crashed one, or mask the real exit code.

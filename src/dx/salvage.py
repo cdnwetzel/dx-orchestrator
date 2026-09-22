@@ -41,6 +41,7 @@ place.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,25 +146,46 @@ def salvage_discarded_work(
         return Salvage(None, (), 0,
                        "the scope has modified tracked files — left untouched")
 
+    # Files the run CREATED survive pxx's reset (git reset --hard leaves
+    # untracked files alone), so a patch that re-creates them fails
+    # `--check` with "already exists in working directory". Those paths are
+    # the run's own files, already on disk in the run's version: exclude
+    # them and recover the rest. T-0052 (2026-09-22): a leftover
+    # debug_bytes.py refused the 181-line loop diff that held the real work.
+    excluded: list[str] = []
     check = _git(scope, "apply", "--check", str(patch))
+    if check.returncode != 0:
+        excluded = [
+            m.group(1) for m in re.finditer(
+                r"^error: (.+?): already exists in working directory$",
+                check.stderr or "", re.MULTILINE)
+            if (scope / m.group(1)).is_file()
+        ]
+        if excluded:
+            check = _git(scope, "apply", "--check",
+                         *(f"--exclude={p}" for p in excluded), str(patch))
     if check.returncode != 0:
         return Salvage(
             None, (), 0,
             f"the recorded patch does not apply to HEAD: "
             f"{(check.stderr or '').strip()[:120]}")
 
-    applied = _git(scope, "apply", str(patch))
+    applied = _git(scope, "apply", *(f"--exclude={p}" for p in excluded), str(patch))
     if applied.returncode != 0:
         return Salvage(None, (), 0,
                        f"apply failed: {(applied.stderr or '').strip()[:120]}")
 
-    files = _patch_files(patch)
+    files = tuple(f for f in _patch_files(patch) if f not in excluded)
     lines = sum(
         1 for line in patch.read_text(errors="replace").splitlines()
         if (line.startswith(("+", "-"))
             and not line.startswith(("+++", "---")))
     )
-    return Salvage(patch, files, lines, "recovered")
+    reason = "recovered"
+    if excluded:
+        reason += (" (already on disk from the run, left as found: "
+                   + ", ".join(excluded) + ")")
+    return Salvage(patch, files, lines, reason)
 
 
 def report(s: Salvage) -> str:
@@ -175,6 +197,7 @@ def report(s: Salvage) -> str:
         f"pxx discarded when the run was refused:",
         *(f"      {f}" for f in s.files),
         f"   From {s.patch}",
+        *([f"   {s.reason[len('recovered '):]}"] if s.reason != "recovered" else []),
         "   They are in the working tree, UNCOMMITTED and UNVERIFIED — the "
         "tests did not run, which is usually why the run was refused. Read "
         "them before you trust them.",
