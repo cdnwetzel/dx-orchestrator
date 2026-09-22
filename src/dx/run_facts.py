@@ -61,8 +61,35 @@ def _tests_gates(events_path: Path) -> list[dict]:
     return gates
 
 
+def loop_record_for(run_dir: Path | None) -> Path | None:
+    """The loop's own record among ``run_dir``'s siblings, when there is one.
+
+    `pxx loop` (2.5.5+ps3) writes ``runs/<ts>-loop-<id>/`` beside each
+    round's session directory; only that one carries the tests gate and the
+    whole-loop diff. A caller that found a run by mtime may hold a round's
+    directory instead -- prefer the loop record started no earlier than it.
+    """
+    if run_dir is None or not run_dir.is_dir():
+        return None
+    try:
+        task = _read_json(run_dir / "task.json") or {}
+        if task.get("mode") == "loop":
+            return run_dir
+        started = run_dir.stat().st_mtime
+        loops = [
+            d for d in run_dir.parent.iterdir()
+            if d.is_dir() and "-loop-" in d.name
+            and (_read_json(d / "task.json") or {}).get("mode") == "loop"
+            and d.stat().st_mtime >= started - 1.0
+        ]
+    except OSError:
+        return None
+    return max(loops, key=lambda d: d.stat().st_mtime) if loops else None
+
+
 def collect(run_dir: Path | None) -> RunFacts:
     """Facts from one pxx run directory (``<state_dir>/runs/<id>/``)."""
+    run_dir = loop_record_for(run_dir) or run_dir
     if run_dir is None or not run_dir.is_dir():
         return RunFacts(tests=None)
     artifacts: dict[str, str] = {}
@@ -93,4 +120,6 @@ def collect(run_dir: Path | None) -> RunFacts:
     }
     if outcome is not None:
         tests.update({k: outcome.get(k) for k in _OUTCOME_KEYS if k in outcome})
+        if "test_command" in outcome:
+            tests["command"] = outcome["test_command"]
     return RunFacts(tests=tests, artifacts=artifacts)

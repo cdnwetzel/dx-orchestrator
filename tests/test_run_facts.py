@@ -67,3 +67,22 @@ def test_malformed_record_is_survived(tmp_path):
     (d / "outcome.json").write_text("[]")
     t = collect(d).tests
     assert t["runs"] == 1 and t["failing"] == 1 and "code" not in t
+
+
+def test_a_round_directory_defers_to_the_loop_record_beside_it(tmp_path):
+    """dx finds runs by mtime and may land on a round's session directory;
+    the loop's own record (task.json mode=loop) is the one with the gates."""
+    session = _run_dir(tmp_path, events=[{"kind": "session_end", "data": {"code": "COMPLETED"}}],
+                       outcome={"code": "COMPLETED"})
+    loop = tmp_path / "20260922T170040Z-loop-abcd1234"
+    loop.mkdir()
+    (loop / "task.json").write_text(json.dumps({"mode": "loop", "test_command": "pytest -q"}))
+    (loop / "events.jsonl").write_text(json.dumps(_gate(passed=False, failing=3, sandboxed=True)) + "\n")
+    (loop / "outcome.json").write_text(json.dumps({"mode": "loop", "code": "TEST_REGRESSION",
+                                                   "terminal_failures": 3, "test_command": "pytest -q"}))
+    (loop / "diff.patch").write_text("diff --git a/t b/t\n")
+    facts = collect(session)
+    assert facts.tests is not None and facts.tests["failing"] == 3
+    assert facts.tests["code"] == "TEST_REGRESSION" and facts.tests["command"] == "pytest -q"
+    assert facts.tests["run_id"] == loop.name
+    assert "run-diff.patch" in facts.artifacts
