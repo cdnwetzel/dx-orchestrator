@@ -297,6 +297,7 @@ def git_merge_no_ff(repo: Path, sha: str, *, task_id: str) -> str:
             f"refusing to merge into a dirty working tree at {repo}. "
             f"Uncommitted changes would be swept into the merge commit."
         )
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
     _git(
         repo,
         "-c",
@@ -309,4 +310,21 @@ def git_merge_no_ff(repo: Path, sha: str, *, task_id: str) -> str:
         "-m",
         f"Merge {task_id} ({sha[:12]}) under dx merge gate",
     )
-    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+    after = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    if after == before:
+        # `git merge` said "Already up to date": the candidate was already
+        # reachable from HEAD -- in the pilot, pxx commits it onto the branch
+        # itself -- so no merge commit exists. Say so rather than record a
+        # merge that did not happen (T-0060, 2026-09-23, the first bridge
+        # task to reach this gate).
+        raise AlreadyOnBranch(after)
+    return after
+
+
+class AlreadyOnBranch(Exception):
+    """The candidate is already reachable from the branch head; ``git merge``
+    created nothing. Carries the unchanged HEAD."""
+
+    def __init__(self, head: str) -> None:
+        super().__init__(head)
+        self.head = head

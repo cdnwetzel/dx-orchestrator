@@ -172,6 +172,38 @@ class TestRefusalsWriteNothing:
 
 
 class TestTheGreenPath:
+    def test_a_candidate_already_on_the_branch_is_recorded_as_such(
+        self, gate, tmp_path,
+    ):
+        """In the pilot pxx commits the candidate onto main itself, so the gate's
+        `git merge --no-ff` has nothing to do. The MERGED row must say that --
+        not "merged at <sha>" over a merge that never happened (T-0060)."""
+        repo = tmp_path / "work"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / "a").write_text("a\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "base")
+        (repo / "b").write_text("b\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "the work, committed on main by the run")
+        candidate = _git(repo, "rev-parse", "HEAD")
+
+        code, out, _ = gate(
+            [_row("T-1", "ADMITTED"), _row("T-1", "EXECUTED", sha=candidate)],
+            {"task_id": "T-1", "approve_role": "code_review", "sha": candidate},
+            "--repo", str(repo))
+        assert code == 0, out
+
+        rows = [json.loads(line) for line in
+                (gate.ledger / "ledger.jsonl").read_text().splitlines() if line.strip()]
+        assert [r["action"] for r in rows[-2:]] == ["SIGNED", "MERGED"]
+        assert rows[-1]["sha"] == candidate
+        assert "already the head" in rows[-1]["evidence"]
+        assert "no merge commit" in rows[-1]["evidence"]
+        assert _git(repo, "rev-parse", "HEAD") == candidate, "nothing may be written"
+        assert _git(repo, "log", "--merges", "--oneline") == ""
+
     def test_signed_and_merged_bind_the_candidate_and_the_merge_commit(
         self, gate, tmp_path,
     ):

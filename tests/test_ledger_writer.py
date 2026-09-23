@@ -22,6 +22,7 @@ from dx.ledger_writer import (
     append_row,
     build_row,
     canonical,
+    AlreadyOnBranch,
     git_merge_no_ff,
     read_head,
     row_hash,
@@ -220,3 +221,26 @@ class TestGitMergeNoFF:
     def test_it_refuses_a_non_repository(self, tmp_path):
         with pytest.raises(LedgerWriteError, match="not a git repository"):
             git_merge_no_ff(tmp_path, "abc123", task_id="T-1")
+
+
+def test_merging_the_branch_head_itself_raises_already_on_branch(tmp_path):
+    """pxx commits a candidate onto the branch; `git merge --no-ff <HEAD>` says
+    "Already up to date" and creates nothing. That must not be recorded as a
+    merge (T-0060, 2026-09-23)."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "a.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "candidate"], check=True)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    with pytest.raises(AlreadyOnBranch) as exc:
+        git_merge_no_ff(repo, head, task_id="T-1")
+    assert exc.value.head == head
+    after = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert after == head, "nothing may be written when there is nothing to merge"

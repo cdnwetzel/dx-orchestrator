@@ -44,6 +44,7 @@ from .ledger_utils import (
     verify_detached_signature,
 )
 from .ledger_writer import (
+    AlreadyOnBranch,
     LedgerWriteError,
     MergeLock,
     append_row,
@@ -479,13 +480,25 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
             if args.repo:
                 # task_sha was established and checked against this repo in
                 # (0b), before SIGNED was written. Nothing is re-read here.
-                merged_sha = git_merge_no_ff(target, task_sha, task_id=args.task_id)
+                try:
+                    merged_sha = git_merge_no_ff(target, task_sha, task_id=args.task_id)
+                    merge_note = f"git merge --no-ff into {args.repo} at {merged_sha}"
+                    _ok(f"Merged {str(task_sha)[:12]} into {target} — {merged_sha[:12]}")
+                except AlreadyOnBranch as already:
+                    merged_sha = already.head
+                    merge_note = (
+                        f"candidate {str(task_sha)[:12]} was already the head of "
+                        f"{args.repo} ({already.head[:12]}); git merge --no-ff created "
+                        f"no merge commit"
+                    )
+                    _ok(f"{str(task_sha)[:12]} is already the head of {target}; "
+                        f"no merge commit created")
                 rec["merged"] = {
                     "repo": str(target),
                     "task_sha": str(task_sha),
                     "merge_commit": merged_sha,
+                    "note": merge_note,
                 }
-                _ok(f"Merged {str(task_sha)[:12]} into {target} — {merged_sha[:12]}")
 
             # Re-read: the SIGNED append moved the head. Reusing current_head
             # here would append a row whose prev_hash is two rows stale, and
@@ -501,7 +514,7 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                     reviewer_seat=queue.get("reviewer_seat"),
                     sha=merged_sha or task_sha,
                     evidence=(
-                        f"git merge --no-ff into {args.repo} at {merged_sha}"
+                        merge_note
                         if merged_sha
                         else "no --repo given: approval recorded, no git merge performed"
                     ),
