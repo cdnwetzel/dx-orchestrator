@@ -41,7 +41,7 @@ class Seed:
     excluded: tuple[str, ...]
 
 
-def _git(scope: Path, *args: str) -> subprocess.CompletedProcess:
+def _git(scope: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(scope), *args], capture_output=True, text=True, timeout=60,
     )

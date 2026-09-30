@@ -19,7 +19,7 @@ from .role_registry import failed_slug, get_parse_failures, get_role, load_regis
 from .role_validate import validate_card
 from .run_facts import collect as collect_run_facts
 from .salvage import find_run_dir, report, salvage_discarded_work
-from .seed import SeedError, seed_from_patch
+from .seed import Seed, SeedError, seed_from_patch
 
 #: Evidence lands outside the repository under edit. Writing it inside would
 #: put receipts in the tree pxx is committing, which is how an evidence store
@@ -57,7 +57,7 @@ def _emit_evidence(
     source_head: str | None,
     returncode: int,
     run_started_at: float | None = None,
-    seed: object | None = None,
+    seed: Seed | None = None,
 ) -> tuple[Path, bool]:
     """Build and write the `dx.role_task.v1` bundle for this run.
 
