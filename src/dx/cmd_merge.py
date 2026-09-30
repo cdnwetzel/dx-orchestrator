@@ -588,6 +588,12 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                 f"Separation of duties: author '{author_human}' ≠ "
                 f"signer '{signer.name}'."
             )
+        # The bundle records the exception that WAS written, not the one the
+        # tier would allow: a second keyholder signing on a single-reviewer
+        # scope leaves no exception on the rows, and the bundle must agree.
+        tier_rec = rec["approval_tier"]
+        if isinstance(tier_rec, dict):
+            tier_rec["sod_exception"] = sod_exception
 
         # (4) mechanism — from the registry, via the verified identity. An
         # identity without one did not come through the registry path, and a

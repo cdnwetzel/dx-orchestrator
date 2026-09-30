@@ -410,13 +410,25 @@ def test_the_author_may_sign_on_a_single_reviewer_scope_and_it_is_recorded(tiere
     assert queue["approval_tier"] == "single-reviewer"
 
 
-def test_a_second_person_on_a_single_reviewer_scope_records_no_exception(tiered, capsys):
-    code = tiered(["src/app.py"], signer=REVIEWER)
+def test_a_second_person_on_a_single_reviewer_scope_records_no_exception(tiered, capsys, tmp_path):
+    ev = tmp_path / "ev"
+    code = tiered(["src/app.py"], signer=REVIEWER, argv=["--evidence-dir", str(ev)])
     assert code == 0
     assert "≠ signer 'Bob Reviewer'" in capsys.readouterr().out
     signed = [r for r in _rows(tiered.ledger) if r["action"] == "SIGNED"][-1]
     assert "sod_exception=" not in signed["evidence"]
     assert f"mechanism={SOFTWARE_MECHANISM}" in signed["evidence"]
+    # The bundle says what the rows say: no exception was recorded.
+    manifest = json.loads(sorted(ev.glob("T-TEST/*/manifest.json"))[-1].read_text())
+    tier = manifest["merge_gate"]["approval_tier"]
+    assert tier["tier"] == "single-reviewer" and tier["sod_exception"] is None
+
+
+def test_the_bundle_carries_the_exception_when_the_author_signed(tiered, tmp_path):
+    ev = tmp_path / "ev"
+    assert tiered(["src/app.py"], signer=AUTHOR, argv=["--evidence-dir", str(ev)]) == 0
+    manifest = json.loads(sorted(ev.glob("T-TEST/*/manifest.json"))[-1].read_text())
+    assert manifest["merge_gate"]["approval_tier"]["sod_exception"] == SOD_EXCEPTION
 
 
 @pytest.mark.parametrize("path", ["tests/test_app.py", "conftest.py", "pyproject.toml",

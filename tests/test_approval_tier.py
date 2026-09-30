@@ -233,16 +233,24 @@ def test_chain_root_base_walks_supersedes_to_the_first_base(tmp_path):
     assert chain_root_base("T-3", tmp_path) == ("a" * 40, ["T-1", "T-2", "T-3"])
 
 
-def test_chain_root_base_survives_a_missing_predecessor(tmp_path):
+def test_chain_root_base_fails_closed_on_a_missing_predecessor(tmp_path):
+    """A base from part-way down the chain would under-cover the diff: a
+    rework whose predecessor is unknown has an unknown root, so no base."""
     _queue(tmp_path, "T-3", base_sha="c" * 40, supersedes="T-2")
-    assert chain_root_base("T-3", tmp_path) == ("c" * 40, ["T-2", "T-3"])
+    assert chain_root_base("T-3", tmp_path) == (None, ["T-2", "T-3"])
 
 
-def test_chain_root_base_stops_on_a_cycle(tmp_path):
+def test_chain_root_base_fails_closed_on_a_cycle(tmp_path):
     _queue(tmp_path, "T-1", base_sha="a" * 40, supersedes="T-2")
     _queue(tmp_path, "T-2", base_sha="b" * 40, supersedes="T-1")
     base, chain = chain_root_base("T-1", tmp_path)
-    assert chain == ["T-2", "T-1"] and base in ("a" * 40, "b" * 40)
+    assert base is None and chain[-1] == "T-1"
+
+
+def test_chain_root_base_fails_closed_when_the_first_task_has_no_base(tmp_path):
+    _queue(tmp_path, "T-2", base_sha="b" * 40, supersedes="T-1")
+    _queue(tmp_path, "T-1", supersedes="")
+    assert chain_root_base("T-2", tmp_path) == (None, ["T-1", "T-2"])
 
 
 def test_chain_root_base_without_queue_files(tmp_path):
@@ -273,7 +281,30 @@ def test_chain_changed_paths_spans_root_base_to_candidate(tmp_path):
     # The whole chain, not the last correction: `b` is in the span even though
     # the candidate commit itself only added the test.
     assert sorted(chain_changed_paths(repo, base, candidate)) == ["b", "tests/test_b.py"]
-    assert chain_changed_paths(repo, None, candidate) == ["tests/test_b.py"]
+    # No root base: the one commit's paths are NOT the chain's. None, so the
+    # gate lands on two-human rather than judging the last correction alone.
+    assert chain_changed_paths(repo, None, candidate) is None
+
+
+def test_chain_changed_paths_reads_awkward_names_as_one_path_each(tmp_path):
+    """Without -z git C-quotes a name holding a quote and splits on newlines;
+    a path read wrong is a path the classifier never sees."""
+    repo = tmp_path / "work"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a").write_text("a\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "tests").mkdir()
+    (repo / 'tests' / 'we"ird.py').write_text("x\n")
+    (repo / "plain.py").write_text("y\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "names")
+    candidate = _git(repo, "rev-parse", "HEAD")
+    paths = chain_changed_paths(repo, base, candidate)
+    assert sorted(paths) == ["plain.py", 'tests/we"ird.py']
+    assert classify('tests/we"ird.py') == "exec-surface"
 
 
 def test_chain_changed_paths_is_none_when_git_cannot_answer(tmp_path):

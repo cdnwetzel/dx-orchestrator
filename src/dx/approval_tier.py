@@ -293,26 +293,32 @@ def chain_root_base(task_id: str, ledger_repo: Path) -> tuple[str | None, list[s
     """The base commit of the FIRST task in this task's supersede chain, and
     the chain in order. A rework's own base is the previous candidate, so its
     diff shows only the last correction; what a signer approves is the whole
-    deliverable since the family began. Read from queue files; a break in the
-    chain returns what was found."""
+    deliverable since the family began. Read from queue files.
+
+    Fail closed: a predecessor whose queue file cannot be read, a cycle, or a
+    first task with no ``base_sha`` means the root base is unknown — None is
+    returned and the caller treats the diff as unreadable (two-human). A base
+    from part-way down the chain would under-cover.
+    """
     chain = [task_id]
     cur: str = task_id
     base: str | None = None
     seen: set[str] = set()
-    while cur and cur not in seen:
+    while cur:
+        if cur in seen:
+            return None, list(reversed(chain))
         seen.add(cur)
         qf = ledger_repo / "queue" / f"{cur}.json"
         try:
             q = json.loads(qf.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            break
+            return None, list(reversed(chain))
         if not isinstance(q, dict):
-            break
+            return None, list(reversed(chain))
         b = q.get("base_sha")
-        if isinstance(b, str) and b:
-            base = b
+        base = b if isinstance(b, str) and b else None
         prior = q.get("supersedes")
-        if isinstance(prior, str) and prior and prior not in seen:
+        if isinstance(prior, str) and prior:
             chain.append(prior)
             cur = prior
         else:
@@ -322,21 +328,29 @@ def chain_root_base(task_id: str, ledger_repo: Path) -> tuple[str | None, list[s
 
 
 def chain_changed_paths(repo: Path, root_base: str | None, candidate: str) -> list[str] | None:
-    """Every path the chain diff touches, or None when git could not say."""
-    if root_base:
-        args = ["diff", "--no-renames", "--name-only", f"{root_base}..{candidate}"]
-    else:
-        args = ["show", "--no-renames", "--name-only", "--format=", candidate]
+    """Every path the chain diff touches, or None when it cannot be read.
+
+    No root base → None. The one commit's own paths would be a diff, but not
+    the chain's: a rework whose predecessors are unknown could pass as
+    single-reviewer on the strength of its last correction alone. None here
+    is two-human at the gate.
+
+    ``-z`` (NUL-delimited) so a path holding a quote or a newline is read as
+    one path, never as a C-quoted string the classifier would not recognise.
+    """
+    if not root_base:
+        return None
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), *args],
+            ["git", "-C", str(repo), "diff", "--no-renames", "--name-only", "-z",
+             f"{root_base}..{candidate}"],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
-    return [line for line in result.stdout.splitlines() if line.strip()]
+    return [p for p in result.stdout.split("\0") if p]
 
 
 __all__ = [

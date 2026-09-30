@@ -561,17 +561,31 @@ def cmd_run(args: argparse.Namespace) -> None:
     # Fourteen tasks sat in that ambiguity on 2026-09-21 and were classified by
     # hand afterwards, from memory and git archaeology.
     if produced_changes and not args.no_evidence:
-        try:
-            recorded = record_executed(
-                get_ledger_repo_path(), Path(args.scope), args.task_id,
-                provenance=_provenance(route, run_started_at))
-            print(f"📒 Ledger: EXECUTED {args.task_id} @ {recorded}", flush=True)
-        except ExecutedError as exc:
-            # Loud, and NOT fatal. The work is committed in git either way, and
-            # failing the run here would throw away a good result over a
-            # bookkeeping problem — the same trade pxx gets wrong by resetting.
-            print(f"⚠️  Could not record EXECUTED for {args.task_id}: {exc}",
-                  file=sys.stderr, flush=True)
+        # Only a commit is a candidate. Changes that exist only in the
+        # worktree (--no-commit, or a commit pxx did not make) leave HEAD where
+        # the run found it; recording EXECUTED then would bind the PRE-run
+        # commit as the candidate and close the task to re-execution.
+        head_after = (_git(args.scope, "rev-parse", "HEAD") or "").strip()
+        if not head_after or head_after == source_head:
+            print(
+                f"⚠️  Not recording EXECUTED for {args.task_id}: the scope "
+                f"changed but HEAD did not move past {str(source_head)[:12]} — "
+                f"the work is not committed, so there is no candidate to bind.",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            try:
+                recorded = record_executed(
+                    get_ledger_repo_path(), Path(args.scope), args.task_id,
+                    provenance=_provenance(route, run_started_at))
+                print(f"📒 Ledger: EXECUTED {args.task_id} @ {recorded}", flush=True)
+            except ExecutedError as exc:
+                # Loud, and NOT fatal. The work is committed in git either way,
+                # and failing the run here would throw away a good result over
+                # a bookkeeping problem — the same trade pxx gets wrong by
+                # resetting.
+                print(f"⚠️  Could not record EXECUTED for {args.task_id}: {exc}",
+                      file=sys.stderr, flush=True)
 
     if args.gui:
         print("🖥️  Launching GUI via PSOperator...", flush=True)
