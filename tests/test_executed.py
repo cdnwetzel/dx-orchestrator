@@ -226,13 +226,15 @@ class TestProvenance:
 
 
 class TestControlPlaneRedline:
-    def test_it_appends_redline_with_the_tasks_author(self, ledger: Path, scope: Path):
+    def test_it_appends_redline_naming_no_human(self, ledger: Path, scope: Path):
         from dx.executed import record_control_plane_redline
         _admit(ledger, "T-0400")
         record_executed(ledger, scope, "T-0400")
         record_control_plane_redline(ledger, "T-0400", "e" * 40, ["CODEOWNERS"], by="dx.run")
         row = _last(ledger)
-        assert row["action"] == "REDLINE" and row["author_human"] == "Chris Wetzel"
+        # dx decided this, not a person: no human on the row (as EVIDENCE rows).
+        assert row["action"] == "REDLINE" and row["author_human"] is None
+        assert row["author_seat"] is None
         assert "CODEOWNERS" in row["evidence"] and row["evidence"].startswith("dx.run ")
 
     def test_a_second_redline_is_refused(self, ledger: Path, scope: Path):

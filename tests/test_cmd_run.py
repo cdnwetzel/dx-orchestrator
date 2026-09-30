@@ -584,7 +584,7 @@ class TestControlPlaneRedlineAtExecuted:
         import json as _json
         last = _json.loads((ledger / "ledger.jsonl").read_text().splitlines()[-1])
         assert "dx.run approval_tier=control-plane" in last["evidence"] and "CODEOWNERS" in last["evidence"]
-        assert last["author_human"] == "Alice Author"
+        assert last["author_human"] is None  # dx decided it, no person did
         assert "REDLINE T-CP" in capsys.readouterr().err
 
     def test_an_ordinary_candidate_gets_no_redline(self, monkeypatch, tmp_path):

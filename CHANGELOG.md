@@ -9,6 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 _Nothing yet._
 
+## [0.21.1] — 2026-09-30
+
+### Fixed
+
+- **A gate-written REDLINE row names no human.** `record_control_plane_redline`
+  copied the task's author into `author_human`, so every review surface read
+  the first real one (T-0071) as "Chris Wetzel sent this back" — a decision dx
+  made, attributed to a person. The row now carries `author_human: null` and
+  `author_seat: null`, the convention the gate's EVIDENCE rows already follow;
+  the evidence prefix (`dx.run` / `dx.merge_gate`) says who decided.
+
 ## [0.21.0] — 2026-09-30
 
 ### Changed
@@ -1148,6 +1159,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.21.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.18.0...v0.19.0

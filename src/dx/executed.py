@@ -183,13 +183,15 @@ def record_control_plane_redline(
     state = current_state(rows, task_id)
     if state.action == "REDLINE":
         raise ExecutedError(f"{task_id} is already REDLINE")
-    author = next((r.get("author_human") for r in rows if r.get("author_human")), None)
-    seat = next((r.get("author_seat") for r in rows if r.get("author_seat")), None)
+    # No human made this decision, so no human is named on the row — the
+    # convention the gate's EVIDENCE rows already follow. A REDLINE row that
+    # carried the task's author read, on every review surface, as "Chris sent
+    # this back" (T-0071, 2026-09-30); ``by`` says who, and here that is dx.
     return append_row(ledger, {
         "ts": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "task_id": task_id,
-        "author_seat": seat,
-        "author_human": author,
+        "author_seat": None,
+        "author_human": None,
         "reviewer_seat": None,
         "action": "REDLINE",
         "sha": sha,
