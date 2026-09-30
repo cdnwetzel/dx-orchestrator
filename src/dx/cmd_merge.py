@@ -42,6 +42,7 @@ from .evidence import (
     bundle_digest,
     write_merge_bundle,
 )
+from .executed import ExecutedError, record_control_plane_redline
 from .ledger_state import (
     LedgerStateError,
     candidate_for_merge,
@@ -334,34 +335,17 @@ def _tier_decision(
 
 
 def _redline_control_plane(
-    ledger_repo: Path, task_id: str, task_sha: str, queue: dict[str, object],
-    decision: TierDecision,
+    ledger_repo: Path, task_id: str, task_sha: str, decision: TierDecision,
 ) -> None:
-    """Append the REDLINE row a control-plane contact earns (Decision 0020 §3).
-    Written before any SIGNED row and only here: a second `dx merge` on the
-    same task is refused at the state check, so the row is not duplicated."""
+    """The gate's backstop: `dx run` already appends this row when it records
+    EXECUTED, so reaching here means the candidate was recorded another way.
+    Written before any SIGNED row; a second `dx merge` is refused at the state
+    check, so the row is not duplicated."""
     try:
-        head = read_head(ledger_repo / "ledger.jsonl")
-        author_seat = queue.get("author_seat")
-        reviewer_seat = queue.get("reviewer_seat")
-        new_head = append_row(
-            ledger_repo,
-            build_row(
-                action="REDLINE",
-                task_id=task_id,
-                prev_hash=head,
-                author_seat=author_seat if isinstance(author_seat, str) else None,
-                reviewer_seat=reviewer_seat if isinstance(reviewer_seat, str) else None,
-                sha=task_sha,
-                evidence=(
-                    "dx.merge_gate approval_tier=control-plane: candidate touches "
-                    f"control-plane path(s) {', '.join(decision.touched)} (RL-008); "
-                    "not signable; humans change those paths on the record"
-                ),
-            ),
-        )
+        new_head = record_control_plane_redline(
+            ledger_repo, task_id, task_sha, decision.touched, by="dx.merge_gate")
         _warn(f"REDLINE row appended for {task_id}. Head: {new_head[:16]}…")
-    except (LedgerWriteError, LedgerError, OSError) as exc:
+    except (ExecutedError, LedgerWriteError, LedgerError, OSError) as exc:
         _warn(f"could not append the REDLINE row for {task_id}: {exc}")
 
 
@@ -555,7 +539,7 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
         if decision.tier == CONTROL_PLANE:
             rec["separation_of_duties"] = None
             rec["failure"] = "control_plane_contact"
-            _redline_control_plane(ledger_repo, args.task_id, task_sha, queue, decision)
+            _redline_control_plane(ledger_repo, args.task_id, task_sha, decision)
             _fail(
                 f"{args.task_id} touches control-plane path(s) and is not "
                 f"signable: {', '.join(decision.touched)}. A REDLINE row was "

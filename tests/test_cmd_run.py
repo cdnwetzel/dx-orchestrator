@@ -497,3 +497,101 @@ class TestExecutedNeedsACommit:
         assert len(recorded) == 1
         assert "EXECUTED T-HD" in capsys.readouterr().out
 
+
+class TestControlPlaneRedlineAtExecuted:
+    """Decision 0020 §3: a control-plane contact earns its REDLINE row the
+    moment EXECUTED is recorded, so nobody is asked to review it first. The
+    merge gate keeps a backstop for candidates recorded another way."""
+
+    def _wired(self, monkeypatch, tmp_path, touch):
+        import json as _json
+        import subprocess as _sp
+
+        from conftest import manifest_with_approval, write_declaration
+        from dx.ledger_writer import GENESIS_PREV, canonical, row_hash
+
+        ai_root = tmp_path / "ai"
+        scope = ai_root / "pilot"
+        scope.mkdir(parents=True)
+
+        def g(*a):
+            return _sp.run(["git", "-C", str(scope), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                           capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+        g("init", "-q", "-b", "main")
+        (scope / "src").mkdir()
+        (scope / "src" / "a.py").write_text("a\n")
+        g("add", "-A")
+        g("commit", "-qm", "base")
+        base = g("rev-parse", "HEAD")
+        for rel in touch:
+            (scope / rel).parent.mkdir(parents=True, exist_ok=True)
+            (scope / rel).write_text("x\n")
+        g("add", "-A")
+        g("commit", "-qm", "work")
+        candidate = g("rev-parse", "HEAD")
+
+        ledger = tmp_path / "ledger"
+        (ledger / "queue").mkdir(parents=True)
+        (ledger / "tools").mkdir()
+        rows = []
+        prev = GENESIS_PREV
+        for row in ({"ts": "2026-09-01T00:00:00Z", "task_id": "T-CP", "action": "GENESIS"},
+                    {"ts": "2026-09-01T00:00:01Z", "task_id": "T-CP", "action": "ADMITTED",
+                     "author_human": "Alice Author", "author_seat": "S4"}):
+            full = {"task_id": None, "author_seat": None, "author_human": None, "reviewer_seat": None,
+                    "sha": None, "evidence": "", **row, "prev_hash": prev}
+            rows.append(canonical(full))
+            prev = row_hash(full)
+        (ledger / "ledger.jsonl").write_text("\n".join(rows) + "\n")
+        (ledger / "queue" / "T-CP.json").write_text(_json.dumps(
+            {"task_id": "T-CP", "base_sha": base, "sha": "", "supersedes": ""}))
+        _sp.run(["git", "-C", str(ledger), "init", "-q", "-b", "main"], check=True)
+        _sp.run(["git", "-C", str(ledger), "add", "-A"], check=True)
+        _sp.run(["git", "-C", str(ledger), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed"], check=True)
+
+        decl = write_declaration(ai_root / "roles.json", ["${AI_ROOT}/pilot"])
+        monkeypatch.setenv("DX_CONFIG", str(manifest_with_approval(tmp_path, decl, ai_root)))
+        monkeypatch.setenv("DX_LEDGER_REPO", str(ledger))
+
+        class Result:
+            returncode = 0
+        heads = iter([base, candidate])
+        real_git = __import__("dx.cmd_run", fromlist=["_git"])._git
+        real_run = _sp.run
+
+        def fake_git(sc, *args):
+            if args == ("rev-parse", "HEAD"):
+                return next(heads)
+            return real_git(sc, *args)
+
+        def fake_run(cmd, *a, **k):
+            # Only the pxx invocation is faked; git calls made by the ledger
+            # writers must really run (subprocess is one module object, so a
+            # blanket patch here would reach them too).
+            if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "loop":
+                return Result()
+            return real_run(cmd, *a, **k)
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", fake_run)
+        monkeypatch.setattr("dx.cmd_run._git", fake_git)
+        monkeypatch.setattr("dx.cmd_run._emit_evidence", lambda *a, **k: (tmp_path, True))
+        _run("T-CP", "--required_role", "widget-engineer", "-m", "x",
+             "--scope", str(scope), "--evidence-dir", str(tmp_path / "ev"))
+        return [_json.loads(ln)["action"] for ln in (ledger / "ledger.jsonl").read_text().splitlines() if ln.strip()], ledger
+
+    def test_a_control_plane_touch_is_redlined_right_after_executed(self, monkeypatch, tmp_path, capsys):
+        actions, ledger = self._wired(monkeypatch, tmp_path, ["src/a.py", "CODEOWNERS"])
+        assert actions[-2:] == ["EXECUTED", "REDLINE"]
+        import json as _json
+        last = _json.loads((ledger / "ledger.jsonl").read_text().splitlines()[-1])
+        assert "dx.run approval_tier=control-plane" in last["evidence"] and "CODEOWNERS" in last["evidence"]
+        assert last["author_human"] == "Alice Author"
+        assert "REDLINE T-CP" in capsys.readouterr().err
+
+    def test_an_ordinary_candidate_gets_no_redline(self, monkeypatch, tmp_path):
+        actions, _ = self._wired(monkeypatch, tmp_path, ["src/a.py"])
+        assert actions[-1] == "EXECUTED"
+
+    def test_an_exec_surface_touch_is_not_redlined_only_two_human(self, monkeypatch, tmp_path):
+        actions, _ = self._wired(monkeypatch, tmp_path, ["tests/test_a.py"])
+        assert actions[-1] == "EXECUTED"
+

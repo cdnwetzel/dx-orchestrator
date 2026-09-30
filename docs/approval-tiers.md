@@ -10,7 +10,7 @@ document describes. `dx merge` enforces it as the named check `approval_tier`;
 | --- | --- | --- |
 | `single-reviewer` | any registered keyholder, **including the task's author** | `approval_tier=single-reviewer`, and `sod_exception=author≠reviewer (author signed; scope single-reviewer)` when the author signed |
 | `two-human` | a registered keyholder **other than the author** | `approval_tier=two-human` |
-| `control-plane` | nobody — the gate appends `REDLINE` and stops | `dx.merge_gate approval_tier=control-plane: …` on the REDLINE row |
+| `control-plane` | nobody — `dx run` appends `REDLINE` right after EXECUTED (the gate keeps a backstop) | `dx.run approval_tier=control-plane: …` on the REDLINE row (`dx.merge_gate …` when the gate's backstop wrote it) |
 
 The author is the human who launched the run — PLAN.md's `author_human`, the
 first row of the task. The agent that executed it is provenance on the EXECUTED
