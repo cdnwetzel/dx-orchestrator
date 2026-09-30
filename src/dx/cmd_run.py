@@ -10,9 +10,24 @@ import time
 from pathlib import Path
 
 from ._argtypes import SubParsers
-from .config_loader import get_ledger_repo_path, get_roles_path, get_route_for_role
+from .approval_tier import (
+    CONTROL_PLANE,
+    DeclarationError,
+    chain_changed_paths,
+    chain_root_base,
+    decide,
+    load_declaration,
+)
+from .config_loader import (
+    ConfigError,
+    get_approval_config,
+    get_ledger_repo_path,
+    get_roles_path,
+    get_route_for_role,
+)
 from .evidence import Check, EvidenceError, RoleTaskBundle, write_bundle
-from .executed import ExecutedError, record_executed
+from .executed import ExecutedError, record_control_plane_redline, record_executed
+from .ledger_writer import LedgerWriteError
 from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
 from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
@@ -166,6 +181,42 @@ def _emit_evidence(
         tests=facts.tests,
     )
     return write_bundle(bundle, _evidence_root(args)), produced
+
+
+def _redline_if_control_plane(task_id: str, scope: Path, candidate: str) -> None:
+    """Decision 0020 §3: a candidate whose chain diff touches a control-plane
+    path is not signable and gets a REDLINE row — here, the moment EXECUTED
+    is recorded, so nobody is asked to review it first. Read-only otherwise;
+    the merge gate re-decides the tier and keeps its own backstop. Never fatal:
+    the work is committed either way, and a decision that cannot be made is
+    made two-human at the gate."""
+    try:
+        cfg = get_approval_config()
+        declaration = (
+            load_declaration(cfg.declaration, cfg.role, cfg.ai_root) if cfg else None
+        )
+        ledger = get_ledger_repo_path()
+        root_base, _chain = chain_root_base(task_id, ledger)
+        changed = chain_changed_paths(scope, root_base, candidate)
+        decision = decide(scope, changed, declaration)
+    except (ConfigError, DeclarationError, OSError) as exc:
+        print(f"⚠️  approval tier not decided for {task_id}: {exc}",
+              file=sys.stderr, flush=True)
+        return
+    if decision.tier != CONTROL_PLANE:
+        return
+    try:
+        head = record_control_plane_redline(
+            ledger, task_id, candidate, decision.touched, by="dx.run")
+        print(
+            f"🛑 REDLINE {task_id}: the candidate touches control-plane path(s) "
+            f"{', '.join(decision.touched)} (RL-008) and is not signable. "
+            f"Head: {head[:16]}…",
+            file=sys.stderr, flush=True,
+        )
+    except (ExecutedError, LedgerWriteError) as exc:
+        print(f"⚠️  could not append the REDLINE row for {task_id}: {exc}",
+              file=sys.stderr, flush=True)
 
 
 def _provenance(route: object, run_started_at: float | None) -> dict[str, str]:
@@ -579,6 +630,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                     get_ledger_repo_path(), Path(args.scope), args.task_id,
                     provenance=_provenance(route, run_started_at))
                 print(f"📒 Ledger: EXECUTED {args.task_id} @ {recorded}", flush=True)
+                _redline_if_control_plane(args.task_id, Path(args.scope), head_after)
             except ExecutedError as exc:
                 # Loud, and NOT fatal. The work is committed in git either way,
                 # and failing the run here would throw away a good result over

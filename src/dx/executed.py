@@ -165,4 +165,40 @@ def record_executed(
     return head[:12]
 
 
-__all__ = ["CLOSED_ACTIONS", "PROVENANCE_KEYS", "ExecutedError", "record_executed"]
+def record_control_plane_redline(
+    ledger: Path, task_id: str, sha: str, touched: list[str] | tuple[str, ...],
+    *, by: str,
+) -> str:
+    """Append the REDLINE row a control-plane contact earns (charter Decision
+    0020 §3, RL-008): the candidate is not signable, and humans change those
+    paths on the record. Returns the new head.
+
+    Written by whoever detects the contact first — ``dx run`` right after
+    EXECUTED (so the row exists before anyone is asked to review), or ``dx
+    merge`` as a backstop when the candidate was recorded another way. The
+    state check refuses a second write: a REDLINE'd task is not mergeable, so
+    the gate never reaches its backstop twice.
+    """
+    rows = task_rows(ledger, task_id)
+    state = current_state(rows, task_id)
+    if state.action == "REDLINE":
+        raise ExecutedError(f"{task_id} is already REDLINE")
+    author = next((r.get("author_human") for r in rows if r.get("author_human")), None)
+    seat = next((r.get("author_seat") for r in rows if r.get("author_seat")), None)
+    return append_row(ledger, {
+        "ts": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "task_id": task_id,
+        "author_seat": seat,
+        "author_human": author,
+        "reviewer_seat": None,
+        "action": "REDLINE",
+        "sha": sha,
+        "evidence": (f"{by} approval_tier=control-plane: candidate touches "
+                     f"control-plane path(s) {', '.join(touched)} (RL-008); not "
+                     f"signable; humans change those paths on the record"),
+        "prev_hash": read_head(ledger / "ledger.jsonl"),
+    })
+
+
+__all__ = ["CLOSED_ACTIONS", "PROVENANCE_KEYS", "ExecutedError",
+           "record_control_plane_redline", "record_executed"]

@@ -9,6 +9,21 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 _Nothing yet._
 
+## [0.21.0] — 2026-09-30
+
+### Changed
+
+- **A control-plane contact is REDLINE'd the moment `dx run` records
+  EXECUTED**, not only when someone tries to merge it. Decision 0020 §3 says
+  such a candidate "gets a REDLINE row and is not signable"; in 0.20.0 the row
+  was written by the merge gate, which is reached only after a signature was
+  made — so the first proving task found the row could not exist without
+  asking a keyholder to sign the unsignable. `dx run` now decides the tier
+  right after EXECUTED (from the same declaration and chain diff the gate
+  uses) and appends `REDLINE` with `dx.run approval_tier=control-plane: …`.
+  The gate keeps its backstop for candidates recorded another way; the state
+  check refuses a second row. Shared writer `dx.executed.record_control_plane_redline`.
+
 ## [0.20.0] — 2026-09-30
 
 ### Added
@@ -1133,6 +1148,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.21.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.17.0...v0.18.0
