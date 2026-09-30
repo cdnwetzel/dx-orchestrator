@@ -11,11 +11,14 @@ import sys
 
 import pytest
 
+from conftest import SOFTWARE_MECHANISM
 from dx.cli import build_parser
 from dx.ledger_utils import LedgerError, SignerIdentity
 
-REVIEWER = SignerIdentity(fingerprint="F" * 40, uid="Bob Reviewer <bob@example.invalid>")
-AUTHOR = SignerIdentity(fingerprint="A" * 40, uid="Alice Author <alice@example.invalid>")
+REVIEWER = SignerIdentity(fingerprint="F" * 40, uid="Bob Reviewer <bob@example.invalid>",
+                          residency="software", mechanism=SOFTWARE_MECHANISM)
+AUTHOR = SignerIdentity(fingerprint="A" * 40, uid="Alice Author <alice@example.invalid>",
+                        residency="software", mechanism=SOFTWARE_MECHANISM)
 
 
 @pytest.fixture
@@ -109,7 +112,8 @@ def test_signer_equal_to_author_is_rejected(merge, capsys):
 
 
 def test_signer_match_ignores_case_and_whitespace(merge, capsys):
-    sloppy = SignerIdentity(fingerprint="A" * 40, uid="  alice author  <a@example.invalid>")
+    sloppy = SignerIdentity(fingerprint="A" * 40, uid="  alice author  <a@example.invalid>",
+                            residency="software", mechanism=SOFTWARE_MECHANISM)
     with pytest.raises(SystemExit) as exc:
         merge("T-TEST", signer=sloppy)
     assert exc.value.code == 1
@@ -120,7 +124,8 @@ def test_uid_without_a_comment_field_still_matches_the_author(merge, capsys):
     """Regression: SignerIdentity.name kept the <email> when the uid had no
     (comment), so the author comparison never matched and the gate failed open.
     """
-    no_comment = SignerIdentity(fingerprint="A" * 40, uid="Alice Author <alice@example.invalid>")
+    no_comment = SignerIdentity(fingerprint="A" * 40, uid="Alice Author <alice@example.invalid>",
+                                residency="software", mechanism=SOFTWARE_MECHANISM)
     assert no_comment.name == "Alice Author"
     with pytest.raises(SystemExit) as exc:
         merge("T-TEST", signer=no_comment)
@@ -309,3 +314,214 @@ class TestPayloadDiagnosis:
             out = capsys.readouterr()
             assert exc.value.code == 1, payload
             assert "All RL-003 checks passed" not in out.out
+
+
+# ---------------------------------------------------------------------------
+# approval_tier — Decision 0020. The signer's rights follow the chain diff.
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+from conftest import manifest_with_approval, write_declaration  # noqa: E402
+from dx.approval_tier import SOD_EXCEPTION  # noqa: E402
+
+
+def _git(repo: pathlib.Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                          capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+
+
+def _rows(ledger: pathlib.Path) -> list[dict]:
+    return [json.loads(ln) for ln in (ledger / "ledger.jsonl").read_text().splitlines() if ln.strip()]
+
+
+@pytest.fixture
+def tiered(monkeypatch, tmp_path, fake_ledger):
+    """A declared single-reviewer scope holding a real base and candidate,
+    wired into the fake ledger's T-TEST, with the manifest's `approval:`
+    section pointing at the declaration. Returns a runner that takes the
+    paths the candidate should touch and the signer."""
+    ai_root = tmp_path / "ai"
+    scope = ai_root / "pilot"
+    scope.mkdir(parents=True)
+    _git(scope, "init", "-q", "-b", "main")
+    (scope / "src").mkdir()
+    (scope / "src" / "app.py").write_text("x = 1\n")
+    _git(scope, "add", "-A")
+    _git(scope, "commit", "-qm", "base")
+    base = _git(scope, "rev-parse", "HEAD")
+    declaration = write_declaration(ai_root / "roles.json", ["${AI_ROOT}/pilot"])
+    monkeypatch.setenv("DX_CONFIG", str(manifest_with_approval(tmp_path, declaration, ai_root)))
+    monkeypatch.setenv("DX_LEDGER_REPO", str(fake_ledger))
+
+    def _run(touch: list[str], *, signer=REVIEWER, repo: bool = True, argv=()):
+        for rel in touch:
+            f = scope / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("changed\n")
+        _git(scope, "add", "-A")
+        _git(scope, "commit", "-qm", "the work")
+        candidate = _git(scope, "rev-parse", "HEAD")
+        # the fake ledger's chain names candidate "e"*40; rebuild it on this one
+        from conftest import _canonical, _chain  # noqa: PLC0415
+        rows, head = _chain([
+            {"ts": "2026-09-01T00:00:00Z", "task_id": "T-TEST", "action": "ADMITTED",
+             "author_human": "Alice Author", "author_seat": "S4"},
+            {"ts": "2026-09-02T00:00:00Z", "task_id": "T-TEST", "action": "EXECUTED",
+             "author_human": "Alice Author", "author_seat": "S4", "sha": candidate},
+        ])
+        (fake_ledger / "ledger.jsonl").write_text("".join(_canonical(r) + "\n" for r in rows))
+        (fake_ledger / "tools" / "verify_chain.py").write_text(
+            f"print('Ledger head hash: {head}')\n")
+        (fake_ledger / "queue" / "T-TEST.json").write_text(json.dumps(
+            {"task_id": "T-TEST", "approve_role": "code_review", "state": "EXECUTED",
+             "sha": candidate, "base_sha": base, "supersedes": ""}))
+        (fake_ledger / "approvals" / "T-TEST.code_review.msg").write_text(
+            f"T-TEST{head}code_review")
+        subprocess.run(["git", "-C", str(fake_ledger), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(fake_ledger), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "candidate"], check=True, capture_output=True)
+        monkeypatch.setattr("dx.cmd_merge.verify_detached_signature", lambda s, m, r: signer)
+        extra = ["--repo", str(scope)] if repo else []
+        args = build_parser().parse_args(["merge", "T-TEST", *extra, *argv])
+        with pytest.raises(SystemExit) as exc:
+            args.func(args)
+        return exc.value.code
+
+    _run.ledger = fake_ledger
+    _run.scope = scope
+    return _run
+
+
+def test_the_author_may_sign_on_a_single_reviewer_scope_and_it_is_recorded(tiered, capsys):
+    code = tiered(["src/app.py"], signer=AUTHOR)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "Approval tier: single-reviewer" in out
+    assert "recorded as sod_exception=" in out
+    rows = _rows(tiered.ledger)
+    signed, merged = [r for r in rows if r["action"] == "SIGNED"][-1], [r for r in rows if r["action"] == "MERGED"][-1]
+    for row in (signed, merged):
+        assert f"sod_exception={SOD_EXCEPTION}" in row["evidence"]
+        assert f"mechanism={SOFTWARE_MECHANISM}" in row["evidence"]
+        assert "approval_tier=single-reviewer" in row["evidence"]
+    queue = json.loads((tiered.ledger / "queue" / "T-TEST.json").read_text())
+    assert queue["sod_exception"] == SOD_EXCEPTION
+    assert queue["approval_tier"] == "single-reviewer"
+
+
+def test_a_second_person_on_a_single_reviewer_scope_records_no_exception(tiered, capsys, tmp_path):
+    ev = tmp_path / "ev"
+    code = tiered(["src/app.py"], signer=REVIEWER, argv=["--evidence-dir", str(ev)])
+    assert code == 0
+    assert "≠ signer 'Bob Reviewer'" in capsys.readouterr().out
+    signed = [r for r in _rows(tiered.ledger) if r["action"] == "SIGNED"][-1]
+    assert "sod_exception=" not in signed["evidence"]
+    assert f"mechanism={SOFTWARE_MECHANISM}" in signed["evidence"]
+    # The bundle says what the rows say: no exception was recorded.
+    manifest = json.loads(sorted(ev.glob("T-TEST/*/manifest.json"))[-1].read_text())
+    tier = manifest["merge_gate"]["approval_tier"]
+    assert tier["tier"] == "single-reviewer" and tier["sod_exception"] is None
+
+
+def test_the_bundle_carries_the_exception_when_the_author_signed(tiered, tmp_path):
+    ev = tmp_path / "ev"
+    assert tiered(["src/app.py"], signer=AUTHOR, argv=["--evidence-dir", str(ev)]) == 0
+    manifest = json.loads(sorted(ev.glob("T-TEST/*/manifest.json"))[-1].read_text())
+    assert manifest["merge_gate"]["approval_tier"]["sod_exception"] == SOD_EXCEPTION
+
+
+@pytest.mark.parametrize("path", ["tests/test_app.py", "conftest.py", "pyproject.toml",
+                                  ".github/workflows/ci.yml", "Makefile", "pxx.toml"])
+def test_an_exec_surface_touch_makes_the_authors_signature_a_violation(tiered, capsys, path):
+    code = tiered(["src/app.py", path], signer=AUTHOR)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Approval tier: two-human" in captured.out
+    assert path in captured.out
+    assert "Separation-of-duties violation" in captured.err
+    assert not [r for r in _rows(tiered.ledger) if r["action"] == "SIGNED"]
+
+
+def test_an_exec_surface_touch_still_merges_with_a_second_person(tiered, capsys):
+    code = tiered(["src/app.py", "tests/test_app.py"], signer=REVIEWER)
+    assert code == 0
+    signed = [r for r in _rows(tiered.ledger) if r["action"] == "SIGNED"][-1]
+    assert "approval_tier=two-human" in signed["evidence"]
+    assert "sod_exception=" not in signed["evidence"]
+
+
+def test_control_plane_contact_is_redlined_and_not_signable_by_anyone(tiered, capsys):
+    code = tiered(["src/app.py", "CODEOWNERS"], signer=REVIEWER)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "not signable" in captured.err and "CODEOWNERS" in captured.err
+    rows = _rows(tiered.ledger)
+    assert rows[-1]["action"] == "REDLINE"
+    assert "control-plane" in rows[-1]["evidence"] and "CODEOWNERS" in rows[-1]["evidence"]
+    assert not [r for r in rows if r["action"] == "SIGNED"]
+    # a second attempt is refused at the state check, so the row is not duplicated
+    args = build_parser().parse_args(["merge", "T-TEST", "--repo", str(tiered.scope)])
+    with pytest.raises(SystemExit) as exc:
+        args.func(args)
+    assert exc.value.code == 1
+    assert [r["action"] for r in _rows(tiered.ledger)].count("REDLINE") == 1
+
+
+def test_without_a_repo_the_tier_is_two_human_even_on_a_single_reviewer_scope(tiered, capsys):
+    code = tiered(["src/app.py"], signer=AUTHOR, repo=False)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "no --repo" in captured.out
+    assert "Separation-of-duties violation" in captured.err
+
+
+def test_a_signer_without_a_registry_mechanism_is_refused_before_any_row(tiered, capsys):
+    """An identity that did not come through the registry path carries no
+    mechanism; the gate refuses to write a row it cannot mark."""
+    bare = SignerIdentity(fingerprint="F" * 40, uid="Bob Reviewer <bob@example.invalid>")
+    code = tiered(["src/app.py"], signer=bare)
+    assert code == 1
+    assert "carries no registry mechanism" in capsys.readouterr().err
+    assert not [r for r in _rows(tiered.ledger) if r["action"] in ("SIGNED", "MERGED")]
+
+
+def test_a_task_without_an_author_is_refused_not_waved_through(merge, capsys):
+    """Until 0.20.0 a missing author_human warned and proceeded — the
+    separation check passed vacuously over nobody."""
+    ledger = merge.ledger
+    rows = [json.loads(ln) for ln in (ledger / "ledger.jsonl").read_text().splitlines() if ln.strip()]
+    from conftest import _canonical, _chain  # noqa: PLC0415
+    stripped = []
+    for r in rows:
+        r = dict(r)
+        r.pop("prev_hash", None)
+        if r["task_id"] == "T-TEST":
+            r["author_human"] = None
+        stripped.append(r)
+    chained, head = _chain(stripped)
+    (ledger / "ledger.jsonl").write_text("".join(_canonical(r) + "\n" for r in chained))
+    (ledger / "tools" / "verify_chain.py").write_text(f"print('Ledger head hash: {head}')\n")
+    (ledger / "approvals" / "T-TEST.code_review.msg").write_text(f"T-TEST{head}code_review")
+    with pytest.raises(SystemExit) as exc:
+        merge("T-TEST")
+    assert exc.value.code == 1
+    assert "names no author_human" in capsys.readouterr().err
+
+
+def test_a_malformed_declaration_refuses_the_merge(tiered, monkeypatch, tmp_path, capsys):
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"pxx": {"scope": ["${AI_ROOT}/pilot"], "approval_tier_default": "anyone"}}))
+    (tmp_path / "m2").mkdir()
+    monkeypatch.setenv("DX_CONFIG", str(manifest_with_approval(tmp_path / "m2", bad, tmp_path / "ai")))
+    code = tiered(["src/app.py"], signer=REVIEWER)
+    assert code == 1
+    assert "approval declaration unusable" in capsys.readouterr().err
+
+
+def test_the_force_banner_names_the_tier_check(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("DX_LEDGER_REPO", str(tmp_path / "absent"))
+    args = build_parser().parse_args(["merge", "T-X", "--force"])
+    with pytest.raises(SystemExit):
+        args.func(args)
+    assert "approval_tier check" in capsys.readouterr().err

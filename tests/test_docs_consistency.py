@@ -500,6 +500,10 @@ class TestMergeTranscriptFidelity:
             "PATH": _SUBPROCESS_PATH,
             "HOME": str(Path.home()),
             "PYTHONPATH": str(ROOT / "src"),
+            # Hermetic: the operator's own manifest may declare an `approval:`
+            # section, which changes the tier line the tutorial pins. The
+            # transcript is the fixture manifest's, as CI sees it.
+            "DX_CONFIG": str(ROOT / "tests" / "fixtures" / "manifest.yml"),
         }
         with tempfile.TemporaryDirectory(prefix="dx-ledger-copy-") as tmp:
             copy = Path(tmp) / "ledger"
@@ -603,6 +607,7 @@ class TestMergeTranscriptFidelity:
             "HOME": str(Path.home()),
             "PYTHONPATH": str(ROOT / "src"),
             "DX_LEDGER_REPO": str(copy),
+            "DX_CONFIG": str(ROOT / "tests" / "fixtures" / "manifest.yml"),
         }
         r = subprocess.run(
             [sys.executable, "-m", "dx.cli", "merge", "T-0001", "--evidence-dir", str(ev)],

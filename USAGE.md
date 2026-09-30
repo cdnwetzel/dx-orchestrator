@@ -95,8 +95,13 @@ is deliberate, not a bug.
   and checks it with a vision model, writing a `dx.gui_verification.v1` bundle.
 - **Merge under governance**: `dx merge <task>` runs the RL-003 signature gate and,
   with `--repo`, performs the `git merge --no-ff` and records it. It writes a
-  `dx.merge_gate.v1` bundle. The reviewer who signs must not be the code's author —
-  that is the separation of duties the whole tool is built around.
+  `dx.merge_gate.v1` bundle. Who may sign follows the **approval tier** the chain
+  diff earns (`docs/approval-tiers.md`): on a single-reviewer scope the author may
+  sign their own candidate and the rows say so (`sod_exception=`); anything that
+  touches the exec surface — tests, test configuration, CI, `pxx.toml` — needs a
+  second person; a control-plane touch is not signable. `dx tier <task> --repo …`
+  answers the same question without writing anything. Every row also records the
+  signing `mechanism=` from the ledger's key registry.
 
 `TUTORIAL.md` walks the full path from a clean box to a merged task.
 

@@ -297,6 +297,9 @@ class MergeGateBundle:
     signer: dict[str, str | None] | None = None
     author_human: str | None = None
     separation_of_duties: bool | None = None
+    #: dx.approval_tier.TierDecision.as_json(): tier, reasons, touched paths,
+    #: and the sod_exception when the author signed (Decision 0020).
+    approval_tier: dict[str, object] | None = None
     gui: dict[str, object] | None = None
     merged: dict[str, str | None] | None = None
     failure: str | None = None
@@ -682,8 +685,20 @@ def _render_merge_readme(bundle: MergeGateBundle, generated_utc: str) -> str:
         )
     if bundle.author_human is not None:
         lines.append(f"- **Author:** {bundle.author_human}")
+    if bundle.approval_tier is not None:
+        tier = bundle.approval_tier
+        reasons = tier.get("reasons")
+        why = "; ".join(str(r) for r in reasons) if isinstance(reasons, list) else ""
+        lines.append(f"- **Approval tier:** `{tier.get('tier')}` — {why}")
     if bundle.separation_of_duties is not None:
-        lines.append(f"- **Separation of duties:** {'held' if bundle.separation_of_duties else 'VIOLATED'}")
+        exception = (bundle.approval_tier or {}).get("sod_exception") if bundle.separation_of_duties else None
+        if not bundle.separation_of_duties:
+            verdict = "VIOLATED"
+        elif exception:
+            verdict = f"exception recorded — `sod_exception={exception}` (the author signed on a single-reviewer scope)"
+        else:
+            verdict = "held — checked against the tier (signer ≠ author)"
+        lines.append(f"- **Separation of duties:** {verdict}")
     if bundle.gui is not None:
         lines.append(f"- **GUI check (advisory):** {bundle.gui.get('answer')}")
     if bundle.merged is not None:
@@ -735,6 +750,7 @@ def write_merge_bundle(
             "signer": bundle.signer,
             "author_human": bundle.author_human,
             "separation_of_duties": bundle.separation_of_duties,
+            "approval_tier": bundle.approval_tier,
             "gui": bundle.gui,
             "merged": bundle.merged,
             "failure": bundle.failure,

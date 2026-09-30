@@ -458,3 +458,42 @@ def test_an_unapplicable_seed_refuses_the_run_before_pxx(monkeypatch, tmp_path, 
              "--scope", str(repo), "--seed-patch", str(patch), "--seed-from", "T-000")
     assert exc.value.code == 1
     assert "seed from T-000 refused" in capsys.readouterr().err
+
+
+class TestExecutedNeedsACommit:
+    """EXECUTED binds a candidate commit. A run that changed the worktree but
+    moved no commit — --no-commit, or a commit pxx did not make — has no
+    candidate; recording it would bind the PRE-run commit and close the task
+    to re-execution (review of dx 0.20.0, 2026-09-30)."""
+
+    def _run_with_heads(self, monkeypatch, tmp_path, heads):
+        class Result:
+            returncode = 0
+
+        seen = {"recorded": []}
+        calls = iter(heads)
+
+        def fake_git(scope, *args):
+            if args == ("rev-parse", "HEAD"):
+                return next(calls)
+            return ""
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        monkeypatch.setattr("dx.cmd_run._git", fake_git)
+        monkeypatch.setattr("dx.cmd_run._emit_evidence", lambda *a, **k: (tmp_path, True))
+        monkeypatch.setattr("dx.cmd_run.record_executed",
+                            lambda *a, **k: seen["recorded"].append(a) or "abc123")
+        _run("T-HD", "--required_role", "widget-engineer", "-m", "x",
+             "--evidence-dir", str(tmp_path))
+        return seen["recorded"]
+
+    def test_head_unchanged_records_nothing_and_says_why(self, monkeypatch, tmp_path, capsys):
+        recorded = self._run_with_heads(monkeypatch, tmp_path, ["a" * 40, "a" * 40])
+        assert recorded == []
+        assert "HEAD did not move" in capsys.readouterr().err
+
+    def test_head_moved_records_executed(self, monkeypatch, tmp_path, capsys):
+        recorded = self._run_with_heads(monkeypatch, tmp_path, ["a" * 40, "b" * 40])
+        assert len(recorded) == 1
+        assert "EXECUTED T-HD" in capsys.readouterr().out
+

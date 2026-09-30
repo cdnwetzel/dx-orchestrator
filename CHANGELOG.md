@@ -7,7 +7,35 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.20.0] — 2026-09-30
+
 ### Added
+
+- **`approval_tier` — the merge gate's named check from charter Decision 0020.**
+  The candidate's chain diff (the first task's base in the supersede chain, to
+  the candidate) decides what the signer may do. `single-reviewer` (the default
+  in team mode, read from the executor role's declaration named by the
+  manifest's new `approval:` section) lets the author sign their own candidate;
+  the SIGNED and MERGED rows then carry
+  `sod_exception=author≠reviewer (author signed; scope single-reviewer)`.
+  `two-human` keeps today's rule — signer ≠ author — on declared scopes, on any
+  candidate touching the **exec surface** (`conftest.py`, `pytest.ini`,
+  `pyproject.toml`, `setup.cfg`, `tox.ini`, `noxfile.py`, `Makefile`, `*.mk`,
+  `justfile`, `.pre-commit-config.yaml`, `.github/workflows/**`, `tests/**`,
+  `requirements*`, `pxx.toml`, pxx's protected prefixes), when no `--repo` is
+  given, and when no declaration is configured. A **control-plane** touch
+  (RL-008's list) appends a `REDLINE` row and is not signable. Every row records
+  `approval_tier=`. New module `dx.approval_tier`; new read-only subcommand
+  **`dx tier <task> [--repo] [--json]`** for review surfaces.
+- **`mechanism=` on every SIGNED and MERGED row, derived from the ledger's key
+  registry** (`docs/keys/REGISTRY.json`: fingerprint, holder, residency,
+  registered, retired). `hardware (RL-010: non-exportable key, gesture per
+  signature)` or `fallback (RL-010 non-compliant: software key)` — never taken
+  from the signer, the caller or a flag. New module `dx.key_registry`.
+- **EXECUTED rows carry the executor's provenance** — `run=` `model=` `pxx=`
+  (`identity=` when a caller knows it) — as `key=value`, written only when known.
 
 - **`dx doctor --deep` times a 1-token call to each serving model.** Residency
   says a model is loaded; it cannot say a *resident* model is slow. `--deep` does a
@@ -74,6 +102,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     longer add a card that silently lands on `default`.
 
 ### Changed
+
+- **Signature verification imports only the registry's active keys.** A key
+  file the registry does not list is an error, not a key; a retired key leaves
+  the keyring (its file stays so past rows verify by hand); the registry's
+  `holder` must equal the key's uid name. A ledger without a registry verifies
+  nothing — the mechanism must be recorded, so it cannot be assumed.
+- **A task with no `author_human` is refused at the merge gate.** It used to
+  warn and proceed: the separation check passed vacuously over nobody.
+- `--force` names the tier check among the gates it bypasses.
+- The merge bundle's manifest and README carry the tier, its reasons, and the
+  exception when one applies.
 
 - **The RL-010 mechanism is now derived from the *actual* signer at the harness
   boundary, never from a caller string.** `build_approval_record`,
@@ -1094,6 +1133,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.20.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.16.0...v0.17.0
