@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import registry_entry, write_registry
 from dx.approval_key import (
     MECHANISM_FALLBACK,
     MECHANISM_STANDARD,
@@ -161,9 +162,19 @@ def _ledger_repo_with(tmp_path: Path, registered: dict[str, str], doubles: dict[
     repo = tmp_path / "ledger"
     keys = repo / "docs" / "keys"
     (keys / TEST_DOUBLE_DIRNAME).mkdir(parents=True)
+    entries = []
     for name, home in registered.items():
         pub = _gpg(Path(home), "--armor", "--export").stdout
         (keys / f"{name}.asc").write_bytes(pub)
+        colons = _gpg(Path(home), "--with-colons", "--fingerprint").stdout.decode()
+        fpr = next(ln.split(":")[9] for ln in colons.splitlines() if ln.startswith("fpr:"))
+        uid = next(ln.split(":")[9] for ln in colons.splitlines() if ln.startswith("uid:"))
+        holder = uid.split("<")[0].strip()
+        entries.append(registry_entry(f"{name}.asc", fpr, holder))
+    # Only the registered keys are listed: the double is barred structurally
+    # (a subdirectory the keyring builder never descends into) AND by the
+    # registry, which does not know it.
+    write_registry(keys, *entries)
     for name, home in doubles.items():
         pub = _gpg(Path(home), "--armor", "--export").stdout
         (keys / TEST_DOUBLE_DIRNAME / f"{name}.asc").write_bytes(pub)

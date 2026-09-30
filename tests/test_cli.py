@@ -27,7 +27,7 @@ def test_all_subcommands_are_registered():
     parser = build_parser()
     actions = [a for a in parser._actions if hasattr(a, "choices") and a.choices]
     registered = set(actions[0].choices)
-    assert registered == {"doctor", "roles", "run", "merge", "verify-gui"}
+    assert registered == {"doctor", "roles", "run", "merge", "tier", "verify-gui"}
 
 
 def test_a_command_is_required(capsys):

@@ -14,6 +14,51 @@ FIXTURES = Path(__file__).parent / "fixtures"
 ROLES_DIR = FIXTURES / "roles"
 MANIFEST = FIXTURES / "manifest.yml"
 
+#: What a SIGNED/MERGED row records for the software fallback (Decision 0020 §7).
+SOFTWARE_MECHANISM = "fallback (RL-010 non-compliant: software key)"
+HARDWARE_MECHANISM = "hardware (RL-010: non-exportable key, gesture per signature)"
+
+
+def registry_entry(file: str, fingerprint: str, holder: str, *, residency: str = "software",
+                   registered: str = "2026-09-01", retired: str | None = None) -> dict:
+    return {"file": file, "fingerprint": fingerprint, "holder": holder,
+            "residency": residency, "registered": registered, "retired": retired}
+
+
+def write_registry(keys_dir: Path, *entries: dict) -> Path:
+    """docs/keys/REGISTRY.json in the shape dx.key_registry reads."""
+    keys_dir.mkdir(parents=True, exist_ok=True)
+    path = keys_dir / "REGISTRY.json"
+    path.write_text(json.dumps({"schema": "devswarm-ledger.key-registry.v1",
+                                "keys": list(entries)}, indent=1), encoding="utf-8")
+    return path
+
+
+def write_declaration(path: Path, scopes: list[str], *, role: str = "pxx",
+                      default: str | None = "single-reviewer",
+                      tiers: dict | None = None) -> Path:
+    """A psguard-style roles.json holding one executor role's approval declaration."""
+    entry: dict = {"scope": scopes, "ttl_minutes": 15, "action_classes": ["file.write"]}
+    if default is not None:
+        entry["approval_tier_default"] = default
+    if tiers:
+        entry["approval_tier"] = tiers
+    path.write_text(json.dumps({role: entry}, indent=1), encoding="utf-8")
+    return path
+
+
+def manifest_with_approval(tmp_path: Path, declaration: Path, ai_root: Path,
+                           *, role: str = "pxx") -> Path:
+    """The fixture manifest plus an `approval:` section pointing at a declaration."""
+    out = tmp_path / "manifest.yml"
+    out.write_text(
+        MANIFEST.read_text(encoding="utf-8")
+        + f"\napproval:\n  declaration: {json.dumps(str(declaration))}\n"
+        f"  role: {role}\n  ai_root: {json.dumps(str(ai_root))}\n",
+        encoding="utf-8",
+    )
+    return out
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _no_writes_to_the_real_evidence_store():

@@ -168,6 +168,28 @@ def _emit_evidence(
     return write_bundle(bundle, _evidence_root(args)), produced
 
 
+def _provenance(route: object, run_started_at: float | None) -> dict[str, str]:
+    """What the agent WAS, for the EXECUTED row: the pxx run id, the routed
+    model, and the pxx version. The author stays the human who launched the
+    run (PLAN.md); this is the executor's provenance beside it. Each value is
+    written only when known — a guess in an append-only record is permanent.
+    The psguard identity is minted inside pxx's hook and is not visible here."""
+    prov: dict[str, str] = {}
+    run_dir = find_run_dir(run_started_at) if run_started_at is not None else None
+    if run_dir is not None:
+        prov["run"] = run_dir.name
+    model = getattr(route, "model", None)
+    if isinstance(model, str) and model:
+        prov["model"] = model.replace(" ", "_")
+    try:
+        from importlib.metadata import version
+
+        prov["pxx"] = version("pxx-orchestrator")
+    except Exception:  # noqa: BLE001 — an uninstalled pxx is reported by _resolve_pxx
+        pass
+    return prov
+
+
 def _resolve_pxx() -> str | None:
     """Prefer pxx alongside sys.executable (same venv), fall back to PATH."""
     venv_candidate = Path(sys.executable).parent / "pxx"
@@ -541,7 +563,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     if produced_changes and not args.no_evidence:
         try:
             recorded = record_executed(
-                get_ledger_repo_path(), Path(args.scope), args.task_id)
+                get_ledger_repo_path(), Path(args.scope), args.task_id,
+                provenance=_provenance(route, run_started_at))
             print(f"📒 Ledger: EXECUTED {args.task_id} @ {recorded}", flush=True)
         except ExecutedError as exc:
             # Loud, and NOT fatal. The work is committed in git either way, and

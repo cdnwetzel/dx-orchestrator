@@ -81,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.19.0
+dx --version    # dx 0.20.0
 pytest          # all green
 ```
 
@@ -127,6 +127,17 @@ gui_verification:
 ```
 
 If your role cards live somewhere other than `~/ai/sdlc-agent-roles/skills/sdlc-role/roles`, either add a top-level `roles_path:` key to this file or set `DX_ROLES_PATH`.
+
+To let `dx merge` decide the approval tier (`docs/approval-tiers.md`), name the executor's scope declaration — psguard's `roles.json`, which dx reads and never writes — and the root its `${AI_ROOT}` entries resolve against:
+
+```yaml
+approval:
+  declaration: ~/ai/psaios/psguard/roles.json
+  role: pxx
+  ai_root: ~/ai
+```
+
+Without this section every merge is two-human.
 
 **Why the `/v1` warning is non-negotiable.** In an earlier iteration the manifest had `endpoint: "http://t5810.lab:8007/v1"` and every `dx run` failed with `[MODEL_UNAVAILABLE] http://t5810.lab:8007/v1 returned HTTP 404`. Root cause: `pxx/router.py` constructs probe URLs as `{base}/v1/models`, so the `/v1` doubles. Fix is to strip it. Documented in commit `c5cd52d` and captured here so nobody else has to rediscover it.
 
@@ -355,14 +366,16 @@ cd / && rm -rf /tmp/dx-live-test
 
 ## 7. The merge gate: `dx merge`
 
-`dx merge` enforces the three RL-003 signature checks (per `devswarm-ledger/SCHEMA.md § approvals/`) and, before any of them can matter, checks that the task is fit to approve and names one candidate commit. It then appends `SIGNED` and `MERGED`, and with `--repo` performs the `git merge --no-ff`.
+`dx merge` enforces the RL-003 signature checks (per `devswarm-ledger/SCHEMA.md § approvals/`) and, before any of them can matter, checks that the task is fit to approve and names one candidate commit. It then decides the **approval tier** from the candidate's chain diff, appends `SIGNED` and `MERGED` — each recording the tier, the signing `mechanism=` from the ledger's key registry, and the `sod_exception=` when the author signed — and with `--repo` performs the `git merge --no-ff`.
 
 The checks, in the order they are decided:
 
 1. **Chain verify** — shells out to `devswarm-ledger/tools/verify_chain.py` to get the current head hash.
 2. **Task state + candidate** — the task's latest status row is not `REDLINE`, `INCOMPLETE`, `ESCALATED`, `SIGNED`, `MERGED` or `ABANDONED`; an `EXECUTED` row after its latest `ADMITTED` names a commit; the queue file's `sha` names the same one; with `--repo`, that commit exists there. Every refusal here happens before any row is written. (Until 2026-09-21 none of this was checked: a signature over a redlined task merged, and the candidate was read only *after* `SIGNED` had been appended.)
-3. **Signature verify** — imports every key from `devswarm-ledger/docs/keys/*.asc` into a scratch keyring and runs `gpg --verify <sig> <msg>`.
-4. **Payload + separation** — checks that the signed message equals `task_id + current_head + role` exactly, and that the signer's name differs from the task's `author_human` recorded in the ledger.
+3. **Signature verify** — imports the keys `devswarm-ledger/docs/keys/REGISTRY.json` lists as active into a scratch keyring and runs `gpg --verify <sig> <msg>`. A key file the registry does not list does not verify; a retired key is not imported; the registry's `holder` must match the key's uid.
+4. **Payload** — the signed message equals `task_id + current_head + role` exactly.
+5. **Approval tier** (`docs/approval-tiers.md`) — the chain diff (the first task's base in the supersede chain, to the candidate) decides what the signer may do: `single-reviewer` lets the author sign and records `sod_exception=`; `two-human` requires signer ≠ author (a declared scope, any exec-surface touch, no `--repo`, or no declaration configured); `control-plane` contact appends a `REDLINE` row and is not signable. The task must name an `author_human` — a task with nobody to be separate from is refused, not waved through.
+6. **Mechanism** — `mechanism=` is derived from the registry entry's residency (`card` → hardware, `software` → the marked fallback) and written on both rows. It is never taken from the signer or a flag.
 
 `setup_dependencies.sh` clones `devswarm-ledger-reference`, a public ledger whose
 four rows are synthetic and whose one approval is a real GPG signature. It exists
@@ -382,7 +395,9 @@ Actual output on this box:
 ✅ Task is EXECUTED; candidate 000000000000 matches its EXECUTED row.
 ✅ Signature verified. Signer: Rex Reviewer <reviewer@example.invalid>
 ✅ Signed message binds task_id + current head + role.
+✅ Approval tier: two-human — no approval declaration is configured (manifest `approval:`); every merge is two-human
 ✅ Separation of duties: author 'Ada Author' ≠ signer 'Rex Reviewer'.
+✅ Mechanism: fallback (RL-010 non-compliant: software key)
 ✅ All RL-003 checks passed for T-0001.
 ✅ SIGNED row appended. Head: de031821bcc37883…
 ✅ MERGED row appended. Head: a1035cd89aa168ef…
@@ -390,7 +405,7 @@ Actual output on this box:
 ✅ T-0001 merged and recorded.
 ```
 
-Exit code: `0`. Five checks, each of which can fail on its own — then two appends.
+Exit code: `0`. Seven checks, each of which can fail on its own — then two appends. The tier is two-human here because this manifest declares no `approval:` section; the demo key is a software key, so the rows say so.
 
 The head hashes will differ on your machine: rows carry a timestamp, so your
 chain diverges from this transcript the moment you run it. It still verifies
@@ -433,7 +448,7 @@ dx merge T-0001 --force
 Output:
 
 ```
-⚠️  --force in effect for T-0001: bypassing the RL-003 signature check.
+⚠️  --force in effect for T-0001: bypassing the RL-003 signature check and the approval_tier check.
 🔄 T-0001: gates bypassed, so nothing was written. dx does not append SIGNED or MERGED rows for an ungated merge — the ledger would then attest to a check that did not happen.
 ```
 

@@ -277,6 +277,55 @@ def get_ledger_repo_path() -> Path:
     return DEFAULT_LEDGER_REPO
 
 
+@dataclass(frozen=True)
+class ApprovalConfig:
+    """The manifest's `approval:` section — where the executor's scope
+    declaration lives and which role in it the merge gate reads.
+
+    The declaration is psguard's `roles.json` (charter Decision 0020 §2: the
+    executor role's declaration, integrity-manifested). dx does not own that
+    file and never writes it; it reads `approval_tier_default` and
+    `approval_tier` from the named role, and resolves the role's `${AI_ROOT}`
+    scope entries with `ai_root`. Absent section → no declaration → every
+    merge is two-human (fail closed), and `dx tier` says why.
+    """
+    declaration: Path
+    role: str
+    ai_root: Path
+
+
+def get_approval_config() -> ApprovalConfig | None:
+    """The `approval:` section, or None when the manifest has none.
+
+    Present but malformed is an error, not None: an operator who wrote the
+    section meant it, and a typo must not silently become "two-human for
+    everything" any more than it may become "single-reviewer for everything".
+    """
+    try:
+        raw = load_config().get("approval")
+    except FileNotFoundError:
+        return None
+    if raw is None:
+        return None
+    path = get_config_path()
+    section = _as_mapping(raw, "approval", path)
+    declaration = section.get("declaration")
+    role = section.get("role")
+    ai_root = section.get("ai_root")
+    missing = [k for k, v in (("declaration", declaration), ("role", role), ("ai_root", ai_root)) if not v]
+    if missing:
+        raise ConfigError(
+            f"{path}: `approval` needs {', '.join(missing)} — the declaration "
+            f"file (psguard roles.json), the executor role in it, and the "
+            f"AI_ROOT its `${{AI_ROOT}}` scope entries resolve against."
+        )
+    return ApprovalConfig(
+        declaration=Path(str(declaration)).expanduser(),
+        role=str(role),
+        ai_root=Path(str(ai_root)).expanduser(),
+    )
+
+
 DEFAULT_PSOPERATOR_REPO = Path("~/ai/psoperator").expanduser()
 
 

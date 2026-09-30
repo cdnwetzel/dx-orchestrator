@@ -6,6 +6,7 @@ from .cmd_doctor import register_doctor_subcommand
 from .cmd_merge import register_merge_subcommand
 from .cmd_roles import register_roles_subcommand
 from .cmd_run import register_run_subcommand
+from .cmd_tier import register_tier_subcommand
 from .cmd_verify import register_verify_subcommand
 from .config_loader import ConfigError
 from .ledger_utils import LedgerError
@@ -24,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_roles_subcommand(subparsers)
     register_run_subcommand(subparsers)
     register_merge_subcommand(subparsers)
+    register_tier_subcommand(subparsers)
     register_verify_subcommand(subparsers)
     return parser
 

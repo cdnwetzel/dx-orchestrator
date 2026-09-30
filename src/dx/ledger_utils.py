@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from dx.approval_key import TEST_DOUBLE_DIRNAME
+from dx.key_registry import RegisteredKey, RegistryError, load_registry, lookup
 
 
 class LedgerError(RuntimeError):
@@ -35,6 +36,14 @@ GPG_TIMEOUT_S = 30
 class SignerIdentity:
     fingerprint: str
     uid: str  # full GPG user-ID string, e.g. "A Name (comment) <a@example.invalid>"
+    #: From the ledger's key registry, never from the signer: ``card`` or
+    #: ``software`` (Decision 0020 §7). None only on an identity that did not
+    #: come through verify_detached_signature — the merge gate refuses to
+    #: record a row for one, because a mechanism it cannot derive is not one
+    #: it may assume.
+    residency: str | None = None
+    #: The exact ``mechanism=`` value a SIGNED/MERGED row records.
+    mechanism: str | None = None
 
     @property
     def email(self) -> str | None:
@@ -200,16 +209,32 @@ def _registered_key_files(keys_dir: Path) -> list[Path]:
     )
 
 
-def _import_registered_keys(ledger_repo: Path, keyring: Path) -> None:
+def _import_registered_keys(
+    ledger_repo: Path, keyring: Path
+) -> tuple[RegisteredKey, ...]:
+    """Import the registry's ACTIVE keys into the scratch keyring and return
+    the registry. A key file the registry does not list is never imported —
+    and is an error, so a stray file cannot sit unnoticed beside the real ones
+    (Decision 0020 §7: unregistered keys do not verify; retired keys leave the
+    keyring)."""
     keys_dir = ledger_repo / "docs" / "keys"
     if not keys_dir.is_dir():
         raise LedgerError(f"docs/keys directory not found at {keys_dir}")
-    for asc in _registered_key_files(keys_dir):
+    try:
+        registry = load_registry(keys_dir)
+    except RegistryError as exc:
+        raise LedgerError(str(exc)) from exc
+    present = {asc.name: asc for asc in _registered_key_files(keys_dir)}
+    for key in registry:
+        if not key.active:
+            continue
+        asc = present[key.file]
         result = _gpg("--import", str(asc), keyring=keyring)
         if result.returncode != 0:
             raise LedgerError(
                 f"failed to import {asc.name}: {result.stderr.decode(errors='replace').strip()}"
             )
+    return registry
 
 
 # gpg --fingerprint prints lines like:
@@ -280,10 +305,12 @@ def verify_detached_signature(
     message_path: Path,
     ledger_repo: Path,
 ) -> SignerIdentity:
-    """Verify a detached GPG signature using only keys registered in
-    devswarm-ledger/docs/keys/. Returns the signer's identity on success;
-    raises LedgerError on any failure (bad signature, unknown signer, missing
-    key, or a key that is expired or revoked).
+    """Verify a detached GPG signature using only the keys the ledger's
+    registry (docs/keys/REGISTRY.json) lists as active. Returns the signer's
+    identity — with the residency and ``mechanism=`` the registry records for
+    that key — on success; raises LedgerError on any failure (bad signature,
+    unknown or unregistered signer, retired key, missing registry, or a key
+    that is expired or revoked).
     """
     if not signature_path.exists():
         raise LedgerError(f"signature file not found: {signature_path}")
@@ -293,7 +320,7 @@ def verify_detached_signature(
     with tempfile.TemporaryDirectory(prefix="dx-gpg-") as tmpdir:
         keyring = Path(tmpdir)
         keyring.chmod(0o700)
-        _import_registered_keys(ledger_repo, keyring)
+        registry = _import_registered_keys(ledger_repo, keyring)
 
         result = _gpg(
             "--verify", str(signature_path), str(message_path),
@@ -304,7 +331,32 @@ def verify_detached_signature(
             status = result.stderr.decode("utf-8", errors="replace")
 
         fingerprint = classify_gpg_status(status, result.returncode)
-        return _lookup_identity(fingerprint, keyring)
+        identity = _lookup_identity(fingerprint, keyring)
+    # The registry is the record of who holds the key and how it is held. A
+    # signature from a key the registry does not list, or lists as retired,
+    # cannot reach here (the key was never imported) — but the check is made
+    # explicitly so the property does not depend on the import loop above.
+    try:
+        entry = lookup(registry, identity.fingerprint)
+    except RegistryError as exc:
+        raise LedgerError(f"signature rejected: {exc}") from exc
+    if _norm_name(entry.holder) != _norm_name(identity.name):
+        raise LedgerError(
+            f"key registry names {entry.holder!r} as the holder of "
+            f"{identity.fingerprint}, but the key's uid says {identity.name!r}. "
+            f"Fix the registry or the key; the gate will not guess which is "
+            f"the person."
+        )
+    return SignerIdentity(
+        fingerprint=identity.fingerprint,
+        uid=identity.uid,
+        residency=entry.residency,
+        mechanism=entry.mechanism,
+    )
+
+
+def _norm_name(name: str) -> str:
+    return " ".join(name.split()).lower()
 
 
 # ---------------------------------------------------------------------------

@@ -17,11 +17,13 @@ from pathlib import Path
 
 import pytest
 
+from conftest import SOFTWARE_MECHANISM
 from dx.cli import build_parser
 from dx.ledger_utils import SignerIdentity
 from dx.ledger_writer import GENESIS_PREV, canonical, row_hash
 
-REVIEWER = SignerIdentity(fingerprint="F" * 40, uid="Bob Reviewer <bob@example.invalid>")
+REVIEWER = SignerIdentity(fingerprint="F" * 40, uid="Bob Reviewer <bob@example.invalid>",
+                          residency="software", mechanism=SOFTWARE_MECHANISM)
 FAKE_SHA = "e" * 40
 
 

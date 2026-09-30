@@ -1,9 +1,11 @@
 """dx merge — pre-merge gate.
 
-Wires the three RL-003 signature validity checks from
-devswarm-ledger/SCHEMA.md § approvals/. The actual git merge and ledger
-append are still stubbed — those cross into devswarm-ledger territory and
-are intentionally deferred until Gate 1 unpauses.
+Wires the RL-003 signature validity checks from devswarm-ledger/SCHEMA.md
+§ approvals/, then the named ``approval_tier`` check from charter Decision
+0020: the chain diff decides whether the signer may be the author
+(single-reviewer, recorded as an ``sod_exception``), must be someone else
+(two-human), or may not sign at all (control-plane contact → REDLINE). Every
+SIGNED and MERGED row records ``mechanism=`` from the ledger's key registry.
 
 Output discipline: every gate verdict is flushed as it is decided. A merge
 gate's transcript is evidence, and evidence gets piped into logs — verdicts
@@ -12,6 +14,7 @@ must appear in the order they were reached whether stdout is a tty or a pipe.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -19,8 +22,19 @@ import sys
 from pathlib import Path
 
 from ._argtypes import SubParsers
+from .approval_tier import (
+    CONTROL_PLANE,
+    TWO_HUMAN,
+    Declaration,
+    DeclarationError,
+    TierDecision,
+    chain_changed_paths,
+    chain_root_base,
+    decide,
+    load_declaration,
+)
 from .cmd_verify import Verdict, verify_gui
-from .config_loader import get_ledger_repo_path
+from .config_loader import ConfigError, get_approval_config, get_ledger_repo_path
 from .evidence import (
     Check,
     EvidenceError,
@@ -162,8 +176,17 @@ def _emit_merge_evidence(
             ok=rec.get("failure") != "signed_message_mismatch",
             detail=str(_d("signer").get("name")),
         )
+    if rec.get("approval_tier") is not None:
+        tier = _d("approval_tier")
+        checks["approval_tier"] = Check(
+            ok=tier.get("tier") != CONTROL_PLANE,
+            detail=str(tier.get("tier")),
+        )
     if rec.get("separation_of_duties") is not None:
-        checks["separation_of_duties"] = Check(ok=bool(rec.get("separation_of_duties")))
+        checks["separation_of_duties"] = Check(
+            ok=bool(rec.get("separation_of_duties")),
+            detail=str(rec.get("sod_exception") or "signer ≠ author"),
+        )
     if rec.get("gui") is not None:
         checks["gui_verification"] = Check(
             ok=bool(_d("gui").get("verified")),
@@ -182,6 +205,7 @@ def _emit_merge_evidence(
         signer=rec.get("signer"),  # type: ignore[arg-type]
         author_human=rec.get("author_human"),  # type: ignore[arg-type]
         separation_of_duties=rec.get("separation_of_duties"),  # type: ignore[arg-type]
+        approval_tier=rec.get("approval_tier"),  # type: ignore[arg-type]
         gui=rec.get("gui"),  # type: ignore[arg-type]
         merged=rec.get("merged"),  # type: ignore[arg-type]
         failure=rec.get("failure"),  # type: ignore[arg-type]
@@ -272,11 +296,99 @@ def _norm(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
+def _tier_evidence(decision: TierDecision, sod_exception: str | None, mechanism: str | None) -> str:
+    """The `key=value` tail every SIGNED/MERGED row carries (SCHEMA.md
+    evidence conventions): the tier, the mechanism, and the exception when
+    the author signed."""
+    parts = [f"approval_tier={decision.tier}", f"mechanism={mechanism}"]
+    if sod_exception:
+        parts.append(f"sod_exception={sod_exception}")
+    return "; " + " ".join(parts)
+
+
+def _load_declaration() -> Declaration | None:
+    """The executor's scope declaration named by the manifest, or None when
+    the manifest has no `approval:` section (→ two-human, fail closed)."""
+    cfg = get_approval_config()
+    if cfg is None:
+        return None
+    return load_declaration(cfg.declaration, cfg.role, cfg.ai_root)
+
+
+def _tier_decision(
+    args: argparse.Namespace, ledger_repo: Path, task_sha: str, rec: dict[str, object]
+) -> TierDecision:
+    try:
+        declaration = _load_declaration()
+    except (ConfigError, DeclarationError) as exc:
+        rec["failure"] = "declaration_error"
+        _fail(f"approval declaration unusable: {exc}")
+    repo = Path(args.repo).expanduser() if args.repo else None
+    changed: list[str] | None = None
+    if repo is not None:
+        root_base, chain = chain_root_base(args.task_id, ledger_repo)
+        changed = chain_changed_paths(repo, root_base, task_sha)
+        rec["chain"] = {"root_base": root_base, "tasks": chain,
+                        "paths": None if changed is None else len(changed)}
+    return decide(repo, changed, declaration)
+
+
+def _redline_control_plane(
+    ledger_repo: Path, task_id: str, task_sha: str, queue: dict[str, object],
+    decision: TierDecision,
+) -> None:
+    """Append the REDLINE row a control-plane contact earns (Decision 0020 §3).
+    Written before any SIGNED row and only here: a second `dx merge` on the
+    same task is refused at the state check, so the row is not duplicated."""
+    try:
+        head = read_head(ledger_repo / "ledger.jsonl")
+        author_seat = queue.get("author_seat")
+        reviewer_seat = queue.get("reviewer_seat")
+        new_head = append_row(
+            ledger_repo,
+            build_row(
+                action="REDLINE",
+                task_id=task_id,
+                prev_hash=head,
+                author_seat=author_seat if isinstance(author_seat, str) else None,
+                reviewer_seat=reviewer_seat if isinstance(reviewer_seat, str) else None,
+                sha=task_sha,
+                evidence=(
+                    "dx.merge_gate approval_tier=control-plane: candidate touches "
+                    f"control-plane path(s) {', '.join(decision.touched)} (RL-008); "
+                    "not signable; humans change those paths on the record"
+                ),
+            ),
+        )
+        _warn(f"REDLINE row appended for {task_id}. Head: {new_head[:16]}…")
+    except (LedgerWriteError, LedgerError, OSError) as exc:
+        _warn(f"could not append the REDLINE row for {task_id}: {exc}")
+
+
+def _note_queue(
+    ledger_repo: Path, task_id: str, decision: TierDecision, sod_exception: str | None
+) -> None:
+    """Mirror the tier and the exception into queue/<task>.json. The ledger is
+    the record; the queue is a convenience view of it, so a queue that cannot
+    be updated is said out loud and is not worth failing a completed merge."""
+    qf = ledger_repo / "queue" / f"{task_id}.json"
+    if not qf.is_file():
+        return
+    try:
+        q = json.loads(qf.read_text(encoding="utf-8"))
+        q["approval_tier"] = decision.tier
+        q["sod_exception"] = sod_exception
+        q["state"] = "MERGED"
+        qf.write_text(json.dumps(q, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        _warn(f"{qf.name} could not be updated after the merge: {exc}")
+
+
 def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
     if args.force:
         _warn(
             f"--force in effect for {args.task_id}: bypassing the RL-003 "
-            "signature check"
+            "signature check and the approval_tier check"
             + (" AND GUI verification." if args.verify_gui else ".")
         )
         _info(
@@ -421,21 +533,54 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
             )
         _ok("Signed message binds task_id + current head + role.")
 
-        # (3) Separation of duties: signer != task's author_human
+        # (3) approval_tier — the named check from Decision 0020. What the
+        # signer may do depends on what the candidate touches, read from the
+        # chain diff (root base .. candidate, the same span the review packet
+        # shows), never on what anyone declared about this task.
         author_human = get_task_author_human(args.task_id, ledger_repo)
         rec["author_human"] = author_human
-        if author_human and _norm(author_human) == _norm(signer.name):
+        if not author_human:
+            # Until 0.20.0 this warned and proceeded — a merge with nobody to
+            # be separate FROM passed the separation check vacuously.
+            rec["failure"] = "no_author"
+            _fail(
+                f"{args.task_id} names no author_human in the ledger, so no "
+                f"separation of duties can be checked. Record the author "
+                f"(a CORRECTION row, RL-009) before merging."
+            )
+        decision = _tier_decision(args, ledger_repo, task_sha, rec)
+        rec["approval_tier"] = decision.as_json()
+        _ok(f"Approval tier: {decision.tier} — {'; '.join(decision.reasons)}")
+
+        if decision.tier == CONTROL_PLANE:
+            rec["separation_of_duties"] = None
+            rec["failure"] = "control_plane_contact"
+            _redline_control_plane(ledger_repo, args.task_id, task_sha, queue, decision)
+            _fail(
+                f"{args.task_id} touches control-plane path(s) and is not "
+                f"signable: {', '.join(decision.touched)}. A REDLINE row was "
+                f"appended; humans change those paths on the record (RL-008)."
+            )
+
+        same_person = _norm(author_human) == _norm(signer.name)
+        if decision.tier == TWO_HUMAN and same_person:
             rec["separation_of_duties"] = False
             rec["failure"] = "separation_of_duties"
             _fail(
                 f"Separation-of-duties violation: author '{author_human}' "
-                f"and signer '{signer.name}' are the same person."
+                f"and signer '{signer.name}' are the same person, and this "
+                f"candidate is two-human ({'; '.join(decision.reasons)})."
             )
-        if not author_human:
-            rec["separation_of_duties"] = None
-            _warn(
-                f"No author_human found in ledger for {args.task_id} — "
-                "cannot enforce signer != author. Proceeding."
+        sod_exception: str | None = None
+        if same_person:
+            # single-reviewer: allowed, and said so on the record
+            sod_exception = decision.sod_exception
+            rec["separation_of_duties"] = True
+            rec["sod_exception"] = sod_exception
+            _ok(
+                f"Separation of duties: author '{author_human}' signed their "
+                f"own candidate on a single-reviewer scope; recorded as "
+                f"sod_exception={sod_exception}"
             )
         else:
             rec["separation_of_duties"] = True
@@ -443,6 +588,19 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                 f"Separation of duties: author '{author_human}' ≠ "
                 f"signer '{signer.name}'."
             )
+
+        # (4) mechanism — from the registry, via the verified identity. An
+        # identity without one did not come through the registry path, and a
+        # mechanism the gate cannot derive is not one it may assume.
+        if not signer.mechanism:
+            rec["failure"] = "mechanism_unknown"
+            _fail(
+                f"the signer's key {signer.fingerprint} carries no registry "
+                f"mechanism; a SIGNED row must record how the key is held "
+                f"(Decision 0020 §7)."
+            )
+        rec["mechanism"] = signer.mechanism
+        _ok(f"Mechanism: {signer.mechanism}")
 
     except LedgerError as exc:
         rec.setdefault("failure", "pre_merge_check_error")
@@ -471,6 +629,7 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                         f"detached signature over task_id+{current_head}+{role} "
                         f"at {sig_path.name}, verified against that head; "
                         f"signer {signer.name}"
+                        + _tier_evidence(decision, sod_exception, signer.mechanism)
                     ),
                 ),
             )
@@ -517,11 +676,12 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                         merge_note
                         if merged_sha
                         else "no --repo given: approval recorded, no git merge performed"
-                    ),
+                    ) + _tier_evidence(decision, sod_exception, signer.mechanism),
                 ),
             )
             rec["head_after"] = merged_head
             _ok(f"MERGED row appended. Head: {merged_head[:16]}…")
+            _note_queue(ledger_repo, args.task_id, decision, sod_exception)
     except LedgerWriteError as exc:
         rec["failure"] = "ledger_write_failed"
         _fail(f"Ledger write failed: {exc}")

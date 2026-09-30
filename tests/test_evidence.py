@@ -370,6 +370,22 @@ class TestMergeGateBundle:
         assert m["result"]["passed"] is False
         assert m["merge_gate"]["failure"] == "separation_of_duties"
 
+    def test_the_tier_and_the_exception_reach_the_manifest_and_the_readme(self, tmp_path):
+        tier = {"tier": "single-reviewer", "reasons": ["scope is single-reviewer (the default)"],
+                "touched": [], "changed": 1, "signable": True,
+                "sod_exception": "author≠reviewer (author signed; scope single-reviewer)"}
+        out = write_merge_bundle(_merge_bundle(approval_tier=tier), tmp_path)
+        m = json.loads((out / "manifest.json").read_text())
+        assert m["merge_gate"]["approval_tier"] == tier
+        readme = (out / "README.md").read_text()
+        assert "**Approval tier:** `single-reviewer`" in readme
+        assert "exception recorded" in readme and "sod_exception=" in readme
+
+    def test_without_an_exception_the_readme_says_the_tier_was_checked(self, tmp_path):
+        out = write_merge_bundle(_merge_bundle(approval_tier={"tier": "two-human", "reasons": ["x"],
+                                                              "sod_exception": None}), tmp_path)
+        assert "held — checked against the tier" in (out / "README.md").read_text()
+
     def test_a_real_merge_records_the_commit(self, tmp_path):
         out = write_merge_bundle(
             _merge_bundle(merged={"repo": "/w", "task_sha": "deadbeef", "merge_commit": "c0ffee"}),

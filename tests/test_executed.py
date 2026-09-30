@@ -194,3 +194,33 @@ class TestRefusals:
         }
         assert "SIGNED" not in actions
         assert "MERGED" not in actions
+
+
+class TestProvenance:
+    """SCHEMA.md evidence conventions: the executor's provenance rides the
+    EXECUTED row as key=value, written only when known."""
+
+    def test_known_provenance_is_appended_in_a_fixed_order(self, ledger: Path, scope: Path):
+        _admit(ledger, "T-0300")
+        record_executed(ledger, scope, "T-0300",
+                        provenance={"pxx": "2.5.5+ps6", "run": "20260930-loop-ab12", "model": "qwen3-coder"})
+        ev = _last(ledger)["evidence"]
+        assert ev.endswith(" run=20260930-loop-ab12 model=qwen3-coder pxx=2.5.5+ps6")
+
+    def test_absent_values_are_not_written(self, ledger: Path, scope: Path):
+        _admit(ledger, "T-0301")
+        record_executed(ledger, scope, "T-0301", provenance={"model": "", "identity": None})
+        ev = _last(ledger)["evidence"]
+        assert "model=" not in ev and "identity=" not in ev
+
+    def test_unknown_keys_are_refused(self, ledger: Path, scope: Path):
+        _admit(ledger, "T-0302")
+        with pytest.raises(ExecutedError, match="unknown provenance key"):
+            record_executed(ledger, scope, "T-0302", provenance={"agent": "x"})
+
+    def test_values_with_whitespace_are_refused(self, ledger: Path, scope: Path):
+        """A space would split the key=value tail a reader parses."""
+        _admit(ledger, "T-0303")
+        with pytest.raises(ExecutedError, match="single tokens"):
+            record_executed(ledger, scope, "T-0303", provenance={"model": "two words"})
+

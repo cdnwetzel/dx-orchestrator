@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import SOFTWARE_MECHANISM, registry_entry, write_registry
 from dx.cli import build_parser
 from dx.ledger_utils import LedgerError, verify_detached_signature
 
@@ -35,6 +36,12 @@ pytestmark = pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg not ins
 
 GPG_FIXTURES = Path(__file__).parent / "fixtures" / "gpg"
 KEYS = ("valid", "revoked", "expired")
+#: fingerprint and uid name of each committed fixture key (see fixtures/gpg/README.md)
+FIXTURE_KEYS = {
+    "valid": ("EDA98B7D2725EEA665955D7EDD16FB62E13163FD", "Bob Reviewer"),
+    "revoked": ("CAB0D44944082C3D1FC2C1E08F3E46672B2A8B2D", "Rev Signer"),
+    "expired": ("D0163252601B9C5B2845839679D36C1D8A605614", "Exp Signer"),
+}
 
 
 @pytest.fixture
@@ -42,14 +49,27 @@ def payload() -> Path:
     return GPG_FIXTURES / "payload.bin"
 
 
+def _registered(repo: Path, names=KEYS, **overrides) -> Path:
+    """docs/keys/ holding the named fixture keys, each listed in the registry
+    as an active software key (Decision 0020 §7: an unlisted key never
+    verifies, so every fixture ledger needs the listing)."""
+    keys = repo / "docs" / "keys"
+    keys.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for name in names:
+        shutil.copy(GPG_FIXTURES / f"{name}.pub.asc", keys / f"{name}.asc")
+        fpr, holder = FIXTURE_KEYS[name]
+        entry = registry_entry(f"{name}.asc", fpr, holder)
+        entry.update(overrides.get(name, {}))
+        entries.append(entry)
+    write_registry(keys, *entries)
+    return repo
+
+
 @pytest.fixture
 def ledger_with_keys(tmp_path) -> Path:
-    """A ledger clone whose docs/keys/ holds all three public keys."""
-    repo = tmp_path / "ledger"
-    (repo / "docs" / "keys").mkdir(parents=True)
-    for name in KEYS:
-        shutil.copy(GPG_FIXTURES / f"{name}.pub.asc", repo / "docs" / "keys" / f"{name}.asc")
-    return repo
+    """A ledger clone whose docs/keys/ holds all three public keys, registered."""
+    return _registered(tmp_path / "ledger")
 
 
 def _raw_gpg(name: str, payload: Path) -> tuple[int, str]:
@@ -126,6 +146,9 @@ def test_valid_signature_is_accepted_and_names_the_signer(payload, ledger_with_k
     assert signer.name == "Bob Reviewer"
     assert signer.email == "bob@example.invalid"
     assert len(signer.fingerprint) == 40
+    # From the registry, not the signature: what the row will record.
+    assert signer.residency == "software"
+    assert signer.mechanism == SOFTWARE_MECHANISM
 
 
 @pytest.mark.parametrize("name,reason", [("revoked", "revoked"), ("expired", "expired")])
@@ -147,11 +170,57 @@ def test_tampered_payload_is_rejected(payload, ledger_with_keys, tmp_path):
 
 def test_signer_not_registered_in_docs_keys_is_rejected(payload, tmp_path):
     """A cryptographically perfect signature from an unregistered key must fail."""
-    empty = tmp_path / "ledger-no-keys"
-    (empty / "docs" / "keys").mkdir(parents=True)
+    other = _registered(tmp_path / "ledger-other-key", names=("revoked",))
     with pytest.raises(LedgerError) as exc:
-        verify_detached_signature(GPG_FIXTURES / "valid.sig.asc", payload, empty)
+        verify_detached_signature(GPG_FIXTURES / "valid.sig.asc", payload, other)
     assert "not in devswarm-ledger/docs/keys" in str(exc.value)
+
+
+def test_a_ledger_without_a_registry_verifies_nothing(payload, tmp_path):
+    """Decision 0020 §7: the mechanism is derived from the registry, so a ledger
+    with keys but no registry has no recorded mechanism — and no assumed one."""
+    repo = tmp_path / "ledger-no-registry"
+    (repo / "docs" / "keys").mkdir(parents=True)
+    shutil.copy(GPG_FIXTURES / "valid.pub.asc", repo / "docs" / "keys" / "valid.asc")
+    with pytest.raises(LedgerError) as exc:
+        verify_detached_signature(GPG_FIXTURES / "valid.sig.asc", payload, repo)
+    assert "key registry not found" in str(exc.value)
+
+
+def test_a_retired_key_leaves_the_keyring(payload, tmp_path):
+    """The file stays so past rows verify by hand; the gate no longer imports it."""
+    repo = _registered(tmp_path / "ledger-retired",
+                       valid={"retired": "2026-09-23"})
+    with pytest.raises(LedgerError) as exc:
+        verify_detached_signature(GPG_FIXTURES / "valid.sig.asc", payload, repo)
+    assert "not in devswarm-ledger/docs/keys" in str(exc.value)
+
+
+def test_a_key_file_the_registry_does_not_list_is_an_error(payload, tmp_path):
+    """A stray .asc beside the registered ones is refused outright, not
+    silently skipped — the registry must describe the directory."""
+    repo = _registered(tmp_path / "ledger-stray", names=("valid",))
+    shutil.copy(GPG_FIXTURES / "revoked.pub.asc", repo / "docs" / "keys" / "stray.asc")
+    with pytest.raises(LedgerError) as exc:
+        verify_detached_signature(GPG_FIXTURES / "valid.sig.asc", payload, repo)
+    assert "does not list" in str(exc.value) and "stray.asc" in str(exc.value)
+
+
+def test_a_registry_holder_that_disagrees_with_the_uid_is_refused(payload, tmp_path):
+    """The holder is what separation of duties compares; a registry naming a
+    different person from the key is not trusted over the key."""
+    repo = _registered(tmp_path / "ledger-holder", names=("valid",),
+                       valid={"holder": "Somebody Else"})
+    with pytest.raises(LedgerError) as exc:
+        verify_detached_signature(GPG_FIXTURES / "valid.sig.asc", payload, repo)
+    assert "Somebody Else" in str(exc.value) and "Bob Reviewer" in str(exc.value)
+
+
+def test_a_card_key_records_the_hardware_mechanism(payload, tmp_path):
+    repo = _registered(tmp_path / "ledger-card", names=("valid",), valid={"residency": "card"})
+    signer = verify_detached_signature(GPG_FIXTURES / "valid.sig.asc", payload, repo)
+    assert signer.residency == "card"
+    assert signer.mechanism.startswith("hardware (RL-010")
 
 
 def test_missing_docs_keys_directory_is_rejected(payload, tmp_path):
@@ -243,6 +312,8 @@ def test_merge_all_green_with_a_real_signature(ledger_with_keys, monkeypatch, ca
     assert "Bob Reviewer" in out
     assert "binds task_id + current head + role" in out
     assert "author 'Alice Author' ≠ signer 'Bob Reviewer'" in out
+    assert "Approval tier: two-human" in out
+    assert f"Mechanism: {SOFTWARE_MECHANISM}" in out
     assert "All RL-003 checks passed" in out
 
 

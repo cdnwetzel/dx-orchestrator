@@ -59,15 +59,34 @@ def _git(scope: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+#: Provenance keys an EXECUTED row's evidence may carry, in the order they are
+#: written (SCHEMA.md evidence conventions). Written when the runner knows
+#: them, never guessed: the agent is not the author (PLAN.md fixes the author
+#: as the human who launched the run), so what the agent WAS is recorded here.
+PROVENANCE_KEYS = ("run", "model", "pxx", "identity")
+
+
 def record_executed(
     ledger: Path, scope: Path, task_id: str, *, sha: str | None = None,
+    provenance: dict[str, str] | None = None,
 ) -> str:
     """Append EXECUTED for ``task_id``. Returns the recorded commit.
 
     The author is taken from the task's own ADMITTED row rather than from the
     caller: the person accountable for a task is the one who opened it, and a
     runner that could name someone else is a runner that can forge provenance.
+
+    ``provenance`` (``run``, ``model``, ``pxx``, ``identity``) is appended to
+    the evidence as ``key=value`` when given; unknown keys are refused so the
+    convention stays exact.
     """
+    prov = {k: str(v) for k, v in (provenance or {}).items() if v}
+    unknown = sorted(set(prov) - set(PROVENANCE_KEYS))
+    if unknown:
+        raise ExecutedError(f"unknown provenance key(s): {', '.join(unknown)}")
+    if any(" " in v or "\n" in v for v in prov.values()):
+        raise ExecutedError("provenance values must be single tokens")
+    prov_tail = "".join(f" {k}={prov[k]}" for k in PROVENANCE_KEYS if k in prov)
     try:
         rows = task_rows(ledger, task_id)
     except LedgerStateError as exc:
@@ -121,7 +140,7 @@ def record_executed(
         "sha": head,
         "evidence": (f"mode=DX_RUN scope={scope.name} commit={head[:12]} "
                      f"files={len(files)} changed={','.join(files[:8])} "
-                     f'subject="{subject[:90]}"'),
+                     f'subject="{subject[:90]}"' + prov_tail),
         "prev_hash": read_head(ledger / "ledger.jsonl"),
     })
 
@@ -146,4 +165,4 @@ def record_executed(
     return head[:12]
 
 
-__all__ = ["CLOSED_ACTIONS", "ExecutedError", "record_executed"]
+__all__ = ["CLOSED_ACTIONS", "PROVENANCE_KEYS", "ExecutedError", "record_executed"]
