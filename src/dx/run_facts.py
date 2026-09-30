@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 #: outcome.json fields copied verbatim when present.
 _OUTCOME_KEYS = (
@@ -30,12 +31,12 @@ _OUTCOME_KEYS = (
 class RunFacts:
     """``tests`` is None when the run recorded no test gate at all."""
 
-    tests: dict | None
+    tests: dict[str, Any] | None
     #: text artifacts to add to the bundle (relative name -> content)
     artifacts: dict[str, str] = field(default_factory=dict)
 
 
-def _read_json(path: Path) -> dict | None:
+def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -43,8 +44,8 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _tests_gates(events_path: Path) -> list[dict]:
-    gates: list[dict] = []
+def _tests_gates(events_path: Path) -> list[dict[str, Any]]:
+    gates: list[dict[str, Any]] = []
     try:
         lines = events_path.read_text().splitlines()
     except OSError:
@@ -108,7 +109,7 @@ def collect(run_dir: Path | None) -> RunFacts:
     if not gates:
         return RunFacts(tests=None, artifacts=artifacts)
     last = gates[-1]
-    tests: dict = {
+    tests: dict[str, Any] = {
         "runs": len(gates),
         "passed": bool(last.get("passed")),
         "failing": last.get("failing"),

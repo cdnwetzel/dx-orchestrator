@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 STATUS_ACTIONS = frozenset({
     "ADMITTED", "EXECUTED", "REVIEWED", "REDLINE", "INCOMPLETE", "ESCALATED",
@@ -111,12 +112,12 @@ class TaskState:
         return self.is_open and not self.signed
 
 
-def task_rows(ledger_repo: Path, task_id: str) -> list[dict]:
+def task_rows(ledger_repo: Path, task_id: str) -> list[dict[str, Any]]:
     """Every row for ``task_id``, in ledger order. Corrupt rows stop the line."""
     path = ledger_repo / "ledger.jsonl"
     if not path.is_file():
         raise LedgerStateError(f"no ledger at {path}")
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
         if not line:
@@ -133,7 +134,7 @@ def task_rows(ledger_repo: Path, task_id: str) -> list[dict]:
     return out
 
 
-def current_state(rows: list[dict], task_id: str = "") -> TaskState:
+def current_state(rows: list[dict[str, Any]], task_id: str = "") -> TaskState:
     """Reduce ``rows`` (one task's, in order) to its state."""
     action = by = reason = ""
     candidate: str | None = None
@@ -192,7 +193,7 @@ def why_not_signable(state: TaskState) -> str | None:
     return None
 
 
-def candidate_for_merge(queue: dict, state: TaskState) -> str:
+def candidate_for_merge(queue: dict[str, Any], state: TaskState) -> str:
     """The one commit a merge may act on.
 
     The ledger's EXECUTED row is authoritative; the queue file is a convenience

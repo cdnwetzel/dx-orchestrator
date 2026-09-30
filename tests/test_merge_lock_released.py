@@ -1,6 +1,11 @@
 """A released lock is not a held lock."""
-import json, pathlib, subprocess, pytest
-from dx.ledger_writer import MergeLock, LedgerWriteError
+import json
+import subprocess
+
+import pytest
+
+from dx.ledger_writer import LedgerWriteError, MergeLock
+
 
 def _lock(tmp_path, payload, git=False):
     if git:

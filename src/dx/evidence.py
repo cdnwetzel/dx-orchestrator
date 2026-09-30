@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 from dx.approval_key import (
     MECHANISM_FALLBACK,
@@ -244,7 +245,7 @@ class RoleTaskBundle:
     boundary: tuple[str, ...] = DEFAULT_BOUNDARY
     #: what the executor's OWN test run recorded (dx.run_facts), or None when
     #: it recorded none. Never derived from anything the model said.
-    tests: dict | None = None
+    tests: dict[str, Any] | None = None
 
 
 @dataclass
@@ -401,7 +402,7 @@ def _render_readme(bundle: RoleTaskBundle, generated_utc: str) -> str:
     return "\n".join(lines)
 
 
-def _render_tests_line(tests: dict | None) -> str:
+def _render_tests_line(tests: dict[str, Any] | None) -> str:
     """One sentence, from the recorded gate events only."""
     if not tests:
         return ("The executor recorded no test run. Nothing here says the tests "

@@ -17,12 +17,12 @@ from pathlib import Path
 import pytest
 
 from dx.ledger_writer import (
+    AlreadyOnBranch,
     LedgerWriteError,
     MergeLock,
     append_row,
     build_row,
     canonical,
-    AlreadyOnBranch,
     git_merge_no_ff,
     read_head,
     row_hash,
