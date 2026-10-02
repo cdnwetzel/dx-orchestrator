@@ -205,3 +205,29 @@ class TestReferenceLedger:
         link = tmp_path / "ledger"
         link.symlink_to(real)
         assert is_reference_ledger(link)
+
+
+class TestSamples:
+    """Decision 0020 item 6: the other keyholder samples single-reviewer merges
+    by appending a REVIEWED row to the MERGED task. That row is a reading, not
+    a status — merged work stays merged, and the sample is counted."""
+
+    def test_a_reviewed_row_after_merged_is_a_sample_not_a_reopening(self):
+        s = current_state(_rows("ADMITTED", EXEC, "SIGNED", "MERGED", "REVIEWED"))
+        assert s.action == "MERGED" and s.terminal and s.samples == 1
+        assert not s.is_open and not s.is_signable
+
+    def test_samples_accumulate_and_a_correction_does_not_count(self):
+        s = current_state(_rows("ADMITTED", EXEC, "SIGNED", "MERGED", "REVIEWED",
+                                "CORRECTION", "REVIEWED"))
+        assert s.samples == 2 and s.corrections == 1 and s.action == "MERGED"
+
+    def test_a_reviewed_row_before_merged_is_still_a_status(self):
+        s = current_state(_rows("ADMITTED", EXEC, "REVIEWED"))
+        assert s.action == "REVIEWED" and s.samples == 0
+
+    def test_a_reviewed_row_after_abandoned_is_not_a_sample(self):
+        """Only merged work is sampled; a reading of abandoned work is a
+        status row like any other (and the recorder refuses it)."""
+        s = current_state(_rows("ADMITTED", "ABANDONED", "REVIEWED"))
+        assert s.action == "REVIEWED" and s.samples == 0
