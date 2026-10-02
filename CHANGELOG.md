@@ -9,6 +9,18 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 _Nothing yet._
 
+## [0.21.2] — 2026-10-02
+
+### Fixed
+
+- **A REVIEWED row after MERGED is a sample, not a reopening.** Charter
+  Decision 0020 item 6 has the other keyholder sample single-reviewer merges by
+  appending REVIEWED to the merged task. `ledger_state.current_state` read that
+  row as the task's new status, so a sampled task stopped being merged (and
+  the recorders refused to write it at all). The row is now counted in
+  `TaskState.samples` and the task stays MERGED. A REVIEWED row after
+  ABANDONED is unchanged: only merged work is sampled.
+
 ## [0.21.1] — 2026-09-30
 
 ### Fixed
@@ -1159,6 +1171,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.21.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.19.0...v0.20.0

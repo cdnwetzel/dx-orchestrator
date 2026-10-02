@@ -80,6 +80,12 @@ class TaskState:
     signed: bool
     corrections: int
     rows: int
+    #: REVIEWED rows appended AFTER the task reached MERGED: the other
+    #: keyholder's samples of single-reviewer merges (charter Decision 0020
+    #: item 6). A sample records that a second person read merged work; it
+    #: does not reopen the task, so it is counted here and never becomes
+    #: ``action``.
+    samples: int = 0
 
     @property
     def terminal(self) -> bool:
@@ -141,6 +147,7 @@ def current_state(rows: list[dict[str, Any]], task_id: str = "") -> TaskState:
     recorded = False
     signed = False
     corrections = 0
+    samples = 0
     seen = 0
     for row in rows:
         seen += 1
@@ -148,6 +155,11 @@ def current_state(rows: list[dict[str, Any]], task_id: str = "") -> TaskState:
         if a == "CORRECTION":
             corrections += 1
         if a not in STATUS_ACTIONS:
+            continue
+        if a == "REVIEWED" and action == "MERGED":
+            # A sample, not a status: merged work stays merged. The sampler's
+            # name and words live on the row; the task's state is unchanged.
+            samples += 1
             continue
         action = a
         by = row.get("author_human") or ""
@@ -169,7 +181,7 @@ def current_state(rows: list[dict[str, Any]], task_id: str = "") -> TaskState:
         task_id=task_id or (rows[0].get("task_id", "") if rows else ""),
         action=action, by=by, reason=reason, candidate_sha=candidate,
         execution_recorded=recorded, signed=signed, corrections=corrections,
-        rows=seen,
+        rows=seen, samples=samples,
     )
 
 
