@@ -66,8 +66,8 @@ carries real home-fleet RFC1918 addresses, a real device hostname, `orin1`, and 
 GPU/host inventory across `presets/`, `config.py`, `tests/test_presets.py` and
 `docs/`.
 
-This is deliberate, not an accident: `greptile.json` and `CONTRIBUTING.md`
-declare the home /24 and device-model hostnames acceptable operator policy, and
+This is deliberate, not an accident: `CONTRIBUTING.md`
+declares the home /24 and device-model hostnames acceptable operator policy, and
 the *work* fleet correctly uses the RFC-5737 documentation range.
 
 The issue is consistency. `checkpoint.md` clears `dx` on "0 lab addresses in the
