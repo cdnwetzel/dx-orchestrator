@@ -32,6 +32,11 @@ Two consequences of "latest status wins" are deliberate and worth stating:
   * REVIEWED after REDLINE clears the redline. Only a non-author can record
     REVIEWED, so this is the reviewer withdrawing an objection, and it is
     recorded as such rather than hidden.
+  * REVIEWED after MERGED is the one status-bearing row that does NOT become
+    the state: it is the other keyholder's sample of a single-reviewer merge
+    (charter Decision 0020 item 6). Merged work stays merged; the row is
+    counted in ``TaskState.samples``. After ABANDONED a REVIEWED row is a
+    status like any other — only merged work is sampled.
 
 CORRECTION (RL-009) names the row it corrects and is otherwise neutral here:
 it says the record was wrong, not what the task's state now is. A correction
