@@ -331,7 +331,9 @@ def get_approval_config() -> ApprovalConfig | None:
 #: deliberately absent here: D-4 (2026-10-02) makes the reviewer advisory until
 #: a calibration run has measured what its findings cost in rounds. Lifting
 #: that is a one-line change to this tuple, after the calibration, and this is
-#: the only place the gate is.
+#: the only place the gate is: ``dx.evidence.render_review_line`` and the AskPS
+#: bridge's ``_review_result`` already phrase their closing sentence from the
+#: recorded mode, so widening this needs no change there.
 REVIEW_MODES: tuple[str, ...] = ("advisory",)
 REVIEW_MODE_DEFAULT = "advisory"
 

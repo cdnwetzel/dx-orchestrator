@@ -330,6 +330,16 @@ class TestBundleReview:
     def test_the_line_for_not_requested(self):
         assert "not requested" in render_review_line({"requested": False, "why": "manifest review: off"})
 
+    def test_the_closing_sentence_follows_the_recorded_mode(self):
+        """W4C-1: widening REVIEW_MODES must not leave a blocking run described as advisory."""
+        base = {"requested": True, "ran": True, "runs": 1, "verdict": "REJECT", "findings": 2,
+                "allowed": False, "run_id": "r2"}
+        advisory = render_review_line({**base, "mode": "advisory"})
+        blocking = render_review_line({**base, "mode": "blocking"})
+        assert "Advisory: it was recorded, never a gate." in advisory
+        assert "never a gate" not in blocking and "Advisory" not in blocking
+        assert "Mode blocking: pxx applied the verdict as a gate (last allowed False)" in blocking
+
 
 class TestRunEmitsTheReviewRecord:
     def _run_with_evidence(self, monkeypatch, tmp_path, review_block, run_dir):
@@ -467,6 +477,57 @@ class TestDoctorPosture:
         _manifest_with(doctor_green, monkeypatch, "  enabled: true\n  mode: blocking")
         code, out = _doctor(capsys)
         assert code == 1 and "D-4" in out
+
+    def test_the_posture_says_where_pxx_settings_were_resolved(self, doctor_green, monkeypatch, capsys):
+        """W4C-2: doctor has no task scope; it says which directory it resolved from."""
+        _manifest_with(doctor_green, monkeypatch, "  enabled: true")
+        monkeypatch.setattr("dx.cmd_run._reviewer_route", lambda scope, env: None)
+        monkeypatch.chdir(doctor_green)
+        _, out = _doctor(capsys)
+        assert f"pxx settings resolved in {doctor_green}" in out
+        assert "`dx run` resolves them in each task's scope" in out
+
+    def test_a_writer_without_a_model_is_never_green(self, doctor_green, monkeypatch, capsys):
+        """W4C-4: pxx's default decides a model-less writer, and that default may
+        be the reviewer's own model — the line is ⚠️, never ✅."""
+        text = MANIFEST.read_text(encoding="utf-8").replace('    model: "default-model"\n', "")
+        assert "default-model" not in text
+        path = doctor_green / "manifest.yml"
+        path.write_text(text + "\nreview:\n  enabled: true\n", encoding="utf-8")
+        monkeypatch.setenv("DX_CONFIG", str(path))
+        monkeypatch.setattr("dx.cmd_run._reviewer_route",
+                            lambda scope, env: {"model": "rev-7b", "provider": "ollama",
+                                                "base_url": None})
+        code, out = _doctor(capsys)
+        assert code == 0
+        partial = [line for line in out.splitlines() if "partial-route" in line]
+        assert len(partial) == 1
+        assert partial[0].lstrip().startswith("⚠️") and "writer model unset" in partial[0]
+        assert "✅" not in partial[0] and "(pxx default)" in partial[0]
+        # the modelled writers are still compared on their own lines
+        assert "✅ reviewer rev-7b" in out and "differs from writer test-27b" in out
+
+    def test_routes_differing_only_in_provider_are_resolved_separately(self, doctor_green, monkeypatch, capsys):
+        """W4C-3: grouping is by everything _pxx_env hands pxx, not model+endpoint."""
+        twin = ('  twin-engineer:\n    endpoint: "http://vllm.invalid:8007"\n'
+                '    provider: "openai-compatible"\n    model: "test-27b"\n')
+        text = MANIFEST.read_text(encoding="utf-8").replace("  rotating-reviewer:\n",
+                                                            twin + "  rotating-reviewer:\n")
+        assert "twin-engineer" in text
+        path = doctor_green / "manifest.yml"
+        path.write_text(text + "\nreview:\n  enabled: true\n", encoding="utf-8")
+        monkeypatch.setenv("DX_CONFIG", str(path))
+        seen: list[tuple[str | None, str | None]] = []
+
+        def seam(scope, env):
+            seen.append((env.get("PXX_MODEL"), env.get("PXX_PROVIDER")))
+            return {"model": "rev", "provider": None, "base_url": None}
+
+        monkeypatch.setattr("dx.cmd_run._reviewer_route", seam)
+        _, out = _doctor(capsys)
+        assert ("test-27b", "vllm") in seen and ("test-27b", "openai-compatible") in seen
+        assert "(twin-engineer)" in out and "(widget-engineer)" in out
+        assert "widget-engineer, twin-engineer" not in out and "twin-engineer, widget-engineer" not in out
 
 
 # --- the reviewer claim: what the seam returns and what it never does --------

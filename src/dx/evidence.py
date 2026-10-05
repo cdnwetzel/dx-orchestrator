@@ -430,8 +430,11 @@ def _render_tests_line(tests: dict[str, Any] | None) -> str:
 
 def render_review_line(review: dict[str, Any]) -> str:
     """One sentence from the recorded review fact only. Public: the AskPS
-    bridge renders the same fact with the same words, so the two surfaces
-    cannot drift apart on what "did not run" means."""
+    bridge re-derives the same fact phrase for phrase (the two repositories
+    cannot import each other), so the two surfaces cannot drift apart on what
+    "did not run" means. The closing sentence follows the recorded ``mode``,
+    never a constant, so widening ``REVIEW_MODES`` cannot leave a blocking
+    run described as advisory."""
     if not review.get("requested"):
         return f"reviewer not requested ({review.get('why') or 'no reason recorded'})."
     mode = review.get("mode") or "mode unknown"
@@ -450,9 +453,16 @@ def render_review_line(review: dict[str, Any]) -> str:
         tail += f"; {stale} re-review(s) after the commit moved"
     if unparseable:
         tail += f"; {unparseable} unparseable reply(ies)"
+    if mode == "advisory":
+        close = "Advisory: it was recorded, never a gate."
+    else:
+        # Reachable only once REVIEW_MODES (config_loader) admits more than
+        # advisory; say what that mode means rather than the advisory sentence.
+        close = (f"Mode {mode}: pxx applied the verdict as a gate "
+                 f"(last allowed {review.get('allowed')}).")
     return (f"reviewer ({mode}) ran {review.get('runs')}x, last verdict "
             f"{review.get('verdict')}, {review.get('findings')} finding(s){took}{tail} "
-            f"(pxx run `{review.get('run_id')}`). Advisory: it was recorded, never a gate.")
+            f"(pxx run `{review.get('run_id')}`). {close}")
 
 
 def _check_boundary(boundary: tuple[str, ...]) -> None:

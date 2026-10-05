@@ -82,8 +82,10 @@ non-zero. A second signal for the same fact would make an advisory reviewer a
 gate by the back door, which D-4 forbids.
 
 The README's one line comes from `dx.evidence.render_review_line`, which the
-AskPS bridge reuses word for word, so the two surfaces cannot disagree on what
-"did not run" means.
+AskPS bridge re-derives phrase for phrase (the two repositories cannot import
+each other), so the two surfaces cannot disagree on what "did not run" means.
+Its closing sentence follows the recorded mode, so widening `REVIEW_MODES`
+after the calibration cannot leave a blocking run described as advisory.
 
 ## What the record cannot say, and what dx says instead
 
@@ -107,11 +109,19 @@ Two derived lines, never restated:
 ```
 
 or `off (manifest has no review section) — F-001: the reviewer never runs`.
-The comparison is printed per distinct writer route, under that route's
+The comparison is printed per distinct writer route (model, endpoint,
+provider, timeout: everything dx hands pxx for the role), under that route's
 environment, even with the reviewer off, so a box can be checked before the
-switch. A reviewer that cannot be determined is `⚠️`, never `✅`; the same
-model as the writer is `❌ decorrelation broken`. Non-core: doctor's exit does
-not change.
+switch. A reviewer that cannot be determined is `⚠️`, never `✅`; so is a
+writer with no manifest model, because pxx's default decides it and that
+default may be the reviewer's own. The same model as the writer is
+`❌ decorrelation broken`. Non-core: doctor's exit does not change.
+
+Doctor has no task scope, so it resolves pxx's settings from the directory it
+runs in and says so on the line under the switch; `dx run` resolves them from
+the task's scope. The two agree wherever the reviewer is set in user config or
+the environment (the pilot box), and differ only when a repository's own
+`pxx.toml` sets `model` and no `review_model` is set anywhere.
 
 ## The proving run (human, on the execution host)
 

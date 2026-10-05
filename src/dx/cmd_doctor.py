@@ -139,15 +139,27 @@ def _reviewer_posture() -> list[str]:
     else:
         lines.append(f"🧪 reviewer leg: on, {review.mode} (manifest review:)")
 
+    # Doctor has no task scope: pxx's settings are resolved from the directory
+    # doctor runs in, where `dx run` resolves them from the task's scope. Same
+    # answer wherever the reviewer is set in user config or the environment;
+    # said out loud so the per-writer lines are not read as per-scope facts.
+    lines.append(f"   (pxx settings resolved in {Path.cwd()}; `dx run` resolves "
+                 f"them in each task's scope)")
+
     cfg = load_config()
     roles = cfg.get("roles") or {}
-    by_writer: dict[tuple[str | None, str], list[str]] = {}
+    # Grouped by everything _pxx_env hands pxx for the route, so every role in
+    # a group is resolved under exactly its own environment, not the first
+    # slug's. Model and endpoint alone would merge routes that differ only in
+    # provider or timeout.
+    by_writer: dict[tuple[str | None, str, str | None, float | None], list[str]] = {}
     for slug in sorted(roles):
         if slug == "default":
             continue
         route = get_route_for_role(slug)
-        by_writer.setdefault((route.model, route.endpoint), []).append(slug)
-    for (writer_model, endpoint), slugs in by_writer.items():
+        key = (route.model, route.endpoint, route.provider, route.timeout_s)
+        by_writer.setdefault(key, []).append(slug)
+    for (writer_model, endpoint, _provider, _timeout), slugs in by_writer.items():
         route = get_route_for_role(slugs[0])
         reviewer = _reviewer_route(Path.cwd(), _pxx_env(route))
         who = f"writer {writer_model or '(pxx default)'} @ {endpoint} ({', '.join(slugs)})"
@@ -156,8 +168,12 @@ def _reviewer_posture() -> list[str]:
                          f"here, or its settings did not load")
             continue
         r_model, r_url, r_prov = reviewer["model"], reviewer["base_url"], reviewer["provider"]
-        same_model = bool(writer_model) and r_model == writer_model
-        if same_model:
+        if not writer_model:
+            # pxx's own default decides the writer, and that default may be the
+            # very model the reviewer resolved to: not knowable here, so never ✅.
+            lines.append(f"   ⚠️  writer model unset for {who}: pxx's default decides it, "
+                         f"so whether reviewer {r_model} differs cannot be said here")
+        elif r_model == writer_model:
             lines.append(f"   ❌ reviewer is the writer's model ({r_model}) for {who} — "
                          f"decorrelation broken (pxx-role-binding)")
         else:
