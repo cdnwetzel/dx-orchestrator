@@ -7,7 +7,18 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **The reviewer leg.** A manifest `review:` section (`mode: advisory` is the
+  only mode this release accepts) makes `dx run` send pxx an explicit
+  `--review --review-mode advisory` on every run, never pxx's own default,
+  which is blocking. The bundle's `result.review` is read from pxx's run
+  record (`gate: "review"` events and `outcome.json`), in one of three
+  explicit shapes: ran, requested-but-did-not-run, not-requested. The review
+  line in the rendered bundle closes with the recorded mode. `dx doctor`
+  prints a reviewer posture per route, grouped by the whole pxx environment,
+  and never turns a writer whose model is unset green. See
+  `docs/reviewer-leg.md`.
 
 ## [0.21.2] — 2026-10-02
 

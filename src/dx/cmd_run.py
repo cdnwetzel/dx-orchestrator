@@ -20,8 +20,11 @@ from .approval_tier import (
 )
 from .config_loader import (
     ConfigError,
+    ReviewConfig,
+    RoleRoute,
     get_approval_config,
     get_ledger_repo_path,
+    get_review_config,
     get_roles_path,
     get_route_for_role,
 )
@@ -32,6 +35,7 @@ from .psoperator_client import PSOperatorClient
 from .role_models import FitLevel
 from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
 from .role_validate import validate_card
+from .run_facts import ReviewRequest
 from .run_facts import collect as collect_run_facts
 from .salvage import find_run_dir, report, salvage_discarded_work
 from .seed import Seed, SeedError, seed_from_patch
@@ -63,6 +67,73 @@ def _git(scope: str, *args: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def _pxx_env(route: RoleRoute) -> dict[str, str]:
+    """The environment a run under ``route`` hands pxx: the process env plus
+    the writer's routing. One function, so doctor resolves the reviewer under
+    exactly the environment a run would."""
+    env = os.environ.copy()
+    env["PXX_BASE_URL"] = route.endpoint
+    if route.model:
+        env["PXX_MODEL"] = route.model
+    if route.provider:
+        env["PXX_PROVIDER"] = route.provider
+    if route.timeout_s:
+        # PXX_NATIVE_TIMEOUT is the base knob; pxx's review_timeout() falls back
+        # to it when PXX_REVIEW_TIMEOUT is unset, so one manifest value covers
+        # the agent round and the review round. Set only when the manifest asks,
+        # so pxx's own default stays in force otherwise.
+        env["PXX_NATIVE_TIMEOUT"] = str(route.timeout_s)
+    return env
+
+
+def _reviewer_route(scope: Path, env: dict[str, str]) -> dict[str, str | None] | None:
+    """The reviewer pxx WOULD resolve for a run in ``scope`` under ``env`` —
+    `Settings.effective_review_model` from pxx's own `load_settings`, read the
+    way pxx reads it (user config, repo pxx.toml, environment).
+
+    A labelled claim, not a run fact: pxx's gate event does not name the
+    reviewer (its `ReviewPacket.reviewer` is the literal "reviewer"), so this
+    is "the reviewer configured at launch", recorded beside the routing. None
+    when pxx is not importable here or its settings cannot be loaded; a
+    caller must print that as "not determined", never as a green line.
+    """
+    try:
+        from pxx.config import load_settings
+    except ImportError:
+        return None
+    saved = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        settings = load_settings(cwd=scope)
+        ref = settings.effective_review_model
+    except Exception:  # noqa: BLE001 — a claim that cannot be made is None, not a crash
+        return None
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    model = getattr(ref, "model", None)
+    return {
+        "model": str(model) if model else None,
+        "provider": str(getattr(ref, "provider", None) or "") or None,
+        "base_url": str(getattr(ref, "base_url", None) or "") or None,
+    }
+
+
+def _review_flags(review: ReviewConfig | None) -> tuple[list[str], ReviewRequest]:
+    """Both flags or ``--no-review``, never a mix, on every run.
+
+    pxx's own `loop_review` default (and a `PXX_LOOP_REVIEW` in some unit)
+    never decides: the explicit flag wins in pxx, so the manifest is the one
+    place the choice lives. The request object is what the bundle records as
+    "what dx sent", built from the same decision."""
+    if review is not None and review.enabled:
+        return (["--review", "--review-mode", review.mode],
+                ReviewRequest(requested=True, mode=review.mode))
+    why = "manifest review: off" if review is not None else "no review section"
+    return ["--no-review"], ReviewRequest(requested=False, why_not=why)
+
+
 def _emit_evidence(
     args: argparse.Namespace,
     card_fit: str,
@@ -73,6 +144,8 @@ def _emit_evidence(
     returncode: int,
     run_started_at: float | None = None,
     seed: Seed | None = None,
+    review: ReviewRequest | None = None,
+    reviewer_configured: dict[str, str | None] | None = None,
 ) -> tuple[Path, bool]:
     """Build and write the `dx.role_task.v1` bundle for this run.
 
@@ -98,6 +171,9 @@ def _emit_evidence(
                 "model": model,
                 "provider": provider,
                 "endpoint_raw": getattr(route, "endpoint_raw", None),
+                # The reviewer pxx resolved at launch (dx._reviewer_route): a
+                # labelled claim, since pxx's run record does not name it.
+                "reviewer_configured": reviewer_configured,
             },
             indent=2,
             sort_keys=True,
@@ -144,7 +220,8 @@ def _emit_evidence(
     # whose only test fact was "the model said so" is what let T-0046 reach
     # review reporting "10 passed" over a suite that failed 4 of 16.
     facts = collect_run_facts(
-        find_run_dir(run_started_at) if run_started_at is not None else None
+        find_run_dir(run_started_at) if run_started_at is not None else None,
+        review,
     )
     artifacts.update(facts.artifacts)
     if seed is not None:
@@ -169,6 +246,24 @@ def _emit_evidence(
         ),
     )
 
+    if facts.review is not None:
+        # Recorded, not a gate on `passed`: `passed` is pxx's exit, and a loop
+        # that never reached its review gate already exited non-zero. A second
+        # signal for the same fact would make an advisory reviewer a gate by
+        # the back door (D-4).
+        requested = bool(facts.review.get("requested"))
+        ran = bool(facts.review.get("ran"))
+        checks["review_recorded"] = Check(
+            ok=(not requested) or ran,
+            path=("artifacts/pxx-review-gates.jsonl"
+                  if "pxx-review-gates.jsonl" in facts.artifacts else None),
+            detail=(
+                f"reviewer ran {facts.review.get('runs')}x, last verdict "
+                f"{facts.review.get('verdict')}" if ran
+                else str(facts.review.get("why"))
+            ),
+        )
+
     bundle = RoleTaskBundle(
         task_id=args.task_id,
         title=f"{args.task_id} — {args.required_role}",
@@ -179,6 +274,7 @@ def _emit_evidence(
         checks=checks,
         artifacts=artifacts,
         tests=facts.tests,
+        review=facts.review,
     )
     return write_bundle(bundle, _evidence_root(args)), produced
 
@@ -439,18 +535,15 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
 
-    env = os.environ.copy()
-    env["PXX_BASE_URL"] = route.endpoint
-    if route.model:
-        env["PXX_MODEL"] = route.model
-    if route.provider:
-        env["PXX_PROVIDER"] = route.provider
-    if route.timeout_s:
-        # PXX_NATIVE_TIMEOUT is the base knob; pxx's review_timeout() falls back
-        # to it when PXX_REVIEW_TIMEOUT is unset, so one manifest value covers
-        # the agent round and the review round. Set only when the manifest asks,
-        # so pxx's own default stays in force otherwise.
-        env["PXX_NATIVE_TIMEOUT"] = str(route.timeout_s)
+    # Read ONCE, here, and never again after the run: the bundle records what
+    # dx sent, not what the manifest says afterwards.
+    try:
+        review_flags, review_request = _review_flags(get_review_config())
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
+
+    env = _pxx_env(route)
 
     pxx_bin = _resolve_pxx()
     if pxx_bin is None:
@@ -475,9 +568,13 @@ def cmd_run(args: argparse.Namespace) -> None:
     # and ended after four model turns -- list, read, read, read -- before a
     # single edit. The loop's round cap stays pxx's default; every budget
     # comes from the repository's pxx.toml, where it is reviewed.
+    #
+    # The reviewer leg is always stated: `--review --review-mode advisory`
+    # when the manifest's `review:` section says so, `--no-review` otherwise,
+    # so pxx's own default never decides (see _review_flags).
     cmd = [
         pxx_bin, "loop", "--scope", args.scope, "--message", enhanced_prompt,
-        "--sandbox",
+        "--sandbox", *review_flags,
     ]
     if not args.no_commit:
         cmd.append("--commit")
@@ -493,8 +590,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  PXX_MODEL:     {route.model or '(unset, pxx default)'}")
         print(f"  PXX_PROVIDER:  {route.provider or '(unset, pxx default: ollama)'}")
         print(f"  pxx:           {pxx_bin}")
+        print(f"  reviewer leg:  {' '.join(review_flags)}"
+              + (f" ({review_request.why_not})" if review_request.why_not else ""))
         print(f"  command:       {pxx_bin} loop --scope {args.scope} --sandbox "
-              f"[--commit] <prompt>")
+              f"{' '.join(review_flags)} [--commit] <prompt>")
         return
 
     # Flushed before handing stdout to the subprocess. pxx writes straight to
@@ -542,6 +641,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     # mtime. pxx resets the scope to its pxx-pre tag on any non-COMPLETED
     # outcome, and a governance refusal is one of those — see dx.salvage.
     run_started_at = time.time()
+    # The reviewer pxx will resolve for this run, read before the run under
+    # the run's own environment: a launch-time claim for routing.json.
+    reviewer_configured = (
+        None if args.no_evidence else _reviewer_route(Path(args.scope), env)
+    )
     # unbounded: this is the model doing the work. A large refactor on a slow
     # local endpoint legitimately runs for minutes, and cutting it off at an
     # arbitrary deadline would destroy in-flight edits. Ctrl-C is the control.
@@ -555,6 +659,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             bundle_path, produced_changes = _emit_evidence(
                 args, card.fit.value, route, enhanced_prompt, cmd,
                 source_head, result.returncode, run_started_at, seed,
+                review_request, reviewer_configured,
             )
         except EvidenceError as exc:
             print(

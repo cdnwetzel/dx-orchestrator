@@ -75,3 +75,15 @@ roles:
   ux-designer: VISION
   ux-researcher: VISION
   accessibility-specialist: VISION
+
+# The reviewer leg (dx.config_loader.get_review_config). Address-free, so it
+# lives in the template and is carried into the generated manifest as written.
+# Off when the section is absent; dx then sends pxx `--no-review` on every run
+# and the bundle says "no review section". With `enabled: true` dx sends
+# `--review --review-mode advisory`: the reviewer runs after each green round,
+# its verdict and findings are recorded in the bundle, and it never blocks.
+# `mode: blocking` is refused by dx until D-4's calibration run (2026-10-02).
+#
+# review:
+#   enabled: true
+#   mode: advisory
