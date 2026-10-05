@@ -7,11 +7,13 @@ Design: AskPS `docs/general/ps-coding-wp4-design.md` (Kimi design review
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
+import dx.cmd_run
 from conftest import MANIFEST
 from dx.cli import build_parser
 from dx.config_loader import ConfigError, ReviewConfig, get_review_config, validate_manifest
@@ -87,6 +89,11 @@ def _run_to_completion(*argv):
         _run(*argv)
     except SystemExit:
         pass
+
+
+#: The real seam, captured before the autouse fixture below replaces it, so
+#: TestReviewerRoute exercises the function and not its stand-in.
+_REAL_REVIEWER_ROUTE = dx.cmd_run._reviewer_route
 
 
 @pytest.fixture(autouse=True)
@@ -469,8 +476,7 @@ class TestReviewerRoute:
     def test_not_importable_is_none(self, monkeypatch, tmp_path):
         import builtins
 
-        from dx.cmd_run import _reviewer_route
-
+        _reviewer_route = _REAL_REVIEWER_ROUTE
         real_import = builtins.__import__
 
         def no_pxx(name, *a, **k):
@@ -481,11 +487,18 @@ class TestReviewerRoute:
         monkeypatch.setattr(builtins, "__import__", no_pxx)
         assert _reviewer_route(tmp_path, {}) is None
 
+    @pytest.mark.skipif(importlib.util.find_spec("pxx") is None,
+                        reason="pxx not installed here; the claim is None then, by design")
+    def test_with_pxx_present_the_claim_names_a_model(self, tmp_path):
+        """Resolved by pxx's own load_settings under the given env and an
+        empty HOME, so the answer is pxx's default reviewer, not this box's."""
+        claim = _REAL_REVIEWER_ROUTE(tmp_path, {"HOME": str(tmp_path), "PATH": "/usr/bin"})
+        assert claim is not None and claim["model"]
+
     def test_the_environment_is_restored_after_the_claim(self, monkeypatch, tmp_path):
         import os
 
-        from dx.cmd_run import _reviewer_route
-
+        _reviewer_route = _REAL_REVIEWER_ROUTE
         monkeypatch.setenv("DX_REVIEW_LEG_TEST_SENTINEL", "kept")
         _reviewer_route(tmp_path, {"PXX_MODEL": "x"})
         assert os.environ.get("DX_REVIEW_LEG_TEST_SENTINEL") == "kept"
