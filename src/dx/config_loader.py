@@ -220,6 +220,7 @@ def validate_manifest() -> None:
     _as_mapping(cfg.get("gui_verification"), "gui_verification", path)
     _as_mapping(cfg.get("psoperator"), "psoperator", path)
     _as_mapping(cfg.get("ledger"), "ledger", path)
+    get_review_config()
 
 
 def get_gui_config() -> dict[str, Any]:
@@ -324,6 +325,68 @@ def get_approval_config() -> ApprovalConfig | None:
         role=str(role),
         ai_root=Path(str(ai_root)).expanduser(),
     )
+
+
+#: The review modes dx will send to pxx. ``blocking`` exists in pxx and is
+#: deliberately absent here: D-4 (2026-10-02) makes the reviewer advisory until
+#: a calibration run has measured what its findings cost in rounds. Lifting
+#: that is a one-line change to this tuple, after the calibration, and this is
+#: the only place the gate is.
+REVIEW_MODES: tuple[str, ...] = ("advisory",)
+REVIEW_MODE_DEFAULT = "advisory"
+
+
+@dataclass(frozen=True)
+class ReviewConfig:
+    """The manifest's `review:` section — whether `dx run` asks pxx for its
+    reviewer leg, and in which mode.
+
+    pxx's own default (`loop_review`) never decides: dx passes an explicit
+    flag on every run, so the manifest is the one place the choice lives and
+    a `PXX_LOOP_REVIEW` in some unit cannot turn the reviewer on or off
+    behind the manifest's back. Absent section → off, stated as such in the
+    bundle ("no review section"), which reads differently from a reviewer
+    that was asked for and did not run.
+    """
+    enabled: bool
+    mode: str = REVIEW_MODE_DEFAULT
+
+
+def get_review_config() -> ReviewConfig | None:
+    """The `review:` section, or None when the manifest has none.
+
+    Present but malformed is an error, not None: a typo must not silently
+    become "review off". `validate_manifest` calls this, so `dx doctor`
+    fails on a bad section before the first run does.
+    """
+    try:
+        raw = load_config().get("review")
+    except FileNotFoundError:
+        return None
+    if raw is None:
+        return None
+    path = get_config_path()
+    section = _as_mapping(raw, "review", path)
+    enabled = section.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ConfigError(
+            f"{path}: `review.enabled` must be a boolean (true/false), found "
+            f"{enabled!r}. There is no default: say which."
+        )
+    mode = section.get("mode", REVIEW_MODE_DEFAULT)
+    if mode == "blocking":
+        raise ConfigError(
+            f"{path}: `review.mode: blocking` is not offered by this dx. D-4 "
+            f"(2026-10-02) keeps the reviewer advisory — it runs and is "
+            f"recorded, never blocks — until a calibration run has measured "
+            f"what its findings cost in rounds. Use `mode: advisory`."
+        )
+    if not isinstance(mode, str) or mode not in REVIEW_MODES:
+        raise ConfigError(
+            f"{path}: `review.mode` must be one of {', '.join(REVIEW_MODES)}, "
+            f"found {mode!r}."
+        )
+    return ReviewConfig(enabled=enabled, mode=mode)
 
 
 DEFAULT_PSOPERATOR_REPO = Path("~/ai/psoperator").expanduser()

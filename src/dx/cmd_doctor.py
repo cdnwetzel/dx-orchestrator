@@ -19,7 +19,9 @@ from .config_loader import (
     get_ledger_repo_path,
     get_psoperator_config,
     get_psoperator_repo,
+    get_review_config,
     get_roles_path,
+    get_route_for_role,
     load_config,
     validate_manifest,
 )
@@ -109,6 +111,59 @@ def _check_import(module: str, label: str) -> bool:
     except ImportError:
         print(f"❌ {label}")
         return False
+
+
+def _reviewer_posture() -> list[str]:
+    """The reviewer leg as the manifest and pxx would resolve it — derived,
+    never restated. Non-core: a wrong posture is reported, not a failed doctor.
+
+    One line for the switch, then one per distinct writer route: the reviewer
+    pxx resolves under that role's environment against the role's own model.
+    Printed even with the reviewer off, so a box can be checked before the
+    switch is thrown. A reviewer that cannot be determined (pxx not importable
+    here) is ⚠️, never ✅.
+    """
+    from .cmd_run import _pxx_env, _reviewer_route
+
+    lines: list[str] = []
+    try:
+        review = get_review_config()
+    except ConfigError as exc:
+        return [f"❌ reviewer leg: {exc}"]
+    if review is None:
+        lines.append("🧪 reviewer leg: off (manifest has no review section) — "
+                     "F-001: the reviewer never runs")
+    elif not review.enabled:
+        lines.append("🧪 reviewer leg: off (manifest review: enabled false) — "
+                     "F-001: the reviewer never runs")
+    else:
+        lines.append(f"🧪 reviewer leg: on, {review.mode} (manifest review:)")
+
+    cfg = load_config()
+    roles = cfg.get("roles") or {}
+    by_writer: dict[tuple[str | None, str], list[str]] = {}
+    for slug in sorted(roles):
+        if slug == "default":
+            continue
+        route = get_route_for_role(slug)
+        by_writer.setdefault((route.model, route.endpoint), []).append(slug)
+    for (writer_model, endpoint), slugs in by_writer.items():
+        route = get_route_for_role(slugs[0])
+        reviewer = _reviewer_route(Path.cwd(), _pxx_env(route))
+        who = f"writer {writer_model or '(pxx default)'} @ {endpoint} ({', '.join(slugs)})"
+        if reviewer is None:
+            lines.append(f"   ⚠️  reviewer not determined for {who}: pxx not importable "
+                         f"here, or its settings did not load")
+            continue
+        r_model, r_url, r_prov = reviewer["model"], reviewer["base_url"], reviewer["provider"]
+        same_model = bool(writer_model) and r_model == writer_model
+        if same_model:
+            lines.append(f"   ❌ reviewer is the writer's model ({r_model}) for {who} — "
+                         f"decorrelation broken (pxx-role-binding)")
+        else:
+            lines.append(f"   ✅ reviewer {r_model} @ {r_url or '(pxx default)'} "
+                         f"({r_prov or 'provider unset'}) differs from {who}")
+    return lines
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -212,6 +267,13 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         except ConfigError as exc:
             print(f"   ❌ {exc}")
             all_ok = False
+        # 5b. The reviewer leg: derived from the manifest and pxx's own
+        # resolution, printed with or without the network. Non-core.
+        try:
+            for line in _reviewer_posture():
+                print(line)
+        except Exception as exc:  # noqa: BLE001 — posture is a report, never a crash
+            print(f"⚠️  could not derive the reviewer posture: {exc}")
     else:
         print(f"❌ Hardware manifest missing at {cfg_path}")
         all_ok = False

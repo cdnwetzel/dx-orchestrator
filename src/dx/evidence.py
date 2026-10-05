@@ -246,6 +246,10 @@ class RoleTaskBundle:
     #: what the executor's OWN test run recorded (dx.run_facts), or None when
     #: it recorded none. Never derived from anything the model said.
     tests: dict[str, Any] | None = None
+    #: the reviewer leg, from the run record only (dx.run_facts.review_fact):
+    #: ran / requested-but-did-not-run / not-requested, each stated. None when
+    #: the writer of the bundle said nothing about it (older callers).
+    review: dict[str, Any] | None = None
 
 
 @dataclass
@@ -385,6 +389,9 @@ def _render_readme(bundle: RoleTaskBundle, generated_utc: str) -> str:
         lines += [""]
     lines += ["## Tests — the executor's own run", ""]
     lines += [_render_tests_line(bundle.tests), ""]
+    if bundle.review is not None:
+        lines += ["## Review — the executor's own reviewer leg", ""]
+        lines += [render_review_line(bundle.review), ""]
     if bundle.checks:
         lines += ["## Checks", "", "| Check | Result | Artifact |", "| --- | --- | --- |"]
         for name, check in bundle.checks.items():
@@ -419,6 +426,33 @@ def _render_tests_line(tests: dict[str, Any] | None) -> str:
             f"{where}; last run: {state}"
             + (f"; {intro} failure(s) introduced over the baseline" if intro is not None else "")
             + f" (pxx run `{tests.get('run_id')}`).")
+
+
+def render_review_line(review: dict[str, Any]) -> str:
+    """One sentence from the recorded review fact only. Public: the AskPS
+    bridge renders the same fact with the same words, so the two surfaces
+    cannot drift apart on what "did not run" means."""
+    if not review.get("requested"):
+        return f"reviewer not requested ({review.get('why') or 'no reason recorded'})."
+    mode = review.get("mode") or "mode unknown"
+    if not review.get("ran"):
+        return (f"reviewer requested ({mode}), DID NOT RUN: "
+                f"{review.get('why') or 'no reason recorded'}.")
+    seconds = review.get("review_seconds")
+    took = f", {float(seconds):.1f}s" if isinstance(seconds, int | float) else ""
+    stale = review.get("stale_rereviews") or 0
+    contributing = review.get("contributing") or []
+    unparseable = review.get("unparseable_review_count") or 0
+    tail = ""
+    if contributing:
+        tail += f"; {', '.join(contributing)}"
+    if stale:
+        tail += f"; {stale} re-review(s) after the commit moved"
+    if unparseable:
+        tail += f"; {unparseable} unparseable reply(ies)"
+    return (f"reviewer ({mode}) ran {review.get('runs')}x, last verdict "
+            f"{review.get('verdict')}, {review.get('findings')} finding(s){took}{tail} "
+            f"(pxx run `{review.get('run_id')}`). Advisory: it was recorded, never a gate.")
 
 
 def _check_boundary(boundary: tuple[str, ...]) -> None:
@@ -572,7 +606,7 @@ def write_bundle(bundle: RoleTaskBundle, root: Path, *, now: str | None = None) 
         "task_id": bundle.task_id,
         "source_head": bundle.source_head,
         "generated_utc": generated_utc,
-        "result": {"passed": bundle.passed, "tests": bundle.tests},
+        "result": {"passed": bundle.passed, "tests": bundle.tests, "review": bundle.review},
         "role": bundle.role,
         "routing": bundle.routing,
         "checks": {k: v.as_json() for k, v in bundle.checks.items()},

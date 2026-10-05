@@ -230,6 +230,14 @@ def generate(template: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any
                 # fail here so a malformed binding never becomes a written manifest.
                 raise BindingError(f"binding {section!r} must be a mapping, got {type(value).__name__}")
             manifest[section] = value
+    # The reviewer leg is address-free and program-wide, so it comes from the
+    # TEMPLATE, not the binding: one tracked, reviewed place decides whether the
+    # reviewer runs. Carried verbatim; dx's loader validates the shape.
+    if "review" in template:
+        value = template["review"]
+        if not isinstance(value, dict):
+            raise BindingError(f"template 'review' must be a mapping, got {type(value).__name__}")
+        manifest["review"] = value
     return manifest
 
 
