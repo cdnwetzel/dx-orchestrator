@@ -5,6 +5,10 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+_Nothing yet._
+
 ## [0.22.0] — 2026-10-06
 
 ### Added
