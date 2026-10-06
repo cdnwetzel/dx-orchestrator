@@ -5,7 +5,7 @@ All notable changes to `dx-orchestrator`.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.22.0] — 2026-10-06
 
 ### Added
 
@@ -1182,6 +1182,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.22.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.2...v0.22.0
 [0.21.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.20.0...v0.21.0
