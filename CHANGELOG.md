@@ -7,7 +7,30 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`dx learn` — continuous improvement, recommend-only.** It reads four
+  records and proposes ranked changes; it changes nothing itself.
+  - **Sources:** pxx run directories; the devswarm ledger, verified with
+    `get_ledger_head` first; the psoperator audit chain, re-verified; and
+    review-lane manifests. pxx attempts are joined to dx tasks through
+    `EXECUTED run=`.
+  - **Detectors:** recurring failure signatures, model preference per task
+    class, gate regressions, human-rejection themes (including tasks pxx
+    passed and a human then refused), unreliable review lanes, psoperator
+    failure patterns, and adoptions that did not work.
+  - **Metrics:** every proposal carries the bad-event rate it will be judged
+    by, fixed when it is proposed. `dx learn efficacy` measures that rate from
+    the implementing task's MERGED row.
+  - **Decisions:** human-only (`--by` refuses dx itself) and audited in a hash
+    chain. A rejected proposal stays down until its evidence doubles.
+    `accept` writes a dx task spec.
+  - **pxx:** `--forward-pxx` hands model-routing proposals to pxx's
+    human-review inbox under its `cycle.lock`.
+  - **Storage:** a JSON store by default, or SQL Server (`DX_LEARN_MSSQL`,
+    extra `[mssql]`, schema `src/dx/learn_mssql.sql`).
+  - **Limits:** never writes to the ledger. No proposal kind relaxes a gate.
+  - **Docs:** see `docs/learn.md`.
 
 ## [0.22.0] — 2026-10-06
 

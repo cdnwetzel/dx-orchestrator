@@ -98,6 +98,11 @@ def _isolate_dx_env(monkeypatch, tmp_path_factory):
     # dx run and dx verify-gui both emit by default. Redirect to a throwaway dir
     # unless the test sets its own.
     monkeypatch.setenv("DX_EVIDENCE_DIR", str(tmp_path_factory.mktemp("dx-evidence")))
+    # Same rule for dx learn: no test reaches the real queue, pxx state, audit
+    # log or a SQL Server. A test that needs one sets it explicitly.
+    for var in ("DX_LEARN_MSSQL", "DX_LEARN_PXX_STATE", "DX_LEARN_PSOPERATOR_AUDIT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DX_LEARN_STORE", str(tmp_path_factory.mktemp("dx-learn")))
     yield
 
 
