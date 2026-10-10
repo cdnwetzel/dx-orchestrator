@@ -29,6 +29,19 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     human-review inbox under its `cycle.lock`.
   - **Storage:** a JSON store by default, or SQL Server (`DX_LEARN_MSSQL`,
     extra `[mssql]`, schema `src/dx/learn_mssql.sql`).
+  - **Hardening:** an independent review of the first cut found twelve
+    problems, and each is fixed with a regression test:
+    - `pxx loop` run directories (what `dx run` produces) were quarantined
+      and their rounds counted as successes.
+    - Decisions could be undone by a concurrent pass.
+    - Efficacy could fall back to the wrong source, judge two equal zero
+      rates, or credit a merge that predated adoption.
+    - CORRECTION rows were attributed by task id rather than row hash.
+    - Model-written commit subjects could supply `scope=`/`run=`.
+    - Rows appended after verification were trusted.
+    - The decision audit was never verified.
+  - **pxx contract:** a test runs real `pxx.loop.run_loop` output through the
+    reader, so the pxx layout is checked rather than assumed.
   - **Limits:** never writes to the ledger. No proposal kind relaxes a gate.
   - **Docs:** see `docs/learn.md`.
 

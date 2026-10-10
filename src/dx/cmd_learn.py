@@ -18,8 +18,10 @@ prints the state of earlier adoptions before any new proposal.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -38,10 +40,16 @@ from .learn_sources import (
     read_pxx_runs,
     read_review_manifests,
 )
-from .learn_store import JsonStore, MssqlStore, Store, StoreError
+from .learn_store import JsonStore, MssqlStore, StaleDecision, Store, StoreError
 
 DEFAULT_STORE = Path("~/.local/state/dx/learn").expanduser()
-_SELF = {"dx", "dx-learn", "dx learn", "claude", "agent", "bot"}
+# Words that name the tools and models in this stack, not people. A --by made
+# only of these (e.g. "dx.run", "Claude Code", "claude-opus", "pxx") is refused.
+_AGENT_WORDS = frozenset({
+    "dx", "pxx", "learn", "run", "orchestrator", "psoperator", "psguard", "claude", "code",
+    "codex", "kimi", "gpt", "gemini", "copilot", "coderabbit", "opus", "sonnet", "haiku",
+    "fable", "mythos", "llm", "ai", "agent", "bot", "assistant", "model", "cli", "review",
+    "reviewer", "localhost", "invalid", "example"})
 
 
 def register_learn_subcommand(subparsers: SubParsers) -> None:
@@ -153,11 +161,39 @@ def _pxx_state_dir(args: argparse.Namespace) -> Path:
 
 
 def _human(by: str) -> str:
+    """The decider must be a person. This is a guard against an automated caller
+    writing its own name, not authentication: the OS account running the
+    command is recorded beside it, and the authority that changes software is
+    still the signed `dx merge`."""
     name = by.strip()
-    if not name or name.lower() in _SELF:
+    tokens = [t for t in re.split(r"[^a-z0-9]+", name.lower()) if t]
+    email_local = re.findall(r"([a-z0-9._-]+)@", name.lower())
+    agentish = (not tokens
+                or all(t in _AGENT_WORDS or t.isdigit() for t in tokens)
+                or any(set(re.split(r"[._-]+", e)) <= _AGENT_WORDS for e in email_local))
+    if agentish:
         _die("--by must name the human deciding; dx learn proposed this and may not decide it "
              "(separation of duties: author ≠ approver)")
     return name
+
+
+def _who(by: str) -> dict[str, str]:
+    try:
+        account = getpass.getuser()
+    except (KeyError, OSError):
+        account = "unknown"
+    return {"os_user": account, "by": by}
+
+
+def _decide(store: Store, rec: Recommendation, adoption: Adoption | None, *, by: str,
+            action: str, detail: dict[str, Any], now: datetime, expected: str) -> None:
+    try:
+        store.decide(rec, adoption, actor=by, action=action, now=now,
+                     detail={**detail, **_who(by)}, expected_status=expected)
+    except StaleDecision as exc:
+        _die(f"{exc}. Nothing was recorded.")
+    except StoreError as exc:
+        _die(f"decision store refused the write: {exc}. Nothing was recorded.")
 
 
 def _gather(args: argparse.Namespace) -> Corpus:
@@ -210,7 +246,11 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
     cfg = LearnConfig()
     adoptions = store.load_adoptions()
     fresh = Learner(cfg, now).learn(corpus, adoptions.values())
-    changed = reconcile(fresh, store.load_recs(), cfg, now)
+    existing = store.load_recs()
+    # What this pass read: a record is only written back if it is still in that
+    # state, so a decision made while the pass ran is never undone.
+    expected: dict[str, str | None] = {k: r.status for k, r in existing.items()}
+    changed = reconcile(fresh, existing, cfg, now)
 
     forwarded: list[dict[str, str]] = []
     if args.forward_pxx:
@@ -225,7 +265,8 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
                     rec.pxx_slug = slug
                 forwarded.append({"rec_key": rec.rec_key, "outcome": outcome})
 
-    store.save_recs(changed, now)
+    skipped = store.save_recs(changed, now, expected)
+    changed = [r for r in changed if r.rec_key not in skipped]
     stale = [r.rec_key for r in changed if r.status == "STALE"]
     summary: dict[str, Any] = {"sources": corpus.sources, "attempts": len(corpus.attempts),
                "tasks": len(corpus.tasks), "operator_decisions": len(corpus.operator),
@@ -233,7 +274,8 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
                "quarantined": [to_jsonable(q) for q in corpus.quarantined],
                "proposed": [r.rec_key for r in changed if r.status == "PROPOSED"],
                "stale": stale,
-               "forwarded": forwarded}
+               "forwarded": forwarded,
+               "skipped_decided_meanwhile": skipped}
     store.record_pass(summary, corpus, now)
 
     text = ["dx learn — pass complete (recommend-only; nothing was changed)"]
@@ -246,6 +288,7 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
                 f"{len(stale)} gone stale")
     text += [_line(r) for r in open_recs[:10]]
     text += [f"  pxx: {f['rec_key'][:8]} {f['outcome']}" for f in forwarded]
+    text += [f"  left alone (decided while this pass ran): {k[:8]}" for k in skipped]
     text.append("  next: dx learn queue · dx learn show <key> · dx learn accept <key> --by <you>")
     _emit(args, summary, text)
 
@@ -257,7 +300,11 @@ def cmd_learn_queue(args: argparse.Namespace) -> None:
     shown = [r for r in recs.values() if args.all or r.status == "PROPOSED"]
     shown.sort(key=lambda r: (r.status != "PROPOSED", -r.score, r.rec_key))
     active = [a for a in ads.values() if a.active]
-    text = ["Earlier adoptions (review these before adding new ones):"]
+    try:
+        audit = f"decision audit: {store.verify_audit()} row(s), chain verifies"
+    except StoreError as exc:
+        audit = f"⚠ decision audit DOES NOT VERIFY: {exc} — no decision will be recorded"
+    text = [audit, "Earlier adoptions (review these before adding new ones):"]
     text += [f"  [{a.rec_key[:8]}] task={a.task_id or '— not linked —'} by {a.accepted_by} "
              f"on {a.accepted_at.date()} metric={a.metric['name']}" for a in active] or ["  (none)"]
     text.append("Open proposals:" if not args.all else "All recommendations:")
@@ -281,6 +328,7 @@ def cmd_learn_accept(args: argparse.Namespace) -> None:
     by, now = _human(args.by), utcnow()
     store = _open_store(args)
     rec = _find(store, args.key)
+    read_status = rec.status
     if rec.status not in ("PROPOSED", "STALE"):
         _die(f"{rec.rec_key[:8]} is {rec.status}; only an open proposal can be accepted")
     if rec.status == "STALE":
@@ -295,8 +343,8 @@ def cmd_learn_accept(args: argparse.Namespace) -> None:
     adoption = Adoption(rec_key=rec.rec_key, metric=dict(rec.metric), accepted_by=by,
                         accepted_at=now, note=args.note, task_id=args.task)
     spec = render_spec(rec, args.task or "<TASK-ID>", accepted_by=by)
-    store.decide(rec, adoption, actor=by, action="accept", now=now,
-                 detail={"note": args.note, "task_id": args.task, "metric": rec.metric})
+    _decide(store, rec, adoption, by=by, action="accept", now=now, expected=read_status,
+            detail={"note": args.note, "task_id": args.task, "metric": rec.metric})
     if out is not None:
         with out.open("x", encoding="utf-8") as fh:    # never overwrite someone's spec
             fh.write(spec)
@@ -311,11 +359,17 @@ def cmd_learn_reject(args: argparse.Namespace) -> None:
     rec = _find(store, args.key)
     if rec.status not in ("PROPOSED", "STALE"):
         _die(f"{rec.rec_key[:8]} is {rec.status}; only an open proposal can be rejected")
+    read_status = rec.status
     rec.status, rec.decided_by, rec.decided_at = "REJECTED", by, now
     rec.decision_note, rec.weight_at_decision = args.note, rec.evidence_weight
-    store.decide(rec, None, actor=by, action="reject", now=now, detail={"note": args.note})
+    _decide(store, rec, None, by=by, action="reject", now=now, expected=read_status,
+            detail={"note": args.note})
     print(f"✅ rejected {rec.rec_key[:8]}; it returns only if its evidence grows "
           f"{LearnConfig().reproposal_growth:g}x", flush=True)
+    if rec.pxx_slug:
+        print(f"   It was forwarded to pxx as {rec.pxx_slug}; dx learn does not decide pxx's "
+              f"inbox. To reject it there too: pxx improve triage reject {rec.pxx_slug}",
+              flush=True)
 
 
 def _adoption(store: Store, rec: Recommendation) -> Adoption:
@@ -332,8 +386,8 @@ def cmd_learn_link(args: argparse.Namespace) -> None:
     rec = _find(store, args.key)
     ad = _adoption(store, rec)
     previous, ad.task_id = ad.task_id, args.task
-    store.decide(rec, ad, actor=by, action="link", now=now,
-                 detail={"task_id": args.task, "previous_task_id": previous})
+    _decide(store, rec, ad, by=by, action="link", now=now, expected="ACCEPTED",
+            detail={"task_id": args.task, "previous_task_id": previous})
     print(f"✅ {rec.rec_key[:8]} is implemented by {args.task}; efficacy starts at its MERGED row",
           flush=True)
 
@@ -345,7 +399,8 @@ def cmd_learn_retire(args: argparse.Namespace) -> None:
     ad = _adoption(store, rec)
     ad.active, ad.retired_at = False, now
     rec.status, rec.decided_by, rec.decided_at, rec.decision_note = "RETIRED", by, now, args.note
-    store.decide(rec, ad, actor=by, action="retire", now=now, detail={"note": args.note})
+    _decide(store, rec, ad, by=by, action="retire", now=now, expected="ACCEPTED",
+            detail={"note": args.note})
     print(f"✅ retired {rec.rec_key[:8]}", flush=True)
 
 

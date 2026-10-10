@@ -33,6 +33,11 @@ from .learn_model import (
 )
 from .learn_stats import BetaPost, beta_from, decay_weight, prob_greater
 
+
+class MetricUnavailable(Exception):
+    """The metric's source was not read this pass, so it cannot be measured."""
+
+
 REVIEW_FAILURE_CODES = frozenset({"REVIEW_UNAVAILABLE", "REVIEW_UNPARSEABLE", "REVIEW_EMPTY"})
 PXX_REVIEW_LANE = "pxx-review"
 
@@ -56,8 +61,8 @@ class LearnConfig:
     lane_confidence: float = 0.90
     efficacy_window_days: int = 60
     efficacy_min_after: int = 10
-    efficacy_confidence: float = 0.90      # P(rate fell) at or above -> effective
-    efficacy_ineffective_below: float = 0.50
+    efficacy_min_before: int = 10
+    efficacy_confidence: float = 0.90      # P(rate fell) at or above, and raw rate fell -> effective
     reproposal_growth: float = 2.0
     max_ids: int = 10
     mc_draws: int = 20000
@@ -73,34 +78,40 @@ def _post(p: BetaPost) -> dict[str, float]:
 
 # --------------------------------------------------------------------------- metrics
 def observations(metric: dict[str, str], corpus: Corpus) -> list[tuple[datetime | None, bool]]:
-    """(timestamp, bad) pairs for one pre-registered metric."""
-    name, key = metric["name"], metric["key"]
+    """(timestamp, bad) pairs for one pre-registered metric, from its named source only.
+
+    Raises MetricUnavailable when that source was not read: an unmeasured
+    metric is never silently measured somewhere else (where it reads 0).
+    """
+    name, key, source = metric["name"], metric["key"], metric.get("source", "")
+    if source not in corpus.sources:
+        raise MetricUnavailable(f"{name} reads source {source!r}, which this pass did not read")
     if name == "signature_rate":
-        sig = corpus.signatures.get(key)
-        where = sig.gate if sig else ""
-        if where.startswith("operator:"):
+        if source == "operator":
             return [(d.ts, d.signature == key) for d in corpus.operator]
-        if where in NEGATIVE_ACTIONS:
+        if source == "ledger":
             return [(e.ts, e.signature == key) for e in corpus.ledger_events()
                     if e.action in DECISION_ACTIONS]
-        return [(a.ts, key in a.signatures) for a in corpus.attempts]
-    if name == "class_failure_rate":
+        if source == "pxx":
+            return [(a.ts, key in a.signatures) for a in corpus.attempts]
+    elif name == "class_failure_rate" and source == "pxx":
         return [(a.ts, not a.success) for a in corpus.attempts if a.task_class == key]
-    if name == "gate_fail_rate":
+    elif name == "gate_fail_rate" and source == "pxx":
         out: list[tuple[datetime | None, bool]] = []
         for a in corpus.attempts:
             failed = a.gate_failed(key)
             if failed is not None:
                 out.append((a.ts, failed))
         return out
-    if name == "lane_unavailability":
-        if key == PXX_REVIEW_LANE:
+    elif name == "lane_unavailability":
+        if source == "pxx" and key == PXX_REVIEW_LANE:
             return [(a.ts, a.code in REVIEW_FAILURE_CODES
                      or bool(REVIEW_FAILURE_CODES & set(a.contributing_codes)))
                     for a in corpus.attempts if _review_requested(a)]
-        return [(r.ts, r.result == "NO_REVIEW") for r in corpus.lanes
-                if r.lane == key and r.result != "EXCLUDED"]
-    raise ValueError(f"unknown metric {name!r}")
+        if source == "review":
+            return [(r.ts, r.result == "NO_REVIEW") for r in corpus.lanes
+                    if r.lane == key and r.result != "EXCLUDED"]
+    raise ValueError(f"unknown metric {name!r} for source {source!r}")
 
 
 def _review_requested(a: Attempt) -> bool:
@@ -179,7 +190,7 @@ class Learner:
                           "last_seen": max(a.ts for a in runs).isoformat(),
                           "example_runs": sorted(a.run_id for a in runs)[-self.cfg.max_ids:],
                           "resolutions": resolutions[:self.cfg.max_ids]},
-                draft_text=draft, metric={"name": "signature_rate", "key": sig_id},
+                draft_text=draft, metric={"name": "signature_rate", "key": sig_id, "source": "pxx"},
                 suggested_role="sdet" if is_test else "tech-lead"))
         return out
 
@@ -222,7 +233,7 @@ class Learner:
                             f"{self.cfg.variant_confidence:.0%} probability. Route {task_class} work "
                             f"to {best} (the dx role route in the hardware manifest, or pxx's model "
                             f"setting), then let efficacy confirm it."),
-                metric={"name": "class_failure_rate", "key": task_class},
+                metric={"name": "class_failure_rate", "key": task_class, "source": "pxx"},
                 suggested_role="platform-engineer"))
         return out
 
@@ -233,7 +244,7 @@ class Learner:
         gates = sorted({g.gate for a in corpus.attempts for g in a.gates})
         out = []
         for gate in gates:
-            obs = observations({"name": "gate_fail_rate", "key": gate}, corpus)
+            obs = observations({"name": "gate_fail_rate", "key": gate, "source": "pxx"}, corpus)
             recent = [(bad, 1.0) for ts, bad in obs if ts and ts >= recent_from]
             base = [(bad, 1.0) for ts, bad in obs if ts and base_from <= ts < recent_from]
             rp, bp = beta_from(recent), beta_from(base)
@@ -255,7 +266,7 @@ class Learner:
                             f"~{bp.mean:.0%} (P={p_up:.2f}). Look at what changed in the last "
                             f"{self.cfg.regression_recent_days} days: model or route, pxx version, "
                             f"prompts, the test suite itself. Do not relax the gate to recover."),
-                metric={"name": "gate_fail_rate", "key": gate}, suggested_role="sre"))
+                metric={"name": "gate_fail_rate", "key": gate, "source": "pxx"}, suggested_role="sre"))
         return out
 
     # ------------------------------------------------------------------ human rejections (ledger)
@@ -295,7 +306,8 @@ class Learner:
                             f"outcomes across {len(tasks[sig_id])} tasks: \"{sig.normalized_text}\"."
                             f"{gap} A human is catching this at the most expensive point. Encode it "
                             f"as an automated check or a spec-template rule so it fails before review."),
-                metric={"name": "signature_rate", "key": sig_id}, suggested_role="sdet"))
+                metric={"name": "signature_rate", "key": sig_id, "source": "ledger"},
+                suggested_role="sdet"))
         return out
 
     # ------------------------------------------------------------------ reviewer lanes
@@ -305,7 +317,8 @@ class Learner:
         out = []
         bar = 1.0 - self.cfg.lane_availability_bar   # max acceptable unavailability
         for lane in lanes:
-            metric = {"name": "lane_unavailability", "key": lane}
+            metric = {"name": "lane_unavailability", "key": lane,
+                      "source": "pxx" if lane == PXX_REVIEW_LANE else "review"}
             p = self._decayed(observations(metric, corpus))
             if p.n_eff < self.cfg.min_eff_n:
                 continue
@@ -323,8 +336,8 @@ class Learner:
                 draft_text=(f"The {lane} review lane returns no review ~{p.mean:.0%} of the time "
                             f"(P={p_bad:.2f} it is below the {self.cfg.lane_availability_bar:.0%} "
                             f"availability bar). A lane that rarely answers is not coverage. Fix "
-                            f"its timeout/invocation/output contract, or drop it from required "
-                            f"lanes and say so in the release receipt."),
+                            f"its timeout, invocation or output contract. Until it answers, keep "
+                            f"recording NO_REVIEW: it never counts toward a required lane."),
                 metric=metric, suggested_role="release-manager"))
         return out
 
@@ -358,44 +371,66 @@ class Learner:
                           "decayed_weight": round(w, 2),
                           "last_seen": max(stamps).isoformat()},
                 draft_text=f"psoperator {decision} x{len(stamps)}: \"{sig.normalized_text}\". {advice}",
-                metric={"name": "signature_rate", "key": sig_id}, suggested_role="tech-lead"))
+                metric={"name": "signature_rate", "key": sig_id, "source": "operator"},
+                suggested_role="tech-lead"))
         return out
 
     # ------------------------------------------------------------------ efficacy (the meta-loop)
     def efficacy(self, corpus: Corpus, adoptions: Iterable[Adoption]) -> list[dict[str, Any]]:
         """For each adoption: did its pre-registered bad-event rate fall after the
-        implementing task merged? Measured from MERGED, never from acceptance —
-        a change that has not shipped cannot have worked."""
-        window = timedelta(days=self.cfg.efficacy_window_days)
+        implementing task merged? Measured from the first MERGED row at or after
+        acceptance — never from acceptance itself (a change that has not shipped
+        cannot have worked), and never from a merge that predates the adoption.
+
+        A verdict needs enough observations on *both* sides, and the raw rates
+        must agree with the posterior: with few or zero events a uniform prior
+        alone can make two equal rates look different.
+        """
+        cfg = self.cfg
+        window = timedelta(days=cfg.efficacy_window_days)
         report = []
         for ad in adoptions:
             row: dict[str, Any] = {"adoption": ad, "status": "", "before": None, "after": None,
-                                   "p_rate_fell": None, "runs_after": 0}
+                                   "p_rate_fell": None, "runs_after": 0, "runs_before": 0}
+            report.append(row)
             if not ad.task_id:
                 row["status"] = "awaiting-task"
-                report.append(row)
                 continue
             task = corpus.tasks.get(ad.task_id)
-            start = task.merged_at() if task else None
-            if start is None:
+            if task is None:
                 row["status"] = "awaiting-merge"
-                report.append(row)
                 continue
-            obs = [(ts, bad) for ts, bad in observations(ad.metric, corpus) if ts is not None]
-            before = [(bad, 1.0) for ts, bad in obs if start - window <= ts < start]
-            after = [(bad, 1.0) for ts, bad in obs if ts >= start]
-            bp, ap = beta_from(before), beta_from(after)
-            row.update(before=bp, after=ap, runs_after=len(after))
-            if len(after) < self.cfg.efficacy_min_after or not before:
-                row["status"] = f"measuring ({len(after)}/{self.cfg.efficacy_min_after})"
-                report.append(row)
+            start = task.merged_at(not_before=ad.accepted_at)
+            if start is None:
+                row["status"] = ("merged-before-adoption" if task.merged_at() is not None
+                                 else "awaiting-merge")
                 continue
-            p = prob_greater(bp, ap, self.cfg.mc_draws)
+            try:
+                obs = [(ts, bad) for ts, bad in observations(ad.metric, corpus) if ts is not None]
+            except MetricUnavailable:
+                row["status"] = "source-not-read"
+                continue
+            before = [bad for ts, bad in obs if start - window <= ts < start]
+            after = [bad for ts, bad in obs if ts >= start]
+            bp = beta_from((b, 1.0) for b in before)
+            ap = beta_from((b, 1.0) for b in after)
+            row.update(before=bp, after=ap, runs_after=len(after), runs_before=len(before))
+            if len(after) < cfg.efficacy_min_after or len(before) < cfg.efficacy_min_before:
+                row["status"] = (f"measuring (before {len(before)}/{cfg.efficacy_min_before}, "
+                                 f"after {len(after)}/{cfg.efficacy_min_after})")
+                continue
+            raw_before = sum(before) / len(before)
+            raw_after = sum(after) / len(after)
+            p = prob_greater(bp, ap, cfg.mc_draws)
             row["p_rate_fell"] = p
-            row["status"] = ("effective" if p >= self.cfg.efficacy_confidence else
-                             "ineffective" if p < self.cfg.efficacy_ineffective_below else
-                             "inconclusive")
-            report.append(row)
+            if raw_before == 0:
+                row["status"] = "no-baseline-problem"   # nothing was failing to begin with
+            elif p >= cfg.efficacy_confidence and raw_after < raw_before:
+                row["status"] = "effective"
+            elif raw_after >= raw_before:
+                row["status"] = "ineffective"          # not credibly better, and not better at all
+            else:
+                row["status"] = "inconclusive"
         return report
 
     def _ineffective(self, row: dict[str, Any]) -> Recommendation | None:

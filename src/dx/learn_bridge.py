@@ -74,8 +74,17 @@ def forward_to_pxx(rec: Recommendation, state_dir: Path) -> tuple[str, str]:
             dest.parent.mkdir(parents=True, exist_ok=True)
             payload = proposal.to_dict()
             payload["reason"] = f"forwarded by dx learn (recommendation {rec.rec_key})"
+            body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
             with dest.open("x", encoding="utf-8") as fh:     # never clobber
-                fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                fh.write(body)
+            # `pxx improve triage` does not take cycle.lock, so a human may have
+            # dispositioned this signature between the check above and the write.
+            # Re-check, and withdraw our entry (only if it is still ours).
+            decided = human_disposition(state_dir, slug)
+            if decided is not None:
+                if dest.exists() and dest.read_text(encoding="utf-8") == body:
+                    dest.unlink()
+                return slug, f"withdrawn: a human dispositioned {slug} in pxx ({decided}) meanwhile"
             return slug, f"forwarded to {dest}"
         finally:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)

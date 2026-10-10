@@ -72,7 +72,12 @@ CREATE TABLE dx_learn.DecisionAudit (
     Actor      NVARCHAR(100)        NOT NULL,
     Action     VARCHAR(20)          NOT NULL,
     RecKey     CHAR(24)             NOT NULL,
-    DetailJson NVARCHAR(MAX)        NOT NULL CONSTRAINT CK_DecisionAudit_Detail CHECK (ISJSON(DetailJson) = 1)
+    -- The exact canonical entry that was hashed; Hash = sha256(EntryJson) and
+    -- EntryJson.prev_hash = the previous row's Hash. dx learn verifies the chain
+    -- before every decision.
+    EntryJson  NVARCHAR(MAX)        NOT NULL CONSTRAINT CK_DecisionAudit_Entry CHECK (ISJSON(EntryJson) = 1),
+    PrevHash   CHAR(64)             NOT NULL,
+    Hash       CHAR(64)             NOT NULL CONSTRAINT UQ_DecisionAudit_Hash UNIQUE
 );
 GO
 CREATE OR ALTER TRIGGER dx_learn.TR_DecisionAudit_AppendOnly

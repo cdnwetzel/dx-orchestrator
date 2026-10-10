@@ -51,12 +51,27 @@ class StoreError(Exception):
     pass
 
 
+class StaleDecision(StoreError):
+    """The record changed after it was read (another pass or decision won)."""
+
+
+def _audit_entry(prev_hash: str, *, ts: datetime, actor: str, action: str, target: str,
+                 detail: dict[str, Any]) -> tuple[str, str]:
+    """(canonical entry JSON, its sha256) — the same chain rule for both stores."""
+    entry = {"ts": iso(ts), "actor": actor, "action": action, "target": target,
+             "detail": to_jsonable(detail), "prev_hash": prev_hash}
+    body = _canonical(entry)
+    return body, hashlib.sha256(body.encode()).hexdigest()
+
+
 class Store(Protocol):
     def load_recs(self) -> dict[str, Recommendation]: ...
-    def save_recs(self, recs: list[Recommendation], now: datetime) -> None: ...
+    def save_recs(self, recs: list[Recommendation], now: datetime,
+                  expected: dict[str, str | None]) -> list[str]: ...
     def load_adoptions(self) -> dict[str, Adoption]: ...
     def decide(self, rec: Recommendation, adoption: Adoption | None, *, actor: str,
-               action: str, detail: dict[str, Any], now: datetime) -> None: ...
+               action: str, detail: dict[str, Any], now: datetime,
+               expected_status: str) -> None: ...
     def record_pass(self, summary: dict[str, Any], corpus: Corpus, now: datetime) -> None: ...
     def verify_audit(self) -> int: ...
 
@@ -102,9 +117,13 @@ class JsonStore:
         last = path.read_text(encoding="utf-8").splitlines()[-1]
         return str(json.loads(last)["hash"])
 
-    def _append_audit(self, entry: dict[str, Any]) -> None:
-        entry = {**entry, "prev_hash": self._audit_tail()}
-        entry["hash"] = hashlib.sha256(_canonical(entry).encode()).hexdigest()
+    def _append_audit(self, *, ts: datetime, actor: str, action: str, target: str,
+                      detail: dict[str, Any]) -> None:
+        self.verify_audit()   # never extend a chain that no longer verifies
+        body, digest = _audit_entry(self._audit_tail(), ts=ts, actor=actor, action=action,
+                                    target=target, detail=detail)
+        entry = json.loads(body)
+        entry["hash"] = digest
         with open(self.root / "audit.jsonl", "a", encoding="utf-8") as fh:
             fh.write(_canonical(entry) + "\n")
 
@@ -113,28 +132,43 @@ class JsonStore:
         raw = self._read("recommendations.json", {})
         return {k: rec_from_json(v) for k, v in raw.items()}
 
-    def save_recs(self, recs: list[Recommendation], now: datetime) -> None:
+    def save_recs(self, recs: list[Recommendation], now: datetime,
+                  expected: dict[str, str | None]) -> list[str]:
+        """Compare-and-set: a record is written only if its stored status is still
+        the one the pass read. A human decision made meanwhile always wins.
+        Returns the keys skipped for that reason."""
+        skipped = []
         with self._locked():
             raw = self._read("recommendations.json", {})
             for r in recs:
+                current = raw[r.rec_key]["status"] if r.rec_key in raw else None
+                if current != expected.get(r.rec_key):
+                    skipped.append(r.rec_key)
+                    continue
                 raw[r.rec_key] = to_jsonable(r)
             self._write("recommendations.json", raw)
+        return skipped
 
     def load_adoptions(self) -> dict[str, Adoption]:
         raw = self._read("adoptions.json", {})
         return {k: adoption_from_json(v) for k, v in raw.items()}
 
     def decide(self, rec: Recommendation, adoption: Adoption | None, *, actor: str,
-               action: str, detail: dict[str, Any], now: datetime) -> None:
+               action: str, detail: dict[str, Any], now: datetime,
+               expected_status: str) -> None:
         with self._locked():
             recs = self._read("recommendations.json", {})
+            current = recs.get(rec.rec_key, {}).get("status")
+            if current != expected_status:
+                raise StaleDecision(f"{rec.rec_key[:8]} is now {current}, not {expected_status}; "
+                                    "re-read it with `dx learn show` and decide again")
             recs[rec.rec_key] = to_jsonable(rec)
             ads = self._read("adoptions.json", {})
             if adoption is not None:
                 ads[adoption.rec_key] = to_jsonable(adoption)
             # audit first: a decision that is not audited did not happen
-            self._append_audit({"ts": iso(now), "actor": actor, "action": action,
-                                "target": rec.rec_key, "detail": to_jsonable(detail)})
+            self._append_audit(ts=now, actor=actor, action=action, target=rec.rec_key,
+                               detail=detail)
             self._write("adoptions.json", ads)
             self._write("recommendations.json", recs)
 
@@ -247,10 +281,23 @@ IF @@ROWCOUNT = 0
                 weight_at_decision=r[17], pxx_slug=r[18])
         return out
 
-    def save_recs(self, recs: list[Recommendation], now: datetime) -> None:
+    @staticmethod
+    def _status(cur: Any, rec_key: str) -> str | None:
+        cur.execute("SELECT Status FROM dx_learn.Recommendation WITH (UPDLOCK, HOLDLOCK) "
+                    "WHERE RecKey = ?", [rec_key])
+        row = cur.fetchone()
+        return None if row is None else str(row[0])
+
+    def save_recs(self, recs: list[Recommendation], now: datetime,
+                  expected: dict[str, str | None]) -> list[str]:
+        skipped = []
         with self._tx() as cur:
             for r in recs:
+                if self._status(cur, r.rec_key) != expected.get(r.rec_key):
+                    skipped.append(r.rec_key)
+                    continue
                 cur.execute(self._UPSERT_REC, self._rec_params(r))
+        return skipped
 
     def load_adoptions(self) -> dict[str, Adoption]:
         with self._tx() as cur:
@@ -262,11 +309,24 @@ IF @@ROWCOUNT = 0
                                task_id=r[6], active=bool(r[7]), retired_at=r[8]) for r in rows}
 
     def decide(self, rec: Recommendation, adoption: Adoption | None, *, actor: str,
-               action: str, detail: dict[str, Any], now: datetime) -> None:
+               action: str, detail: dict[str, Any], now: datetime,
+               expected_status: str) -> None:
+        self.verify_audit()   # never extend a chain that no longer verifies
         with self._tx() as cur:
-            cur.execute("INSERT dx_learn.DecisionAudit (Ts, Actor, Action, RecKey, DetailJson) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        [now, actor, action, rec.rec_key, _canonical(to_jsonable(detail))])
+            current = self._status(cur, rec.rec_key)
+            if current != expected_status:
+                raise StaleDecision(f"{rec.rec_key[:8]} is now {current}, not {expected_status}")
+            # Serialize appends on the chain tail, then hash the exact entry stored.
+            cur.execute("SELECT TOP (1) Hash FROM dx_learn.DecisionAudit WITH (UPDLOCK, HOLDLOCK) "
+                        "ORDER BY AuditId DESC")
+            tail = cur.fetchone()
+            body, digest = _audit_entry(_GENESIS if tail is None else str(tail[0]), ts=now,
+                                        actor=actor, action=action, target=rec.rec_key,
+                                        detail=detail)
+            cur.execute("INSERT dx_learn.DecisionAudit (Ts, Actor, Action, RecKey, EntryJson, "
+                        "PrevHash, Hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [now, actor, action, rec.rec_key, body, json.loads(body)["prev_hash"],
+                         digest])
             cur.execute(self._UPSERT_REC, self._rec_params(rec))
             if adoption is not None:
                 cur.execute(self._UPSERT_ADOPTION, self._adoption_params(adoption))
@@ -292,6 +352,16 @@ IF @@ROWCOUNT = 0
                     [[pass_id, e.ts, e.task_id, e.action, e.signature] for e in events])
 
     def verify_audit(self) -> int:
+        """Walk the audit chain in AuditId order; raises on any break."""
         with self._tx() as cur:
-            cur.execute("SELECT COUNT(*) FROM dx_learn.DecisionAudit")
-            return int(cur.fetchone()[0])
+            cur.execute("SELECT AuditId, EntryJson, PrevHash, Hash FROM dx_learn.DecisionAudit "
+                        "ORDER BY AuditId")
+            rows = cur.fetchall()
+        prev = _GENESIS
+        for audit_id, body, prev_hash, digest in rows:
+            if prev_hash != prev or json.loads(body).get("prev_hash") != prev:
+                raise StoreError(f"DecisionAudit {audit_id}: prev_hash chain broken")
+            if hashlib.sha256(str(body).encode()).hexdigest() != digest:
+                raise StoreError(f"DecisionAudit {audit_id}: content hash mismatch (edited?)")
+            prev = str(digest)
+        return len(rows)

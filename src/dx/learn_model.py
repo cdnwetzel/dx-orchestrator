@@ -66,7 +66,10 @@ def parse_iso(value: Any, what: str) -> datetime:
 def from_epoch(value: Any, what: str) -> datetime:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{what}: expected epoch seconds, got {value!r}")
-    return datetime.fromtimestamp(float(value), UTC)
+    try:
+        return datetime.fromtimestamp(float(value), UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ValueError(f"{what}: {value!r} is not a usable timestamp") from exc
 
 
 @dataclass(frozen=True)
@@ -129,9 +132,11 @@ class TaskRecord:
     run_ids: list[str] = field(default_factory=list)   # from EXECUTED run=
     scope: str | None = None                           # from EXECUTED scope=
 
-    def merged_at(self) -> datetime | None:
-        merged = [e.ts for e in self.events if e.action == "MERGED"]
-        return merged[-1] if merged else None
+    def merged_at(self, not_before: datetime | None = None) -> datetime | None:
+        """The first MERGED row at or after ``not_before`` (the first at all if None)."""
+        merged = sorted(e.ts for e in self.events if e.action == "MERGED"
+                        and (not_before is None or e.ts >= not_before))
+        return merged[0] if merged else None
 
 
 @dataclass(frozen=True)
@@ -186,7 +191,8 @@ class Recommendation:
     evidence: dict[str, Any]
     draft_text: str
     # The pre-registered metric: how acceptance will be judged later.
-    # {"name": <metric name>, "key": <metric key>} — always a "bad event" rate.
+    # {"name", "key", "source"} — always a "bad event" rate, read from one named
+    # source (pxx | ledger | operator | review), never from a fallback.
     metric: dict[str, str]
     targets: tuple[str, ...] = ()       # paths a change would likely touch, if known
     suggested_role: str = "tech-lead"

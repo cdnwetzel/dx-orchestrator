@@ -36,8 +36,8 @@ only path to its production config. Today that means only model routing.
 
 | Source | Read from | Trust rule |
 | --- | --- | --- |
-| pxx runs | `<state_dir>/runs/<id>/{outcome,task,manifest}.json`, `events.jsonl` | No chain exists. A malformed run is quarantined and named in the report. A run without `outcome.json` is counted and skipped. |
-| devswarm ledger | `DX_LEDGER_REPO` | `get_ledger_head()` (the ledger's own `verify_chain.py`) must pass before any row is read; a broken chain stops the whole pass and leaves the queue unchanged. The reference ledger is refused without `--allow-reference-ledger`. A task with a `CORRECTION` row is set aside rather than guessed at. |
+| pxx runs | `<state_dir>/runs/<id>/` | No chain exists. One `pxx loop` (what `dx run` drives) is one attempt. Its `*-loop-*` directory holds the loop's true terminal code and gates, and model/task/project come from its `session_start` events. Its round directories are folded in and never counted alone, because a round can say `COMPLETED` inside a loop that ended `ROUND_CAP`. A quarantined loop still claims its rounds. A standalone `pxx run` session is one attempt. Malformed directories are quarantined and named; ones without `outcome.json` are counted as in flight. |
+| devswarm ledger | `DX_LEDGER_REPO` | `get_ledger_head()` (the ledger's own `verify_chain.py`) must pass first. Rows are then re-hashed while reading, and only rows up to that verified head are used; anything appended since is ignored. A broken chain stops the pass and leaves the queue unchanged. The reference ledger is refused without `--allow-reference-ledger`, whether recognized by directory name or by its published genesis row. A `CORRECTION` sets aside the task of the row whose hash it names; failing that, its own task. If it can be attributed to neither, the pass stops. `run=`/`scope=` are parsed with quoted text (the model-written `subject="…"`) removed; duplicates set the task aside. |
 | psoperator audit | `--psoperator-audit` / `DX_LEARN_PSOPERATOR_AUDIT` | Re-verified with psoperator's own rule (`prev_hash`, content hash, `seq`). Any break stops the pass. `kill-switched` rows are ignored because drills write identical rows. |
 | review manifests | `--review-dir <repo>/review` (repeatable) | A row with an unknown `result` is quarantined. `EXCLUDED` never counts for or against a lane. Timestamps come from the manifest's git commit. |
 
@@ -51,6 +51,16 @@ Every measure is a *bad-event rate*, defined once in
 `learn_engine.observations()`. Detection and efficacy both use that same
 definition, so the yardstick is pre-registered rather than chosen after the
 data arrives.
+
+Each metric also names the source it reads (`pxx`, `ledger`, `operator` or
+`review`). If that source was not read in a pass, the metric is unavailable.
+It is never quietly measured against another source, where it would read as
+zero.
+
+`gate_fail_rate` uses pxx's own gate decision (`allowed: false`). For the
+`tests` gate that means new failures beyond baseline, not "tests did not
+pass". A suite that never passes shows up in the loop's terminal code
+instead.
 
 **Rates.** Every rate is a Beta(1,1)-Binomial posterior. Observations decay
 with a 30-day half-life, so old evidence fades instead of being cut off at a
@@ -96,15 +106,44 @@ control counts as a failure of the task.
 | adoption | `retire` | `RETIRED` |
 
 **Separation of duties.** dx learn authors every proposal, so `--by` must name
-a human. `dx`, `claude`, `agent` and blank are refused.
+a human.
+- A name made only of tool or model words is refused. Examples: `dx.run`,
+  `Claude Code`, `claude-opus-5-5`, `pxx`, `dx <dx@…>`.
+- The OS account that ran the command is recorded beside the name.
+- This is a guard against an automated caller, not authentication. The
+  authority that changes software is still the signed `dx merge`.
 
-**Audit.** Every decision is appended to a hash-chained `audit.jsonl` (JSON
-store) or to an append-only, trigger-guarded table (MSSQL) before the state
+**Concurrency.** Every write is compare-and-set against the status the writer
+read.
+- A pass never overwrites a decision made while it ran; it reports the
+  record as left alone.
+- A second decision made from a stale read is refused with nothing recorded.
+
+**Audit.** Every decision is appended to the audit chain before the state
 changes.
+- The JSON store keeps a hash-chained `audit.jsonl`.
+- MSSQL uses an append-only, trigger-guarded table carrying the same chain
+  (`EntryJson`, `PrevHash`, `Hash`).
+- The chain is verified before every decision, and a chain that does not
+  verify blocks further decisions.
+- `queue` prints the chain's state first.
 
 **Ordering.** `queue` prints earlier adoptions before new proposals. This
 follows the scrum-master card: the last set of retro actions is checked before
 new ones are added.
+
+## Efficacy statuses
+
+| Status | Meaning |
+| --- | --- |
+| `awaiting-task` / `awaiting-merge` | No implementing task linked yet, or the task has no MERGED row at or after acceptance. |
+| `merged-before-adoption` | The linked task merged before the proposal was accepted; it cannot be the change. |
+| `source-not-read` | The metric's source was not read this pass. |
+| `measuring (before a/10, after b/10)` | Fewer than 10 observations on either side of the merge (60-day window before). |
+| `no-baseline-problem` | Nothing was failing before the merge, so there is nothing to credit. |
+| `effective` | P(rate fell) ≥ 0.90 and the raw rate fell. |
+| `ineffective` | The raw rate did not fall. Raised as `adoption_ineffective`. |
+| `inconclusive` | Anything else. |
 
 ## Forwarding to pxx
 
@@ -117,6 +156,17 @@ new ones are added.
 - A signature that a human already dispositioned in pxx is never re-raised.
 
 `pxx improve triage` and `pxx promote` then decide as they always have.
+
+Three gaps in pxx's own inbox handling, and how dx learn handles each:
+
+- **Triage does not lock.** `pxx improve triage` does not take `cycle.lock`, so
+  a human can disposition the signature while dx is writing. dx re-checks
+  after writing and withdraws its entry if that happened. A very narrow race
+  remains, which only pxx can close by taking the lock in triage.
+- **Overwrites.** pxx's own cycle may overwrite a forwarded entry with the
+  same signature. That is the same proposed change, worded by pxx.
+- **Rejecting in dx.** Rejecting in dx learn does not touch pxx's inbox; it
+  prints the `pxx improve triage reject <slug>` to run.
 
 Known coarseness: pxx keys inbox entries by `target:operation`. One human
 rejection of `model:switch_model` in pxx therefore blocks every later
