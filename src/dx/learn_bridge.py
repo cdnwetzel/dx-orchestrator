@@ -101,26 +101,37 @@ def _inbox(state_dir: Path, box: str, slug: str) -> Path:
     return state_dir / "inbox" / box / f"{slug}.json"
 
 
-def inspect(state_dir: Path, slug: str, fingerprint: str) -> str:
-    """What pxx's inbox holds for ``slug``, relative to our fingerprint:
-    qualified | rejected | qualified-other | rejected-other | pending-ours |
-    pending-other | absent. A human disposition wins over a pending file."""
-    for box in ("qualified", "rejected"):
-        path = _inbox(state_dir, box, slug)
-        if path.is_file():
-            try:
-                ours = proposal_fingerprint(json.loads(path.read_text())) == fingerprint
-            except (OSError, ValueError):
-                ours = False
-            return box if ours else f"{box}-other"
-    pending = _inbox(state_dir, "human-review-required", slug)
+def _read(path: Path) -> dict[str, Any] | None:
     try:
-        entry = json.loads(pending.read_text())
+        data = json.loads(path.read_text())
     except FileNotFoundError:
-        return "absent"
+        return None
     except (OSError, ValueError):
-        return "pending-other"
-    return "pending-ours" if proposal_fingerprint(entry) == fingerprint else "pending-other"
+        return {}          # present but unreadable: treated as someone else's
+    return data if isinstance(data, dict) else {}
+
+
+def inspect(state_dir: Path, slug: str, fingerprint: str) -> str:
+    """What pxx's inbox holds for ``slug``, relative to our fingerprint.
+
+    pending-ours | pending-other | qualified | rejected | qualified-other |
+    rejected-other | absent.
+
+    Our own pending entry is checked first: a decided file under the same slug
+    must never hide it (it would then never be withdrawn). Only HUMAN decisions
+    count — an entry in qualified/ or rejected/ carrying a ``disposition``
+    block, which is pxx's own rule (``cycle.human_disposition``). The cycle's
+    auto-rejections carry none and pxx itself re-routes them, so they neither
+    block a forward nor count as anyone's decision.
+    """
+    pending = _read(_inbox(state_dir, "human-review-required", slug))
+    if pending is not None and proposal_fingerprint(pending) == fingerprint:
+        return "pending-ours"
+    for box in ("qualified", "rejected"):
+        entry = _read(_inbox(state_dir, box, slug))
+        if entry is not None and isinstance(entry.get("disposition"), dict):
+            return box if proposal_fingerprint(entry) == fingerprint else f"{box}-other"
+    return "absent" if pending is None else "pending-other"
 
 
 def write_pending(state_dir: Path, slug: str, payload: dict[str, Any], fingerprint: str) -> str:

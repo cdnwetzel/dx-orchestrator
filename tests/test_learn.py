@@ -261,7 +261,7 @@ class TestGuardrails:
     def test_recommendation_kinds_are_closed_and_none_relaxes(self):
         assert REC_KINDS == {"recurring_failure", "variant_preference", "gate_regression",
                              "human_rejection_theme", "reviewer_lane", "operator_failure",
-                             "adoption_ineffective"}
+                             "adoption_no_improvement"}
         assert FORWARDABLE_KINDS == {"variant_preference"}
 
     def test_spec_forbids_moving_the_metric_by_loosening(self, pxx):

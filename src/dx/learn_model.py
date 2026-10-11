@@ -34,7 +34,7 @@ REC_KINDS = frozenset({
     "human_rejection_theme",   # one kind of human rejection dominates the ledger
     "reviewer_lane",           # a review lane fails to produce reviews too often
     "operator_failure",        # psoperator keeps failing or being denied the same way
-    "adoption_ineffective",    # an adopted change did not move its metric
+    "adoption_no_improvement",    # strong evidence of no meaningful OBSERVED improvement (not causal)
 })
 
 REC_STATUSES = frozenset({"PROPOSED", "ACCEPTED", "REJECTED", "RETIRED", "STALE"})
@@ -229,7 +229,8 @@ FORWARD_STATES = frozenset({
     "WRITTEN",       # our entry was created in pxx's human-review inbox
     "NOT_WRITTEN",   # refused: dispositioned already, slug pending, or cycle.lock busy
     "INTERRUPTED",   # intent recorded, no entry found afterwards: never written
-    "WITHDRAWN",     # our own pending entry removed after dx rejected/retired
+    "WITHDRAWN",     # our own pending entry removed after dx rejected/retired (or it went STALE)
+    "SUPERSEDED",    # pxx's cycle overwrote our entry with its own proposal for the same slug
 })
 PXX_VIEWS = frozenset({"pending-ours", "pending-other", "qualified", "rejected",
                        "qualified-other", "rejected-other", "absent"})

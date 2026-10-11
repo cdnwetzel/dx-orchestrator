@@ -58,14 +58,14 @@ class TestVerdicts:
         c = _world(tmp_path, pxx, [True] * 5 + [False] * 7, [True] * 7 + [False] * 5)
         learner = Learner(LearnConfig(mc_draws=4000), NOW)
         assert [r["status"] for r in learner.efficacy(c, [_adopt()])] == ["inconclusive"]
-        assert not [r for r in learner.learn(c, [_adopt()]) if r.kind == "adoption_ineffective"]
+        assert not [r for r in learner.learn(c, [_adopt()]) if r.kind == "adoption_no_improvement"]
 
     def test_no_meaningful_improvement_needs_sufficient_evidence(self, tmp_path, pxx):
         c = _world(tmp_path, pxx, [True] * 40, [True] * 40)
         learner = Learner(LearnConfig(mc_draws=4000), NOW)
         assert [r["status"] for r in learner.efficacy(c, [_adopt()])] == \
             ["no-meaningful-improvement"]
-        [rec] = [r for r in learner.learn(c, [_adopt()]) if r.kind == "adoption_ineffective"]
+        [rec] = [r for r in learner.learn(c, [_adopt()]) if r.kind == "adoption_no_improvement"]
         assert "not proof" in rec.draft_text and "observed" in rec.subject
         assert rec.evidence["runs_before"] == rec.evidence["runs_after"] == 40
         assert any("not a causal estimate" in cv for cv in rec.evidence["caveats"])
@@ -78,7 +78,7 @@ class TestVerdicts:
         c = _world(tmp_path, pxx, [False] * 60, [False] * 10)
         learner = Learner(LearnConfig(mc_draws=4000), NOW)
         assert [r["status"] for r in learner.efficacy(c, [_adopt()])] == ["no-baseline-problem"]
-        assert not [r for r in learner.learn(c, [_adopt()]) if r.kind == "adoption_ineffective"]
+        assert not [r for r in learner.learn(c, [_adopt()]) if r.kind == "adoption_no_improvement"]
 
 
 class TestConfounding:

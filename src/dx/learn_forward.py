@@ -50,7 +50,8 @@ def _eligible(rec: Recommendation, fwd: ForwardRecord | None) -> bool:
         return False
     if fwd is None:
         return True
-    return fwd.state == "INTERRUPTED" or (fwd.state == "NOT_WRITTEN" and fwd.note.startswith(_RETRY))
+    return fwd.state == "INTERRUPTED" or (
+        fwd.state in ("NOT_WRITTEN", "SUPERSEDED", "WITHDRAWN") and fwd.note.startswith(_RETRY))
 
 
 def _outcome_for(view: str) -> tuple[str, str]:
@@ -61,6 +62,8 @@ def _outcome_for(view: str) -> tuple[str, str]:
     if view in _DECIDED_VIEWS:   # ours, and a pxx human decided it in the same moment
         return "WRITTEN", f"entry created; a pxx human {view} it at once"
     if view.startswith(("qualified", "rejected")):
+        # pxx keys its inbox by target:operation, so this may be a decision about a
+        # different model switch; pxx will not take another until a human re-opens it
         return "NOT_WRITTEN", f"a pxx human already decided this signature ({view})"
     return "NOT_WRITTEN", _RETRY + f"entry not present after the write ({view})"
 
@@ -86,6 +89,25 @@ def forward_proposals(store: Store, state_dir: Path, now: datetime) -> list[dict
                 slug, payload, fingerprint = build_proposal(rec)
             except ForwardError as exc:
                 results.append({"rec_key": key, "state": "SKIPPED", "note": str(exc)})
+                continue
+            occupied = inspect(state_dir, slug, fingerprint)
+            if occupied != "absent":
+                # The slug is held (pxx keys by target:operation, so another proposal
+                # may hold it). Record that once; do not re-commit the same blocked
+                # state, or bump the recommendation's revision, on every pass.
+                state, note = _outcome_for(occupied)
+                state = "NOT_WRITTEN" if occupied != "pending-ours" else state
+                if fwd is None or (fwd.state, fwd.note, fwd.pxx_view) != (state, note, occupied):
+                    blocked = ForwardRecord(
+                        rec_key=key, slug=slug, payload_sha256=fingerprint, state=state,
+                        rec_revision=rec.revision, updated_at=now, pxx_view=occupied, note=note,
+                        revision=fwd.revision if fwd else 0)
+                    try:
+                        store.commit(Tx(ACTOR, "forward-blocked", key, now, writes=[blocked],
+                                        detail={"slug": slug, "pxx_view": occupied}))
+                    except StaleDecision:
+                        continue
+                results.append({"rec_key": key, "slug": slug, "state": state, "note": note})
                 continue
             intent = ForwardRecord(
                 rec_key=key, slug=slug, payload_sha256=fingerprint, state="INTENT",
@@ -134,16 +156,25 @@ def reconcile_forwards(store: Store, state_dir: Path, now: datetime, *,
                     state, note = "INTERRUPTED", "recovered: the interrupted write never landed"
                 else:
                     state, note = "NOT_WRITTEN", _RETRY + f"recovered: slug held by {view}"
-            if persist and dx_status in ("REJECTED", "RETIRED") and view == "pending-ours":
+            if state == "WRITTEN" and view == "pending-other":
+                # pxx's cycle rewrote the slug with its own proposal (it does not
+                # check for existing entries). Our proposal is gone from pxx: say so,
+                # and offer it again once the slug clears.
+                state, note = "SUPERSEDED", (_RETRY + "pxx's own proposal replaced dx's entry "
+                                             "under the same signature")
+            if persist and dx_status in ("REJECTED", "RETIRED", "STALE") and view == "pending-ours":
                 try:
                     view = withdraw_if_ours(state_dir, fwd.slug, fwd.payload_sha256)
                     if view == "absent":
-                        state, note = "WITHDRAWN", f"withdrawn from pxx: dx {dx_status} it"
+                        state = "WITHDRAWN"
+                        note = (_RETRY + "withdrawn while STALE: the evidence was gone"
+                                if dx_status == "STALE" else f"withdrawn from pxx: dx {dx_status} it")
                 except CycleLockBusy:
                     note = "withdraw pending: pxx cycle.lock busy; next pass retries"
             div = divergence(dx_status, view)
             info = (f"a pxx human {view} it while dx still has it {dx_status}"
-                    if view in _DECIDED_VIEWS and dx_status in ("PROPOSED", "STALE") else None)
+                    if view in _DECIDED_VIEWS and dx_status in ("PROPOSED", "STALE")
+                    else note if state == "SUPERSEDED" else None)
             changed = (state, view, note, div) != (fwd.state, fwd.pxx_view, fwd.note, fwd.divergence)
             if persist and changed:
                 updated = replace(fwd, state=state, pxx_view=view, note=note, divergence=div,

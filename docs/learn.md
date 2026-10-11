@@ -87,7 +87,7 @@ surfaced on.
 | `human_rejection_theme` | One shape of `REDLINE`/`INCOMPLETE`/`ABANDONED`/`ESCALATED` is ≥ 25% of negative rows (decayed weight ≥ 2). Lists tasks where pxx said `COMPLETED` first. | `signature_rate` |
 | `reviewer_lane` | P(availability < 75%) ≥ 0.90. The 75% bar is pxx's own reviewer-calibration bar. | `lane_unavailability` |
 | `operator_failure` | One psoperator denial, stale, target or execution-failure shape recurs (weight ≥ 3). | `signature_rate` |
-| `adoption_ineffective` | Status `no-meaningful-improvement`: ≥ 30 observations on each side of the merge, P ≥ 0.95 that any improvement is below the minimum meaningful effect, and no confounding (below). | the adoption's metric |
+| `adoption_no_improvement` | Status `no-meaningful-improvement` (strong evidence of no meaningful *observed* improvement; see "Before/after comparison"). | the adoption's metric |
 
 **Ranking.** Recommendations are ranked by evidence weight × where the problem
 surfaced. A problem a human catches in the ledger weighs 4. A problem caught by
@@ -127,6 +127,14 @@ revision, then bumps them; otherwise nothing is written.
   so the second one is refused.
 - Every command that changes state takes the store's mutation lock, re-reads
   what it decides on, and commits once.
+- Re-reading inside the lock serializes two commands; it does not make the
+  second one wrong. So `link` is first-writer-wins: a second link is refused
+  unless it names the task it replaces (`--replace-task`).
+- Every decision can also be bound to exactly what the human looked at.
+  `show` and `queue` print a seen-token (the recommendation and adoption
+  revisions). `--seen <token>` on `accept`/`reject`/`link`/`retire` refuses
+  the decision if anything changed since. Without `--seen`, a decision applies
+  to the state at the moment it is recorded.
 - A pass writes back with "skip conflicts": a record decided while the pass
   ran is left alone and reported.
 
@@ -148,7 +156,8 @@ new ones are added.
 
 For each adoption, dx learn splits the metric fixed at proposal time at the
 first `MERGED` row of the implementing task at or after acceptance. It then
-compares the 60 days before with everything after.
+compares the 60 days before with the 60 days after. The "after" window is
+bounded so that later, unrelated changes do not leak into it.
 
 **What this shows and what it does not.** It shows how the rate changed
 across the merge. It does not show that the merge caused the change. Other
@@ -174,8 +183,8 @@ refuses verdicts they could explain:
   variation > 0.30) voids both verdicts: `inconclusive (confounded)`. Only
   pxx attempts carry these descriptors; for ledger, operator and review
   metrics the cohort is not characterized, and that is a known gap.
-- Another adoption on the same metric merging within the window also voids
-  both verdicts.
+- Another adoption on the same metric — active or retired — merging anywhere
+  in the 60 days before or after also voids both verdicts.
 - The negative verdict, the only one that proposes revising or reverting,
   requires much more than "did not improve".
 
@@ -188,7 +197,7 @@ refuses verdicts they could explain:
 | `no-baseline-problem` | Nothing was failing before the merge, so there is nothing to credit. |
 | `inconclusive (confounded)` | Cohort shift or an overlapping adoption; see the caveats. |
 | `improvement-observed` | P(rate fell) ≥ 0.90 and the raw rate fell. Observed, not attributed. |
-| `no-meaningful-improvement` | ≥ 30 observations on each side, and P ≥ 0.95 that any improvement is smaller than max(5 points, 25% of the before-rate). Raised as `adoption_ineffective`: a prompt to review whether to revise or revert, never an automatic revert. |
+| `no-meaningful-improvement` | ≥ 30 observations on each side, and P ≥ 0.95 that any improvement is below 25% of the before-rate. The bar is relative on purpose: an absolute floor would, at a low baseline, call even a halved rate "no improvement". Raised as `adoption_no_improvement`: a prompt to review whether to revise or revert, never an automatic revert. |
 | `inconclusive` | Everything else, including equal or worse raw rates on weak evidence. |
 
 ## Forwarding to pxx
@@ -221,10 +230,26 @@ The pxx filename is deterministic and created with `"x"`, so a retry cannot
 produce a second entry. Entries are recognized as ours by a fingerprint over
 the proposal fields that pxx's triage never rewrites.
 
-**Rejecting or retiring in dx.** Inside the same lock, dx withdraws its entry
-from pxx's inbox if that entry is still pending and still ours. A foreign or
-already-decided entry is never touched. If `cycle.lock` is busy, the
-withdrawal waits for the next pass.
+**Rejecting, retiring, or going STALE in dx.** Inside the same lock, dx
+withdraws its entry from pxx's inbox if that entry is still pending and still
+ours. A foreign or already-decided entry is never touched. If `cycle.lock` is
+busy, the withdrawal waits for the next pass. A STALE proposal is offered
+again if a later pass sees its evidence return.
+
+**Which pxx decisions count.** Only a human's: an entry in `qualified/` or
+`rejected/` carrying pxx's `disposition` block, which is pxx's own rule. The
+cycle's auto-rejections carry none, and pxx re-routes them itself, so they
+neither block a forward nor hide dx's own pending entry. dx's pending entry
+is always checked first.
+
+**When pxx's cycle overwrites dx's entry.** pxx's cycle writes inbox files
+without checking for an existing one. When that replaces dx's entry, the
+forward record becomes `SUPERSEDED`. `queue` shows it, and dx offers the
+proposal again once the slug clears.
+
+**Blocked signatures.** While a signature is occupied, the blocked state is
+recorded once. It is not re-committed every pass, and it does not bump the
+recommendation's revision.
 
 **pxx's triage takes no lock.** `pxx improve triage` reads the pending entry,
 writes the decided copy, then unlinks the pending file, all without
@@ -269,6 +294,15 @@ So a crash at any write boundary yields the decision exactly once. A crash
 before the journal is renamed into place yields no decision at all. The tests
 kill the store at every boundary, including during recovery itself.
 
+**Readers.** Readers take the same lock and replay first, including
+`verify_audit` (and so `queue`), so no reader ever sees a half-written audit
+line. `passes.jsonl` is an informational log, fsynced but not transactional:
+nothing reads it back.
+
+**Specs.** `accept` writes its spec inside the lock, after the decision
+commits. If that write fails, the decision stands and
+`dx learn spec <key> --out <path>` writes the spec from the stored proposal.
+
 **When replay is refused.** If replay cannot be proven safe, the store raises
 `RecoveryError` on *every* operation. Cases:
 
@@ -288,7 +322,8 @@ against a live SQL Server. The build environment's network policy denied both
 Its logic has been exercised against a revision-aware fake:
 
 - revision checks;
-- `UPDATE … WHERE Revision = @read` with the `@@ROWCOUNT` guard;
+- `UPDATE … WHERE Revision = @read; SELECT @@ROWCOUNT` — read explicitly,
+  because under `SET NOCOUNT ON` the driver's own rowcount is -1;
 - rollback;
 - the audit chain;
 - `sp_getapplock` for the mutation lock.

@@ -28,7 +28,7 @@ CREATE TABLE dx_learn.Recommendation (
     Kind             VARCHAR(40)       NOT NULL
         CONSTRAINT CK_Recommendation_Kind CHECK (Kind IN ('recurring_failure','variant_preference',
             'gate_regression','human_rejection_theme','reviewer_lane','operator_failure',
-            'adoption_ineffective')),
+            'adoption_no_improvement')),
     Subject          NVARCHAR(200)     NOT NULL,
     Score            FLOAT             NOT NULL,
     EvidenceWeight   FLOAT             NOT NULL,
@@ -79,7 +79,7 @@ CREATE TABLE dx_learn.Forward (
     Slug          CHAR(12)          NOT NULL,
     PayloadSha256 CHAR(64)          NOT NULL,
     State         VARCHAR(12)       NOT NULL
-        CONSTRAINT CK_Forward_State CHECK (State IN ('INTENT','WRITTEN','NOT_WRITTEN','INTERRUPTED','WITHDRAWN')),
+        CONSTRAINT CK_Forward_State CHECK (State IN ('INTENT','WRITTEN','NOT_WRITTEN','INTERRUPTED','WITHDRAWN','SUPERSEDED')),
     RecRevision   INT               NOT NULL,
     UpdatedAt     DATETIMEOFFSET(3) NOT NULL,
     PxxView       VARCHAR(16)       NULL,

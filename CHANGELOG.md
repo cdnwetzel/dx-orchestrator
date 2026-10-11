@@ -65,6 +65,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
       `docs/learn.md` documents the confounding limits.
     - **SQL Server:** explicitly UNQUALIFIED (no live server was reachable),
       and refused unless `DX_LEARN_MSSQL_UNQUALIFIED=accept`.
+    - **Fixes from an independent review of that round:**
+      - `link` is first-writer-wins (`--replace-task` to change it), so two
+        concurrent CLI links no longer both land.
+      - Decisions take `--seen <token>` from `show`/`queue` to bind to what
+        the human looked at.
+      - dx's own pending pxx entry is checked first, and only human
+        dispositions count as pxx decisions.
+      - Entries pxx's cycle overwrote are marked `SUPERSEDED` and offered
+        again; a blocked signature no longer churns every pass.
+      - Readers take the lock and replay before verifying the audit.
+      - The no-improvement bar is relative to the baseline, so a halved low
+        rate is never a revert prompt.
+      - The "after" window is bounded to 60 days; overlap counts retired
+        adoptions and the whole window.
+      - MSSQL reads `@@ROWCOUNT` explicitly and only releases an applock it
+        holds.
+      - `dx learn spec` regenerates an accepted proposal's spec.
+      - STALE forwards are withdrawn.
+      - The kind is renamed `adoption_no_improvement`.
   - **Limits:** never writes to the ledger. No proposal kind relaxes a gate.
   - **Docs:** see `docs/learn.md`.
 

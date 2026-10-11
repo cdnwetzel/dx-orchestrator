@@ -190,6 +190,8 @@ class FakeSqlServer:
         self.log: list[str] = []
         self.commits = self.rollbacks = 0
         self.before_update: Any = None   # test hook: runs between the revision read and the UPDATE
+        self.applock_result = 0          # sp_getapplock return code (<0 = timeout/deadlock/error)
+        self.applock_held = 0
 
     def connect(self, *_a: Any, **_k: Any) -> FakeConn:
         return FakeConn(self)
@@ -230,9 +232,12 @@ class FakeCursor:
         self.db.log.append(" ".join(sql.split()))
         self.rows, self.rowcount = [], -1
         if "sp_getapplock" in sql:
-            self.rows = [[0]]
+            self.rows = [[self.db.applock_result]]
+            if self.db.applock_result >= 0:
+                self.db.applock_held += 1
         elif "sp_releaseapplock" in sql:
-            pass
+            assert self.db.applock_held > 0, "released an applock that was never acquired"
+            self.db.applock_held -= 1
         elif sql.startswith("SELECT Revision FROM"):
             row = self.db.tables[self._table(sql)].get(params[0])
             self.rows = [] if row is None else [[row["Revision"]]]
@@ -260,13 +265,16 @@ class FakeCursor:
             table = self._table(sql)
             key, read_rev = params[-2], params[-1]
             row = self.db.tables[table].get(key)
+            # Like a real driver under SET NOCOUNT ON: cursor.rowcount is useless
+            # (-1); only an explicit SELECT @@ROWCOUNT in the batch says what happened.
+            self.rowcount = -1
             if row is None or row["Revision"] != read_rev:
-                self.rowcount = 0
+                self.rows = [[0]] if "SELECT @@ROWCOUNT" in sql else []
                 return
             old = dict(row)
             row.update(Revision=read_rev + 1, values=params[:-2])
             self.conn.pending.append(lambda: self.db.tables[table].__setitem__(key, old))
-            self.rowcount = 1
+            self.rows = [[1]] if "SELECT @@ROWCOUNT" in sql else []
         elif "LearnPass" in sql:
             self.rows = [[7]]
 

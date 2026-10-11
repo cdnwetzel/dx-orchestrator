@@ -322,7 +322,7 @@ class JsonStore:
         ``skip_conflicts`` drop just those writes. Returns "kind:key" conflicts."""
         with self.mutation_lock():
             self._ready()
-            self.verify_audit()   # never extend a chain that no longer verifies
+            self._verify_audit()   # never extend a chain that no longer verifies
             state = {k: self._read_json(_FILES[k], {}) for k in KINDS}
             conflicts: list[str] = []
             accepted: list[Record] = []
@@ -372,13 +372,23 @@ class JsonStore:
         return str(json.loads(path.read_text(encoding="utf-8").splitlines()[-1])["hash"])
 
     def record_pass(self, summary: dict[str, Any], corpus: Corpus, now: datetime) -> None:
+        """An informational log of passes, not transactional state: nothing reads
+        it back, and a torn last line after a crash loses only that pass's note."""
         with self.mutation_lock():
             self._ready()
             with open(self.root / "passes.jsonl", "a", encoding="utf-8") as fh:
                 fh.write(_canonical({"ts": iso(now), **to_jsonable(summary)}) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
 
     def verify_audit(self) -> int:
-        """Walk the decision audit chain. Returns rows verified; raises on any break."""
+        """Walk the decision audit chain under the lock, after completing any
+        interrupted transaction — a reader never sees a half-written line."""
+        with self.mutation_lock():
+            self._ready()
+            return self._verify_audit()
+
+    def _verify_audit(self) -> int:
         path = self.root / "audit.jsonl"
         if not path.exists():
             return 0
@@ -471,14 +481,23 @@ class MssqlStore:
     def mutation_lock(self) -> Iterator[None]:
         cur = self.conn.cursor()
         try:
+            # SET NOCOUNT persists for the session, so it is switched back OFF in
+            # the same batch; updates do not rely on it either way (see commit).
             cur.execute("SET NOCOUNT ON; DECLARE @r INT; EXEC @r = sp_getapplock "
                         "@Resource = N'dx_learn.mutation', @LockMode = 'Exclusive', "
-                        "@LockOwner = 'Session', @LockTimeout = 60000; SELECT @r;")
+                        "@LockOwner = 'Session', @LockTimeout = 60000; SET NOCOUNT OFF; "
+                        "SELECT @r;")
             got = cur.fetchone()
             if got is None or int(got[0]) < 0:
-                raise StoreError("could not take the dx_learn.mutation application lock")
+                raise StoreError("could not take the dx_learn.mutation application lock "
+                                 f"(sp_getapplock returned {None if got is None else got[0]})")
+        except BaseException:
+            cur.close()
+            raise
+        try:
             yield
         finally:
+            # released only because it was acquired: releasing an unheld applock is an error
             cur.execute("EXEC sp_releaseapplock @Resource = N'dx_learn.mutation', "
                         "@LockOwner = 'Session';")
             cur.close()
@@ -557,10 +576,13 @@ class MssqlStore:
                                 [record.rec_key, *values])
                 else:
                     sets = ", ".join(f"{c} = ?" for c in cols)
+                    # @@ROWCOUNT is read explicitly: under SET NOCOUNT ON the ODBC
+                    # driver's own rowcount is -1, which would refuse every update.
                     cur.execute(f"UPDATE {table} SET {sets}, Revision = Revision + 1 "
-                                "WHERE RecKey = ? AND Revision = ?",
+                                "WHERE RecKey = ? AND Revision = ?; SELECT @@ROWCOUNT;",
                                 [*values, record.rec_key, record.revision])
-                    if cur.rowcount != 1:
+                    affected = cur.fetchone()
+                    if affected is None or int(affected[0]) != 1:
                         raise StaleDecision(f"{record.rec_key[:8]} changed during the write")
         for record in accepted:
             record.revision += 1

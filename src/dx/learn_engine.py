@@ -75,7 +75,9 @@ class LearnConfig:
     # is below a minimum meaningful effect (not merely that none was shown).
     efficacy_min_verdict: int = 30
     efficacy_null_confidence: float = 0.95
-    efficacy_min_effect_abs: float = 0.05
+    # "Meaningful" is relative to the baseline: a 25% reduction of the before-rate.
+    # (An absolute floor would, at low baselines, exceed the whole baseline and
+    # call even a halved rate "no meaningful improvement".)
     efficacy_min_effect_rel: float = 0.25
     cohort_shift_tv: float = 0.30          # model/task-class mix change that voids any verdict
     reproposal_growth: float = 2.0
@@ -146,6 +148,7 @@ class Learner:
         return beta_from((bad, self._w(ts)) for ts, bad in obs)
 
     def learn(self, corpus: Corpus, adoptions: Iterable[Adoption]) -> list[Recommendation]:
+        adoptions = list(adoptions)
         active = [a for a in adoptions if a.active]
         covered = {(a.metric["name"], a.metric["key"]) for a in active}
         recs: list[Recommendation] = []
@@ -157,7 +160,8 @@ class Learner:
         recs += self.operator_failures(corpus)
         # An adopted change owns its metric: efficacy speaks for it, not a fresh proposal.
         recs = [r for r in recs if (r.metric["name"], r.metric["key"]) not in covered]
-        recs += [r for r in (self._ineffective(e) for e in self.efficacy(corpus, active)) if r]
+        recs += [r for r in (self._ineffective(e)
+                             for e in self.efficacy(corpus, active, adoptions)) if r]
         return sorted(recs, key=lambda r: (-r.score, r.rec_key))
 
     # ------------------------------------------------------------------ recurring pxx failures
@@ -391,7 +395,8 @@ class Learner:
         return out
 
     # ------------------------------------------------------------------ efficacy (the meta-loop)
-    def efficacy(self, corpus: Corpus, adoptions: Iterable[Adoption]) -> list[dict[str, Any]]:
+    def efficacy(self, corpus: Corpus, adoptions: Iterable[Adoption],
+                 all_adoptions: Iterable[Adoption] | None = None) -> list[dict[str, Any]]:
         """Before/after comparison of each adoption's pre-registered bad-event rate,
         split at the first MERGED row of its implementing task at or after acceptance.
 
@@ -402,10 +407,12 @@ class Learner:
         fall anyway) — moves the same numbers. So:
 
         * "improvement-observed" needs P(rate fell) >= 0.90 with the raw rate lower;
-        * "no-meaningful-improvement" — the only status that proposes revising or
-          reverting — needs >= 30 observations on each side and P >= 0.95 that any
-          improvement is below the minimum meaningful effect
-          (max(5 points, 25% of the before-rate));
+        * "no-meaningful-improvement" — the only status that prompts a review of
+          revising or reverting — needs >= 30 observations on each side and
+          P >= 0.95 that any improvement is below 25% of the before-rate;
+        * "after" is the 60 days from the merge, not open-ended, and any other
+          adoption on the same metric (active or retired) merged in the 60 days
+          before or after voids the comparison;
         * a cohort shift (model or task-class mix) or an overlapping adoption on
           the same metric voids both verdicts;
         * everything else, including equal or worse rates on weak evidence, is
@@ -414,8 +421,9 @@ class Learner:
         cfg = self.cfg
         window = timedelta(days=cfg.efficacy_window_days)
         adoptions = list(adoptions)
+        context = list(all_adoptions) if all_adoptions is not None else adoptions
         starts: dict[str, datetime] = {}
-        for ad in adoptions:
+        for ad in {a.rec_key: a for a in [*context, *adoptions]}.values():
             task = corpus.tasks.get(ad.task_id) if ad.task_id else None
             merged = task.merged_at(not_before=ad.accepted_at) if task else None
             if merged is not None:
@@ -444,7 +452,7 @@ class Learner:
                 row["status"] = "source-not-read"
                 continue
             before = [bad for ts, bad in obs if start - window <= ts < start]
-            after = [bad for ts, bad in obs if ts >= start]
+            after = [bad for ts, bad in obs if start <= ts < start + window]
             bp = beta_from((b, 1.0) for b in before)
             ap = beta_from((b, 1.0) for b in after)
             row.update(before=bp, after=ap, runs_after=len(after), runs_before=len(before))
@@ -460,9 +468,10 @@ class Learner:
             row["observed_change"] = round(raw_after - raw_before, 4)
             p_fell = prob_greater(bp, ap, cfg.mc_draws)
             row["p_rate_fell"] = p_fell
+            metrics = {a.rec_key: a.metric for a in [*context, *adoptions]}
             overlap = sorted(k[:8] for k, other in starts.items() if k != ad.rec_key
-                             and abs(other - start) < window
-                             and next(a for a in adoptions if a.rec_key == k).metric == ad.metric)
+                             and start - window <= other < start + window
+                             and metrics[k] == ad.metric)
             shift = self._cohort_shift(ad.metric, corpus, start, window)
             if overlap:
                 caveats.append(f"other adoptions on this metric merged within the window: "
@@ -475,7 +484,7 @@ class Learner:
             if overlap or shift:
                 row["status"] = "inconclusive (confounded)"
                 continue
-            delta = max(cfg.efficacy_min_effect_abs, cfg.efficacy_min_effect_rel * raw_before)
+            delta = cfg.efficacy_min_effect_rel * raw_before
             if p_fell >= cfg.efficacy_confidence and raw_after < raw_before:
                 row["status"] = "improvement-observed"
             elif (min(len(before), len(after)) >= cfg.efficacy_min_verdict
@@ -512,7 +521,7 @@ class Learner:
         ad: Adoption = row["adoption"]
         bp, ap = row["before"], row["after"]
         return Recommendation(
-            rec_key=_key("efficacy", ad.rec_key), kind="adoption_ineffective",
+            rec_key=_key("efficacy", ad.rec_key), kind="adoption_no_improvement",
             subject=f"adopted change {ad.rec_key[:8]} ({ad.task_id}): no meaningful improvement observed",
             score=round(ap.n_eff * ap.mean * 3.0, 3), evidence_weight=float(row["runs_after"]),
             evidence={"rec_key": ad.rec_key, "task_id": ad.task_id, "metric": ad.metric,
