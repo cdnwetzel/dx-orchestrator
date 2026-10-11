@@ -5,8 +5,8 @@ psoperator's audit chain, review-lane manifests — and proposes changes ranked
 by evidence. It changes nothing: a human accepts or rejects each proposal, an
 accepted one becomes a dx task spec that goes through ``dx run`` and a signed
 ``dx merge`` like any other change, and once that task merges, ``dx learn
-efficacy`` judges it against the metric fixed when it was proposed. Changes
-that did not work come back as proposals to revise or revert.
+efficacy`` compares the metric fixed at proposal time before and after the
+merge. That comparison is an observed change, not proof of cause.
 
 Separation of duties: dx learn is the author of every recommendation, so it
 is never the one to accept it — every decision names a human with ``--by``.
@@ -14,6 +14,11 @@ It never writes to the ledger (RL-008), and no recommendation kind relaxes a
 gate. Owning role: ``scrum-master`` (retro actions specific, owned, dated,
 and the last set checked before new ones are added) — which is why ``queue``
 prints the state of earlier adoptions before any new proposal.
+
+Concurrency: every command that changes state takes the store's mutation
+lock, re-reads what it decides on, and commits one transaction checked
+against the revisions it read (see learn_store). Forwarding to pxx happens
+only inside that lock, after the pass's own write (see learn_forward).
 """
 from __future__ import annotations
 
@@ -23,14 +28,16 @@ import json
 import os
 import re
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ._argtypes import SubParsers
 from .config_loader import get_ledger_repo_path
-from .learn_bridge import FORWARDABLE_KINDS, ForwardError, forward_to_pxx, render_spec
+from .learn_bridge import render_spec
 from .learn_engine import LearnConfig, Learner, reconcile
+from .learn_forward import forward_proposals, reconcile_forwards
 from .learn_model import Adoption, Corpus, Recommendation, parse_iso, to_jsonable, utcnow
 from .learn_sources import (
     LearnSourceError,
@@ -40,9 +47,18 @@ from .learn_sources import (
     read_pxx_runs,
     read_review_manifests,
 )
-from .learn_store import JsonStore, MssqlStore, StaleDecision, Store, StoreError
+from .learn_store import (
+    JsonStore,
+    MssqlStore,
+    RecoveryError,
+    StaleDecision,
+    Store,
+    StoreError,
+    Tx,
+)
 
 DEFAULT_STORE = Path("~/.local/state/dx/learn").expanduser()
+MSSQL_ACK = "accept"
 # Words that name the tools and models in this stack, not people. A --by made
 # only of these (e.g. "dx.run", "Claude Code", "claude-opus", "pxx") is refused.
 _AGENT_WORDS = frozenset({
@@ -76,6 +92,10 @@ def register_learn_subcommand(subparsers: SubParsers) -> None:
                        f"then {DEFAULT_STORE}); ignored when DX_LEARN_MSSQL is set")
         p.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    def pxx_dir(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--pxx-state-dir", help="pxx state dir for withdrawing a forwarded "
+                       "entry (default: DX_LEARN_PXX_STATE, then pxx's own state_dir)")
+
     run = sub.add_parser("run", help="One learning pass: read sources, update the queue")
     sources(run)
     store(run)
@@ -105,6 +125,7 @@ def register_learn_subcommand(subparsers: SubParsers) -> None:
     rej = sub.add_parser("reject", help="Reject a proposal; it stays down until its "
                          "evidence grows by the re-proposal factor")
     store(rej)
+    pxx_dir(rej)
     rej.add_argument("key")
     rej.add_argument("--by", required=True)
     rej.add_argument("--note", required=True, help="Why — kept with the decision")
@@ -119,15 +140,22 @@ def register_learn_subcommand(subparsers: SubParsers) -> None:
 
     ret = sub.add_parser("retire", help="Stop tracking an adoption (revised or reverted)")
     store(ret)
+    pxx_dir(ret)
     ret.add_argument("key")
     ret.add_argument("--by", required=True)
     ret.add_argument("--note", required=True)
     ret.set_defaults(func=cmd_learn_retire)
 
-    eff = sub.add_parser("efficacy", help="Did adopted changes move their pre-registered metric?")
+    eff = sub.add_parser("efficacy", help="Observed before/after change in each adoption's "
+                         "pre-registered metric (not a causal estimate)")
     sources(eff)
     store(eff)
     eff.set_defaults(func=cmd_learn_efficacy)
+
+    rec = sub.add_parser("recover", help="Complete an interrupted store transaction, or say "
+                         "precisely why it cannot be completed")
+    store(rec)
+    rec.set_defaults(func=cmd_learn_recover)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -140,7 +168,14 @@ def _open_store(args: argparse.Namespace) -> Store:
     conn = os.environ.get("DX_LEARN_MSSQL")
     try:
         if conn:
-            return MssqlStore(conn)
+            if os.environ.get("DX_LEARN_MSSQL_UNQUALIFIED") != MSSQL_ACK:
+                _die("the SQL Server backend is UNQUALIFIED: it has never run against a live "
+                     "server. Qualify it on a dev instance, then set "
+                     f"DX_LEARN_MSSQL_UNQUALIFIED={MSSQL_ACK} to acknowledge that, or unset "
+                     "DX_LEARN_MSSQL to use the JSON store")
+            print("⚠ dx learn: SQL Server backend in use — UNQUALIFIED", file=sys.stderr,
+                  flush=True)
+            return MssqlStore(conn, acknowledge_unqualified=True)
         root = args.store_dir or os.environ.get("DX_LEARN_STORE") or str(DEFAULT_STORE)
         return JsonStore(Path(root).expanduser())
     except StoreError as exc:
@@ -153,7 +188,7 @@ def _now(args: argparse.Namespace) -> datetime:
 
 
 def _pxx_state_dir(args: argparse.Namespace) -> Path:
-    explicit = args.pxx_state_dir or os.environ.get("DX_LEARN_PXX_STATE")
+    explicit = getattr(args, "pxx_state_dir", None) or os.environ.get("DX_LEARN_PXX_STATE")
     if explicit:
         return Path(explicit).expanduser()
     from pxx.config import load_settings
@@ -185,15 +220,13 @@ def _who(by: str) -> dict[str, str]:
     return {"os_user": account, "by": by}
 
 
-def _decide(store: Store, rec: Recommendation, adoption: Adoption | None, *, by: str,
-            action: str, detail: dict[str, Any], now: datetime, expected: str) -> None:
+def _commit(store: Store, tx: Tx) -> None:
     try:
-        store.decide(rec, adoption, actor=by, action=action, now=now,
-                     detail={**detail, **_who(by)}, expected_status=expected)
+        store.commit(tx)
     except StaleDecision as exc:
-        _die(f"{exc}. Nothing was recorded.")
+        _die(f"{exc}")
     except StoreError as exc:
-        _die(f"decision store refused the write: {exc}. Nothing was recorded.")
+        _die(f"the store refused the write: {exc}. Nothing was recorded.")
 
 
 def _gather(args: argparse.Namespace) -> Corpus:
@@ -215,8 +248,7 @@ def _gather(args: argparse.Namespace) -> Corpus:
     return corpus
 
 
-def _find(store: Store, key: str) -> Recommendation:
-    recs = store.load_recs()
+def _find(recs: dict[str, Recommendation], key: str) -> Recommendation:
     if key in recs:
         return recs[key]
     if len(key) < 6:
@@ -238,44 +270,50 @@ def _line(r: Recommendation) -> str:
     return f"  [{r.rec_key[:8]}] {r.score:8.2f}  {r.kind:22} {r.subject}"
 
 
+def _guard(fn: Any) -> Any:
+    """Turn a refused recovery into the precise, actionable error it carries."""
+    def wrapped(args: argparse.Namespace) -> None:
+        try:
+            fn(args)
+        except RecoveryError as exc:
+            _die(str(exc))
+    wrapped.__name__ = fn.__name__
+    return wrapped
+
+
 # --------------------------------------------------------------------------- commands
+@_guard
 def cmd_learn_run(args: argparse.Namespace) -> None:
     now = _now(args)
     store = _open_store(args)
     corpus = _gather(args)
     cfg = LearnConfig()
-    adoptions = store.load_adoptions()
-    fresh = Learner(cfg, now).learn(corpus, adoptions.values())
-    existing = store.load_recs()
-    # What this pass read: a record is only written back if it is still in that
-    # state, so a decision made while the pass ran is never undone.
-    expected: dict[str, str | None] = {k: r.status for k, r in existing.items()}
-    changed = reconcile(fresh, existing, cfg, now)
+    pxx_state = None if args.no_pxx else _pxx_state_dir(args)
 
-    forwarded: list[dict[str, str]] = []
-    if args.forward_pxx:
-        state_dir = _pxx_state_dir(args)
-        for rec in changed:
-            if rec.status == "PROPOSED" and rec.kind in FORWARDABLE_KINDS and not rec.pxx_slug:
-                try:
-                    slug, outcome = forward_to_pxx(rec, state_dir)
-                except ForwardError as exc:
-                    outcome, slug = f"not forwarded: {exc}", ""
-                if outcome.startswith("forwarded"):
-                    rec.pxx_slug = slug
-                forwarded.append({"rec_key": rec.rec_key, "outcome": outcome})
+    with store.mutation_lock():
+        # 1. settle forwarding left over from earlier passes or interrupted decisions
+        forwards = reconcile_forwards(store, pxx_state, now) if pxx_state else []
+        # 2. learn and write back, checked against the revisions this pass read
+        adoptions = store.load_adoptions()
+        fresh = Learner(cfg, now).learn(corpus, adoptions.values())
+        changed = reconcile(fresh, store.load_recs(), cfg, now)
+        conflicts = store.commit(Tx("dx learn", "pass", "pass", now, writes=list(changed),
+                                    audit=False), skip_conflicts=True)
+        skipped = [c.split(":", 1)[1] for c in conflicts if c.startswith("rec:")]
+        changed = [r for r in changed if r.rec_key not in skipped]
+        # 3. only now, and still inside the lock, forward what is still PROPOSED
+        forwarded = (forward_proposals(store, pxx_state, now)
+                     if args.forward_pxx and pxx_state else [])
 
-    skipped = store.save_recs(changed, now, expected)
-    changed = [r for r in changed if r.rec_key not in skipped]
     stale = [r.rec_key for r in changed if r.status == "STALE"]
-    summary: dict[str, Any] = {"sources": corpus.sources, "attempts": len(corpus.attempts),
-               "tasks": len(corpus.tasks), "operator_decisions": len(corpus.operator),
-               "lane_results": len(corpus.lanes),
-               "quarantined": [to_jsonable(q) for q in corpus.quarantined],
-               "proposed": [r.rec_key for r in changed if r.status == "PROPOSED"],
-               "stale": stale,
-               "forwarded": forwarded,
-               "skipped_decided_meanwhile": skipped}
+    summary: dict[str, Any] = {
+        "sources": corpus.sources, "attempts": len(corpus.attempts),
+        "tasks": len(corpus.tasks), "operator_decisions": len(corpus.operator),
+        "lane_results": len(corpus.lanes),
+        "quarantined": [to_jsonable(q) for q in corpus.quarantined],
+        "proposed": [r.rec_key for r in changed if r.status == "PROPOSED"],
+        "stale": stale, "forwarded": forwarded, "skipped_decided_meanwhile": skipped,
+        "divergences": [f for f in forwards if f["divergence"]]}
     store.record_pass(summary, corpus, now)
 
     text = ["dx learn — pass complete (recommend-only; nothing was changed)"]
@@ -284,19 +322,20 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
         text.append(f"  ⚠ {len(corpus.quarantined)} record(s) quarantined and not learned from:")
         text += [f"    - {q.source} {q.where}: {q.error}" for q in corpus.quarantined[:10]]
     open_recs = sorted((r for r in changed if r.status == "PROPOSED"), key=lambda r: -r.score)
-    text.append(f"  {len(open_recs)} open proposal(s) updated, "
-                f"{len(stale)} gone stale")
+    text.append(f"  {len(open_recs)} open proposal(s) updated, {len(stale)} gone stale")
     text += [_line(r) for r in open_recs[:10]]
-    text += [f"  pxx: {f['rec_key'][:8]} {f['outcome']}" for f in forwarded]
+    text += [f"  pxx: {f['rec_key'][:8]} {f['state']} — {f['note']}" for f in forwarded]
+    text += [f"  ⚠ DIVERGED {f['rec_key'][:8]}: {f['divergence']}" for f in forwards
+             if f["divergence"]]
     text += [f"  left alone (decided while this pass ran): {k[:8]}" for k in skipped]
     text.append("  next: dx learn queue · dx learn show <key> · dx learn accept <key> --by <you>")
     _emit(args, summary, text)
 
 
+@_guard
 def cmd_learn_queue(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    recs = store.load_recs()
-    ads = store.load_adoptions()
+    recs, ads, fwds = store.load_recs(), store.load_adoptions(), store.load_forwards()
     shown = [r for r in recs.values() if args.all or r.status == "PROPOSED"]
     shown.sort(key=lambda r: (r.status != "PROPOSED", -r.score, r.rec_key))
     active = [a for a in ads.values() if a.active]
@@ -304,47 +343,66 @@ def cmd_learn_queue(args: argparse.Namespace) -> None:
         audit = f"decision audit: {store.verify_audit()} row(s), chain verifies"
     except StoreError as exc:
         audit = f"⚠ decision audit DOES NOT VERIFY: {exc} — no decision will be recorded"
-    text = [audit, "Earlier adoptions (review these before adding new ones):"]
+    text = [audit]
+    diverged = [f for f in fwds.values() if f.divergence]
+    if diverged:
+        text.append("⚠ dx and pxx humans decided differently (resolve in one tool or the other):")
+        text += [f"  [{f.rec_key[:8]}] pxx {f.slug}: {f.divergence}" for f in diverged]
+    text.append("Earlier adoptions (review these before adding new ones):")
     text += [f"  [{a.rec_key[:8]}] task={a.task_id or '— not linked —'} by {a.accepted_by} "
              f"on {a.accepted_at.date()} metric={a.metric['name']}" for a in active] or ["  (none)"]
     text.append("Open proposals:" if not args.all else "All recommendations:")
-    text += [_line(r) + (f"  ({r.status})" if args.all else "") for r in shown] or ["  (none)"]
-    _emit(args, {"adoptions": active, "recommendations": shown}, text)
+    text += [_line(r) + (f"  ({r.status})" if args.all else "")
+             + (f"  [pxx {fwds[r.rec_key].state}]" if r.rec_key in fwds else "")
+             for r in shown] or ["  (none)"]
+    _emit(args, {"adoptions": active, "recommendations": shown,
+                 "forwards": list(fwds.values())}, text)
 
 
+@_guard
 def cmd_learn_show(args: argparse.Namespace) -> None:
-    rec = _find(_open_store(args), args.key)
-    text = [f"{rec.rec_key}  {rec.kind}  {rec.status}  score {rec.score}",
+    store = _open_store(args)
+    rec = _find(store.load_recs(), args.key)
+    fwd = store.load_forwards().get(rec.rec_key)
+    text = [f"{rec.rec_key}  {rec.kind}  {rec.status}  score {rec.score}  rev {rec.revision}",
             f"  {rec.subject}", "", f"  {rec.draft_text}", "",
-            f"  judged by: {rec.metric['name']} for {rec.metric['key']}",
+            f"  judged by: {rec.metric['name']} for {rec.metric['key']} "
+            f"(source: {rec.metric.get('source', '?')})",
             f"  suggested role: {rec.suggested_role}",
             "  evidence:", json.dumps(to_jsonable(rec.evidence), indent=2, sort_keys=True)]
     if rec.decided_by:
         text.append(f"  decided: {rec.status} by {rec.decided_by} — {rec.decision_note or ''}")
-    _emit(args, rec, text)
+    if fwd:
+        text.append(f"  pxx: {fwd.slug} {fwd.state} (inbox: {fwd.pxx_view}) — {fwd.note}"
+                    + (f"  ⚠ {fwd.divergence}" if fwd.divergence else ""))
+    _emit(args, {"recommendation": rec, "forward": fwd}, text)
 
 
+@_guard
 def cmd_learn_accept(args: argparse.Namespace) -> None:
     by, now = _human(args.by), utcnow()
     store = _open_store(args)
-    rec = _find(store, args.key)
-    read_status = rec.status
-    if rec.status not in ("PROPOSED", "STALE"):
-        _die(f"{rec.rec_key[:8]} is {rec.status}; only an open proposal can be accepted")
-    if rec.status == "STALE":
-        print("⚠ this proposal is STALE: the last pass no longer saw the evidence for it",
-              file=sys.stderr, flush=True)
     out = Path(args.spec_out).expanduser() if args.spec_out else None
     if out is not None and (out.exists() or not out.parent.is_dir()):
-        # Checked before the decision is recorded: no accepted proposal without its spec.
+        # Checked before anything is recorded: no accepted proposal without its spec.
         _die(f"{out} already exists or its directory does not; nothing was accepted")
-    rec.status, rec.decided_by, rec.decided_at = "ACCEPTED", by, now
-    rec.decision_note, rec.weight_at_decision = args.note, rec.evidence_weight
-    adoption = Adoption(rec_key=rec.rec_key, metric=dict(rec.metric), accepted_by=by,
-                        accepted_at=now, note=args.note, task_id=args.task)
-    spec = render_spec(rec, args.task or "<TASK-ID>", accepted_by=by)
-    _decide(store, rec, adoption, by=by, action="accept", now=now, expected=read_status,
-            detail={"note": args.note, "task_id": args.task, "metric": rec.metric})
+    with store.mutation_lock():
+        rec = _find(store.load_recs(), args.key)
+        if rec.status not in ("PROPOSED", "STALE"):
+            _die(f"{rec.rec_key[:8]} is {rec.status}; only an open proposal can be accepted")
+        if rec.status == "STALE":
+            print("⚠ this proposal is STALE: the last pass no longer saw the evidence for it",
+                  file=sys.stderr, flush=True)
+        prior = store.load_adoptions().get(rec.rec_key)
+        updated = replace(rec, status="ACCEPTED", decided_by=by, decided_at=now,
+                          decision_note=args.note, weight_at_decision=rec.evidence_weight)
+        adoption = Adoption(rec_key=rec.rec_key, metric=dict(rec.metric), accepted_by=by,
+                            accepted_at=now, note=args.note, task_id=args.task,
+                            revision=prior.revision if prior else 0)
+        spec = render_spec(updated, args.task or "<TASK-ID>", accepted_by=by)
+        _commit(store, Tx(by, "accept", rec.rec_key, now, writes=[updated, adoption],
+                          detail={"note": args.note, "task_id": args.task,
+                                  "metric": rec.metric, **_who(by)}))
     if out is not None:
         with out.open("x", encoding="utf-8") as fh:    # never overwrite someone's spec
             fh.write(spec)
@@ -353,57 +411,81 @@ def cmd_learn_accept(args: argparse.Namespace) -> None:
         print(spec, flush=True)
 
 
+def _settle_forward(store: Store, args: argparse.Namespace, rec: Recommendation) -> None:
+    """After reject/retire, inside the same lock: withdraw our pending pxx entry
+    if it is still ours, and surface any decision a pxx human already made."""
+    if rec.rec_key not in store.load_forwards():
+        return
+    try:
+        state_dir = _pxx_state_dir(args)
+    except Exception as exc:   # pxx config unreadable: the next `dx learn run` settles it
+        print(f"   pxx state dir unavailable ({exc}); the next `dx learn run` will withdraw "
+              "the forwarded entry", flush=True)
+        return
+    for row in reconcile_forwards(store, state_dir, utcnow(), only=rec.rec_key):
+        print(f"   pxx {row['slug']}: {row['state']} (inbox: {row['pxx_view']}) — {row['note']}",
+              flush=True)
+        if row["divergence"]:
+            print(f"   ⚠ DIVERGED: {row['divergence']} — resolve it with "
+                  f"`pxx improve triage` or here", flush=True)
+
+
+@_guard
 def cmd_learn_reject(args: argparse.Namespace) -> None:
     by, now = _human(args.by), utcnow()
     store = _open_store(args)
-    rec = _find(store, args.key)
-    if rec.status not in ("PROPOSED", "STALE"):
-        _die(f"{rec.rec_key[:8]} is {rec.status}; only an open proposal can be rejected")
-    read_status = rec.status
-    rec.status, rec.decided_by, rec.decided_at = "REJECTED", by, now
-    rec.decision_note, rec.weight_at_decision = args.note, rec.evidence_weight
-    _decide(store, rec, None, by=by, action="reject", now=now, expected=read_status,
-            detail={"note": args.note})
-    print(f"✅ rejected {rec.rec_key[:8]}; it returns only if its evidence grows "
-          f"{LearnConfig().reproposal_growth:g}x", flush=True)
-    if rec.pxx_slug:
-        print(f"   It was forwarded to pxx as {rec.pxx_slug}; dx learn does not decide pxx's "
-              f"inbox. To reject it there too: pxx improve triage reject {rec.pxx_slug}",
-              flush=True)
+    with store.mutation_lock():
+        rec = _find(store.load_recs(), args.key)
+        if rec.status not in ("PROPOSED", "STALE"):
+            _die(f"{rec.rec_key[:8]} is {rec.status}; only an open proposal can be rejected")
+        updated = replace(rec, status="REJECTED", decided_by=by, decided_at=now,
+                          decision_note=args.note, weight_at_decision=rec.evidence_weight)
+        _commit(store, Tx(by, "reject", rec.rec_key, now, writes=[updated],
+                          detail={"note": args.note, **_who(by)}))
+        print(f"✅ rejected {rec.rec_key[:8]}; it returns only if its evidence grows "
+              f"{LearnConfig().reproposal_growth:g}x", flush=True)
+        _settle_forward(store, args, updated)
 
 
-def _adoption(store: Store, rec: Recommendation) -> Adoption:
-    ad = store.load_adoptions().get(rec.rec_key)
-    if ad is None or not ad.active:
-        _die(f"{rec.rec_key[:8]} has no active adoption")
-        raise AssertionError  # unreachable
-    return ad
-
-
+@_guard
 def cmd_learn_link(args: argparse.Namespace) -> None:
     by, now = _human(args.by), utcnow()
     store = _open_store(args)
-    rec = _find(store, args.key)
-    ad = _adoption(store, rec)
-    previous, ad.task_id = ad.task_id, args.task
-    _decide(store, rec, ad, by=by, action="link", now=now, expected="ACCEPTED",
-            detail={"task_id": args.task, "previous_task_id": previous})
-    print(f"✅ {rec.rec_key[:8]} is implemented by {args.task}; efficacy starts at its MERGED row",
-          flush=True)
+    with store.mutation_lock():
+        rec = _find(store.load_recs(), args.key)
+        ad = store.load_adoptions().get(rec.rec_key)
+        if ad is None or not ad.active:
+            _die(f"{rec.rec_key[:8]} has no active adoption")
+            raise AssertionError  # unreachable
+        updated = replace(ad, task_id=args.task)
+        # The adoption's revision is the guard: of two concurrent links, one wins.
+        _commit(store, Tx(by, "link", rec.rec_key, now, writes=[updated],
+                          detail={"task_id": args.task, "previous_task_id": ad.task_id,
+                                  **_who(by)}))
+    print(f"✅ {rec.rec_key[:8]} is implemented by {args.task}; the before/after comparison "
+          "starts at its first MERGED row after acceptance", flush=True)
 
 
+@_guard
 def cmd_learn_retire(args: argparse.Namespace) -> None:
     by, now = _human(args.by), utcnow()
     store = _open_store(args)
-    rec = _find(store, args.key)
-    ad = _adoption(store, rec)
-    ad.active, ad.retired_at = False, now
-    rec.status, rec.decided_by, rec.decided_at, rec.decision_note = "RETIRED", by, now, args.note
-    _decide(store, rec, ad, by=by, action="retire", now=now, expected="ACCEPTED",
-            detail={"note": args.note})
-    print(f"✅ retired {rec.rec_key[:8]}", flush=True)
+    with store.mutation_lock():
+        rec = _find(store.load_recs(), args.key)
+        ad = store.load_adoptions().get(rec.rec_key)
+        if ad is None or not ad.active:
+            _die(f"{rec.rec_key[:8]} has no active adoption")
+            raise AssertionError  # unreachable
+        new_ad = replace(ad, active=False, retired_at=now)
+        new_rec = replace(rec, status="RETIRED", decided_by=by, decided_at=now,
+                          decision_note=args.note)
+        _commit(store, Tx(by, "retire", rec.rec_key, now, writes=[new_rec, new_ad],
+                          detail={"note": args.note, **_who(by)}))
+        print(f"✅ retired {rec.rec_key[:8]}", flush=True)
+        _settle_forward(store, args, new_rec)
 
 
+@_guard
 def cmd_learn_efficacy(args: argparse.Namespace) -> None:
     now = _now(args)
     store = _open_store(args)
@@ -413,15 +495,27 @@ def cmd_learn_efficacy(args: argparse.Namespace) -> None:
                 "metric": r["adoption"].metric, "status": r["status"],
                 "before": None if r["before"] is None else round(r["before"].mean, 4),
                 "after": None if r["after"] is None else round(r["after"].mean, 4),
-                "runs_after": r["runs_after"],
-                "p_rate_fell": None if r["p_rate_fell"] is None else round(r["p_rate_fell"], 4)}
+                "runs_before": r["runs_before"], "runs_after": r["runs_after"],
+                "observed_change": r["observed_change"],
+                "p_rate_fell": None if r["p_rate_fell"] is None else round(r["p_rate_fell"], 4),
+                "caveats": r["caveats"]}
                for r in rows]
-    text = ["Adoption efficacy (rates are bad-event rates; lower is better):"]
+    text = ["Observed before/after change in each adoption's metric (bad-event rates; lower is "
+            "better). Correlational: not proof the change caused it."]
     for p in payload:
         rates = (f" {p['before']:.0%} → {p['after']:.0%}"
                  if p["before"] is not None and p["after"] is not None else "")
-        text.append(f"  [{p['rec_key'][:8]}] {p['status']:<16} task={p['task_id'] or '—'}"
+        text.append(f"  [{p['rec_key'][:8]}] {p['status']:<26} task={p['task_id'] or '—'}"
                     f"{rates}  {p['metric']['name']}")
+        text += [f"      · {c}" for c in p["caveats"][1:]]
     if not payload:
         text.append("  (no active adoptions)")
     _emit(args, payload, text)
+
+
+def cmd_learn_recover(args: argparse.Namespace) -> None:
+    store = _open_store(args)
+    try:
+        print(f"✅ {store.recover()}", flush=True)
+    except RecoveryError as exc:
+        _die(str(exc))

@@ -31,7 +31,14 @@ from .learn_model import (
     Corpus,
     Recommendation,
 )
-from .learn_stats import BetaPost, beta_from, decay_weight, prob_greater
+from .learn_stats import (
+    BetaPost,
+    beta_from,
+    decay_weight,
+    prob_diff_below,
+    prob_greater,
+    total_variation,
+)
 
 
 class MetricUnavailable(Exception):
@@ -62,7 +69,15 @@ class LearnConfig:
     efficacy_window_days: int = 60
     efficacy_min_after: int = 10
     efficacy_min_before: int = 10
-    efficacy_confidence: float = 0.90      # P(rate fell) at or above, and raw rate fell -> effective
+    efficacy_confidence: float = 0.90      # P(rate fell) at or above, and raw rate fell -> improvement observed
+    # A "no meaningful improvement" verdict is the one that can lead to a revert,
+    # so it needs more: larger samples, and strong evidence that any improvement
+    # is below a minimum meaningful effect (not merely that none was shown).
+    efficacy_min_verdict: int = 30
+    efficacy_null_confidence: float = 0.95
+    efficacy_min_effect_abs: float = 0.05
+    efficacy_min_effect_rel: float = 0.25
+    cohort_shift_tv: float = 0.30          # model/task-class mix change that voids any verdict
     reproposal_growth: float = 2.0
     max_ids: int = 10
     mc_draws: int = 20000
@@ -377,21 +392,39 @@ class Learner:
 
     # ------------------------------------------------------------------ efficacy (the meta-loop)
     def efficacy(self, corpus: Corpus, adoptions: Iterable[Adoption]) -> list[dict[str, Any]]:
-        """For each adoption: did its pre-registered bad-event rate fall after the
-        implementing task merged? Measured from the first MERGED row at or after
-        acceptance — never from acceptance itself (a change that has not shipped
-        cannot have worked), and never from a merge that predates the adoption.
+        """Before/after comparison of each adoption's pre-registered bad-event rate,
+        split at the first MERGED row of its implementing task at or after acceptance.
 
-        A verdict needs enough observations on *both* sides, and the raw rates
-        must agree with the posterior: with few or zero events a uniform prior
-        alone can make two equal rates look different.
+        This is an OBSERVED change, not a causal estimate. Anything else that
+        changed across the merge — the mix of tasks or models, the pxx version,
+        another adopted change on the same metric, or plain regression to the
+        mean (a proposal is raised *because* a rate was high, so it tends to
+        fall anyway) — moves the same numbers. So:
+
+        * "improvement-observed" needs P(rate fell) >= 0.90 with the raw rate lower;
+        * "no-meaningful-improvement" — the only status that proposes revising or
+          reverting — needs >= 30 observations on each side and P >= 0.95 that any
+          improvement is below the minimum meaningful effect
+          (max(5 points, 25% of the before-rate));
+        * a cohort shift (model or task-class mix) or an overlapping adoption on
+          the same metric voids both verdicts;
+        * everything else, including equal or worse rates on weak evidence, is
+          "inconclusive".
         """
         cfg = self.cfg
         window = timedelta(days=cfg.efficacy_window_days)
+        adoptions = list(adoptions)
+        starts: dict[str, datetime] = {}
+        for ad in adoptions:
+            task = corpus.tasks.get(ad.task_id) if ad.task_id else None
+            merged = task.merged_at(not_before=ad.accepted_at) if task else None
+            if merged is not None:
+                starts[ad.rec_key] = merged
         report = []
         for ad in adoptions:
             row: dict[str, Any] = {"adoption": ad, "status": "", "before": None, "after": None,
-                                   "p_rate_fell": None, "runs_after": 0, "runs_before": 0}
+                                   "p_rate_fell": None, "runs_after": 0, "runs_before": 0,
+                                   "observed_change": None, "caveats": []}
             report.append(row)
             if not ad.task_id:
                 row["status"] = "awaiting-task"
@@ -400,7 +433,7 @@ class Learner:
             if task is None:
                 row["status"] = "awaiting-merge"
                 continue
-            start = task.merged_at(not_before=ad.accepted_at)
+            start = starts.get(ad.rec_key)
             if start is None:
                 row["status"] = ("merged-before-adoption" if task.merged_at() is not None
                                  else "awaiting-merge")
@@ -415,39 +448,85 @@ class Learner:
             bp = beta_from((b, 1.0) for b in before)
             ap = beta_from((b, 1.0) for b in after)
             row.update(before=bp, after=ap, runs_after=len(after), runs_before=len(before))
+            caveats: list[str] = row["caveats"]
+            caveats.append("observed before/after change, not a causal estimate; includes "
+                           "regression to the mean and any concurrent change")
             if len(after) < cfg.efficacy_min_after or len(before) < cfg.efficacy_min_before:
                 row["status"] = (f"measuring (before {len(before)}/{cfg.efficacy_min_before}, "
                                  f"after {len(after)}/{cfg.efficacy_min_after})")
                 continue
             raw_before = sum(before) / len(before)
             raw_after = sum(after) / len(after)
-            p = prob_greater(bp, ap, cfg.mc_draws)
-            row["p_rate_fell"] = p
+            row["observed_change"] = round(raw_after - raw_before, 4)
+            p_fell = prob_greater(bp, ap, cfg.mc_draws)
+            row["p_rate_fell"] = p_fell
+            overlap = sorted(k[:8] for k, other in starts.items() if k != ad.rec_key
+                             and abs(other - start) < window
+                             and next(a for a in adoptions if a.rec_key == k).metric == ad.metric)
+            shift = self._cohort_shift(ad.metric, corpus, start, window)
+            if overlap:
+                caveats.append(f"other adoptions on this metric merged within the window: "
+                               f"{', '.join(overlap)} — changes cannot be told apart")
+            if shift:
+                caveats.append(shift)
             if raw_before == 0:
                 row["status"] = "no-baseline-problem"   # nothing was failing to begin with
-            elif p >= cfg.efficacy_confidence and raw_after < raw_before:
-                row["status"] = "effective"
-            elif raw_after >= raw_before:
-                row["status"] = "ineffective"          # not credibly better, and not better at all
+                continue
+            if overlap or shift:
+                row["status"] = "inconclusive (confounded)"
+                continue
+            delta = max(cfg.efficacy_min_effect_abs, cfg.efficacy_min_effect_rel * raw_before)
+            if p_fell >= cfg.efficacy_confidence and raw_after < raw_before:
+                row["status"] = "improvement-observed"
+            elif (min(len(before), len(after)) >= cfg.efficacy_min_verdict
+                  and prob_diff_below(bp, ap, delta, cfg.mc_draws) >= cfg.efficacy_null_confidence):
+                row["status"] = "no-meaningful-improvement"
+                row["min_meaningful_effect"] = round(delta, 4)
             else:
                 row["status"] = "inconclusive"
         return report
 
+    def _cohort_shift(self, metric: dict[str, str], corpus: Corpus, start: datetime,
+                      window: timedelta) -> str | None:
+        """Did the population being measured change across the merge? Only pxx
+        attempts carry the descriptors (model, task class) needed to tell."""
+        if metric.get("source") != "pxx":
+            return None
+        def mix(attr: str, lo: datetime, hi: datetime | None) -> dict[str, int]:
+            out: dict[str, int] = defaultdict(int)
+            for a in corpus.attempts:
+                if a.ts >= lo and (hi is None or a.ts < hi) and (
+                        metric["name"] != "class_failure_rate" or a.task_class == metric["key"]):
+                    out[getattr(a, attr)] += 1
+            return out
+        for attr in ("model", "task_class"):
+            tv = total_variation(mix(attr, start - window, start), mix(attr, start, None))
+            if tv > self.cfg.cohort_shift_tv:
+                return (f"cohort shifted: the {attr.replace('_', ' ')} mix changed across the "
+                        f"merge (total variation {tv:.2f})")
+        return None
+
     def _ineffective(self, row: dict[str, Any]) -> Recommendation | None:
-        if row["status"] != "ineffective":
+        if row["status"] != "no-meaningful-improvement":
             return None
         ad: Adoption = row["adoption"]
         bp, ap = row["before"], row["after"]
         return Recommendation(
             rec_key=_key("efficacy", ad.rec_key), kind="adoption_ineffective",
-            subject=f"adopted change {ad.rec_key[:8]} ({ad.task_id}) did not help",
+            subject=f"adopted change {ad.rec_key[:8]} ({ad.task_id}): no meaningful improvement observed",
             score=round(ap.n_eff * ap.mean * 3.0, 3), evidence_weight=float(row["runs_after"]),
             evidence={"rec_key": ad.rec_key, "task_id": ad.task_id, "metric": ad.metric,
                       "before": _post(bp), "after": _post(ap),
-                      "p_rate_fell": round(row["p_rate_fell"], 4)},
-            draft_text=(f"The change adopted from {ad.rec_key[:8]} and merged as {ad.task_id} did "
-                        f"not lower {ad.metric['name']}: ~{bp.mean:.0%} before vs ~{ap.mean:.0%} "
-                        f"after (P={row['p_rate_fell']:.2f} it fell). Revise it or revert it."),
+                      "runs_before": row["runs_before"], "runs_after": row["runs_after"],
+                      "observed_change": row["observed_change"],
+                      "min_meaningful_effect": row["min_meaningful_effect"],
+                      "p_rate_fell": round(row["p_rate_fell"], 4), "caveats": row["caveats"]},
+            draft_text=(f"After {ad.task_id} merged (from {ad.rec_key[:8]}), {ad.metric['name']} "
+                        f"went from ~{bp.mean:.0%} to ~{ap.mean:.0%} over {row['runs_before']} and "
+                        f"{row['runs_after']} observations; any improvement is very likely below "
+                        f"{row['min_meaningful_effect']:.0%}. This is an observed before/after "
+                        f"comparison, not proof the change has no effect. Review whether to revise "
+                        f"or revert it."),
             metric=dict(ad.metric), suggested_role="tech-lead")
 
 
@@ -485,6 +564,7 @@ def reconcile(fresh: list[Recommendation], existing: dict[str, Recommendation],
                               f"since it was {prev.status.lower()}] " + rec.draft_text)
         rec.status, rec.created_at, rec.updated_at = "PROPOSED", prev.created_at or now, now
         rec.pxx_slug = prev.pxx_slug
+        rec.revision = prev.revision   # the revision this pass read: the write is checked against it
         out.append(rec)
     for key, prev in existing.items():
         if key not in seen and prev.status == "PROPOSED":

@@ -2,43 +2,64 @@
 
 Two exits, both into machinery that already has human gates:
 
-* ``forward_to_pxx`` — a model-routing recommendation is something pxx's own
-  improvement plane knows how to carry (target ``model``, operation
-  ``switch_model``). It is written into pxx's ``inbox/human-review-required/``
-  in pxx's exact Proposal shape, under pxx's own ``cycle.lock``, so
-  ``pxx improve triage`` and ``pxx promote`` stay the only path to production.
-  A signature a human has already dispositioned in pxx is never re-raised
-  from here, and an entry pxx itself put in the inbox is never overwritten.
+* pxx's improvement inbox — a model-routing recommendation is something pxx's
+  own improvement plane can carry (target ``model``, operation
+  ``switch_model``). This module holds only the pxx-side primitives: build the
+  proposal, look at the inbox, create an entry without clobbering, withdraw an
+  entry that is still ours. The coordination — when to forward, the durable
+  intent/outcome records, recovery and divergence — is ``learn_forward``.
 * ``render_spec`` — every accepted recommendation becomes a dx task spec
   (``templates/spec.md`` shape). The change itself is then made by ``dx run``,
-  reviewed, and merged with a signature like any other task. dx learn's
-  acceptance is permission to do the work, not the work.
+  reviewed, and merged with a signature like any other task.
+
+pxx's inbox has two writers dx cannot fully serialize with. ``pxx improve
+cycle`` takes ``cycle.lock``, and every primitive here takes it too.
+``pxx improve triage`` takes no lock: it reads a pending entry, writes the
+dispositioned copy, then unlinks the pending file. dx therefore never
+overwrites (files are created with ``"x"``), only removes an entry whose
+proposal fingerprint is still ours, and re-inspects after each change;
+``learn_forward`` records what it sees and surfaces any disagreement.
 """
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from .approval_tier import CONTROL_PLANE, classify
 from .learn_model import Recommendation
 
 FORWARDABLE_KINDS = frozenset({"variant_preference"})
 
+# The fields of pxx's Proposal.to_dict(). Triage rewrites "reason" and adds
+# "disposition"; these never change, so they identify an entry as ours.
+_PROPOSAL_KEYS = ("target", "operation", "evidence", "hypothesis", "expected_movement", "risk",
+                  "confidence", "basis", "root_cause", "reason_prompt_change_is_insufficient")
+
 
 class ForwardError(Exception):
     pass
 
 
-def forward_to_pxx(rec: Recommendation, state_dir: Path) -> tuple[str, str]:
-    """Write ``rec`` into pxx's human-review inbox. Returns (slug, outcome)."""
+class CycleLockBusy(ForwardError):
+    pass
+
+
+def proposal_fingerprint(entry: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps({k: entry.get(k) for k in _PROPOSAL_KEYS},
+                                     sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def build_proposal(rec: Recommendation) -> tuple[str, dict[str, Any], str]:
+    """(slug, payload, fingerprint) for ``rec`` in pxx's exact Proposal shape."""
     if rec.kind not in FORWARDABLE_KINDS:
         raise ForwardError(f"{rec.kind} has no pxx improvement target; it stays in dx learn")
-    try:
-        from pxx.improve.cycle import INBOX_HUMAN, human_disposition, proposal_slug
-        from pxx.improve.mining import Proposal, RootCause
-    except ImportError as exc:  # pragma: no cover - pxx is a hard dependency of dx
-        raise ForwardError(f"pxx's improvement plane is not importable: {exc}") from exc
+    from pxx.improve.cycle import proposal_slug
+    from pxx.improve.mining import Proposal, RootCause
 
     best = str(rec.evidence.get("best", ""))
     runs = tuple(str(r) for r in rec.evidence.get("example_runs", []))
@@ -55,39 +76,79 @@ def forward_to_pxx(rec: Recommendation, state_dir: Path) -> tuple[str, str]:
         root_cause=str(RootCause.MODEL_CAPABILITY),
         reason_prompt_change_is_insufficient=(
             "the same tasks succeed more often on another model; the difference is the model"))
+    payload = proposal.to_dict()
+    payload["reason"] = f"forwarded by dx learn (recommendation {rec.rec_key})"
+    return (proposal_slug(f"{proposal.target}:{proposal.operation}"), payload,
+            proposal_fingerprint(payload))
 
-    slug = proposal_slug(f"{proposal.target}:{proposal.operation}")
-    lock_path = state_dir / "cycle.lock"
+
+@contextmanager
+def cycle_lock(state_dir: Path) -> Iterator[None]:
+    """pxx's own cycle.lock, non-blocking (a running cycle means: try next pass)."""
     state_dir.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock_fh:
+    with (state_dir / "cycle.lock").open("w") as fh:
         try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise ForwardError("a pxx improvement cycle holds cycle.lock; try again later") from exc
+            raise CycleLockBusy("a pxx improvement cycle holds cycle.lock") from exc
         try:
-            decided = human_disposition(state_dir, slug)
-            if decided is not None:
-                return slug, f"not forwarded: a human already dispositioned {slug} in pxx ({decided})"
-            dest = state_dir / "inbox" / INBOX_HUMAN / f"{slug}.json"
-            if dest.exists():
-                return slug, f"not forwarded: {slug} is already pending in pxx's inbox"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            payload = proposal.to_dict()
-            payload["reason"] = f"forwarded by dx learn (recommendation {rec.rec_key})"
-            body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-            with dest.open("x", encoding="utf-8") as fh:     # never clobber
-                fh.write(body)
-            # `pxx improve triage` does not take cycle.lock, so a human may have
-            # dispositioned this signature between the check above and the write.
-            # Re-check, and withdraw our entry (only if it is still ours).
-            decided = human_disposition(state_dir, slug)
-            if decided is not None:
-                if dest.exists() and dest.read_text(encoding="utf-8") == body:
-                    dest.unlink()
-                return slug, f"withdrawn: a human dispositioned {slug} in pxx ({decided}) meanwhile"
-            return slug, f"forwarded to {dest}"
+            yield
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _inbox(state_dir: Path, box: str, slug: str) -> Path:
+    return state_dir / "inbox" / box / f"{slug}.json"
+
+
+def inspect(state_dir: Path, slug: str, fingerprint: str) -> str:
+    """What pxx's inbox holds for ``slug``, relative to our fingerprint:
+    qualified | rejected | qualified-other | rejected-other | pending-ours |
+    pending-other | absent. A human disposition wins over a pending file."""
+    for box in ("qualified", "rejected"):
+        path = _inbox(state_dir, box, slug)
+        if path.is_file():
+            try:
+                ours = proposal_fingerprint(json.loads(path.read_text())) == fingerprint
+            except (OSError, ValueError):
+                ours = False
+            return box if ours else f"{box}-other"
+    pending = _inbox(state_dir, "human-review-required", slug)
+    try:
+        entry = json.loads(pending.read_text())
+    except FileNotFoundError:
+        return "absent"
+    except (OSError, ValueError):
+        return "pending-other"
+    return "pending-ours" if proposal_fingerprint(entry) == fingerprint else "pending-other"
+
+
+def write_pending(state_dir: Path, slug: str, payload: dict[str, Any], fingerprint: str) -> str:
+    """Create our pending entry under cycle.lock. Returns the resulting inspect()
+    view; only "pending-ours" means it was written and is still there."""
+    with cycle_lock(state_dir):
+        before = inspect(state_dir, slug, fingerprint)
+        if before != "absent":
+            return before
+        dest = _inbox(state_dir, "human-review-required", slug)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with dest.open("x", encoding="utf-8") as fh:     # never clobber
+                fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        except FileExistsError:
+            pass   # someone created it between inspect and open: report what is there
+        # triage takes no lock: a human may have acted in this very window, so the
+        # answer is what the inbox holds now, not what we meant to do
+        return inspect(state_dir, slug, fingerprint)
+
+
+def withdraw_if_ours(state_dir: Path, slug: str, fingerprint: str) -> str:
+    """Remove our own still-pending entry. Returns the view afterwards
+    ("absent" when withdrawn). Never touches a dispositioned or foreign entry."""
+    with cycle_lock(state_dir):
+        if inspect(state_dir, slug, fingerprint) == "pending-ours":
+            _inbox(state_dir, "human-review-required", slug).unlink(missing_ok=True)
+        return inspect(state_dir, slug, fingerprint)
 
 
 def tier_floor(targets: tuple[str, ...]) -> str:

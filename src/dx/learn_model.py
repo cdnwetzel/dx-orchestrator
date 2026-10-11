@@ -204,6 +204,9 @@ class Recommendation:
     decision_note: str | None = None
     weight_at_decision: float | None = None
     pxx_slug: str | None = None          # set once forwarded to pxx's improve inbox
+    # Optimistic-concurrency revision: 0 = never stored. Every committed write
+    # bumps it; a write naming a stale revision is refused (see learn_store).
+    revision: int = 0
 
 
 @dataclass
@@ -217,6 +220,34 @@ class Adoption:
     task_id: str | None = None       # the dx task implementing it; efficacy starts at its MERGED row
     active: bool = True
     retired_at: datetime | None = None
+    revision: int = 0
+
+
+# Forwarding lifecycle (dx's side) and what dx last saw in pxx's inbox.
+FORWARD_STATES = frozenset({
+    "INTENT",        # durable before any pxx write; a crash here is resolved by reconcile
+    "WRITTEN",       # our entry was created in pxx's human-review inbox
+    "NOT_WRITTEN",   # refused: dispositioned already, slug pending, or cycle.lock busy
+    "INTERRUPTED",   # intent recorded, no entry found afterwards: never written
+    "WITHDRAWN",     # our own pending entry removed after dx rejected/retired
+})
+PXX_VIEWS = frozenset({"pending-ours", "pending-other", "qualified", "rejected",
+                       "qualified-other", "rejected-other", "absent"})
+
+
+@dataclass
+class ForwardRecord:
+    """dx's durable record of one forwarding to pxx, per recommendation."""
+    rec_key: str
+    slug: str
+    payload_sha256: str
+    state: str
+    rec_revision: int                 # the recommendation revision the intent was made against
+    updated_at: datetime
+    pxx_view: str | None = None       # last observation of pxx's inbox for this slug
+    divergence: str | None = None     # dx and pxx humans decided differently; never auto-resolved
+    note: str = ""
+    revision: int = 0
 
 
 def to_jsonable(obj: Any) -> Any:
@@ -242,7 +273,8 @@ def rec_from_json(d: dict[str, Any]) -> Recommendation:
         suggested_role=d.get("suggested_role") or "tech-lead", status=d["status"],
         created_at=dt("created_at"), updated_at=dt("updated_at"), decided_by=d.get("decided_by"),
         decided_at=dt("decided_at"), decision_note=d.get("decision_note"),
-        weight_at_decision=d.get("weight_at_decision"), pxx_slug=d.get("pxx_slug"))
+        weight_at_decision=d.get("weight_at_decision"), pxx_slug=d.get("pxx_slug"),
+        revision=int(d.get("revision", 0)))
 
 
 def adoption_from_json(d: dict[str, Any]) -> Adoption:
@@ -250,4 +282,14 @@ def adoption_from_json(d: dict[str, Any]) -> Adoption:
         rec_key=d["rec_key"], metric=dict(d["metric"]), accepted_by=d["accepted_by"],
         accepted_at=parse_iso(d["accepted_at"], "accepted_at"), note=d.get("note") or "",
         task_id=d.get("task_id"), active=bool(d.get("active", True)),
-        retired_at=parse_iso(d["retired_at"], "retired_at") if d.get("retired_at") else None)
+        retired_at=parse_iso(d["retired_at"], "retired_at") if d.get("retired_at") else None,
+        revision=int(d.get("revision", 0)))
+
+
+def forward_from_json(d: dict[str, Any]) -> ForwardRecord:
+    return ForwardRecord(
+        rec_key=d["rec_key"], slug=d["slug"], payload_sha256=d["payload_sha256"],
+        state=d["state"], rec_revision=int(d["rec_revision"]),
+        updated_at=parse_iso(d["updated_at"], "updated_at"), pxx_view=d.get("pxx_view"),
+        divergence=d.get("divergence"), note=d.get("note") or "",
+        revision=int(d.get("revision", 0)))

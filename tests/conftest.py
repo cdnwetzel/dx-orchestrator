@@ -87,6 +87,10 @@ def _no_writes_to_the_real_evidence_store():
     )
 
 
+# dx learn's shared fixture (pxx run directories in pxx's real layout).
+from learn_helpers import pxx  # noqa: E402,F401
+
+
 @pytest.fixture(autouse=True)
 def _isolate_dx_env(monkeypatch, tmp_path_factory):
     """Point dx at fixtures and drop any inherited dx env for every test."""

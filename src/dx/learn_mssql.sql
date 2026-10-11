@@ -1,6 +1,12 @@
 /*
   dx learn — SQL Server schema (SQL Server 2017+ / Azure SQL).
 
+  STATUS: UNQUALIFIED. This schema and MssqlStore have been exercised only
+  against a fake pyodbc connection (statement shape, parameter counts,
+  transaction order). They have never run against a live SQL Server. dx learn
+  refuses to use this backend unless DX_LEARN_MSSQL_UNQUALIFIED=accept is set.
+  Qualify it on a dev instance before relying on it.
+
   Working state for dx learn's recommendation queue, adoptions and decision
   audit, plus per-pass fact snapshots for reporting. This is NOT the ledger:
   the devswarm ledger stays the system of record for what was merged and who
@@ -18,6 +24,7 @@ GO
 IF OBJECT_ID(N'dx_learn.Recommendation', N'U') IS NULL
 CREATE TABLE dx_learn.Recommendation (
     RecKey           CHAR(24)          NOT NULL CONSTRAINT PK_Recommendation PRIMARY KEY,
+    Revision         INT               NOT NULL,   -- optimistic concurrency: bumped on every write
     Kind             VARCHAR(40)       NOT NULL
         CONSTRAINT CK_Recommendation_Kind CHECK (Kind IN ('recurring_failure','variant_preference',
             'gate_regression','human_rejection_theme','reviewer_lane','operator_failure',
@@ -27,8 +34,7 @@ CREATE TABLE dx_learn.Recommendation (
     EvidenceWeight   FLOAT             NOT NULL,
     EvidenceJson     NVARCHAR(MAX)     NOT NULL CONSTRAINT CK_Recommendation_Evidence CHECK (ISJSON(EvidenceJson) = 1),
     DraftText        NVARCHAR(MAX)     NOT NULL,
-    MetricName       VARCHAR(40)       NOT NULL,
-    MetricKey        NVARCHAR(200)     NOT NULL,
+    MetricJson       NVARCHAR(400)     NOT NULL CONSTRAINT CK_Recommendation_Metric CHECK (ISJSON(MetricJson) = 1),
     TargetsJson      NVARCHAR(MAX)     NOT NULL CONSTRAINT DF_Recommendation_Targets DEFAULT (N'[]'),
     SuggestedRole    VARCHAR(40)       NOT NULL,
     Status           VARCHAR(10)       NOT NULL
@@ -53,14 +59,32 @@ IF OBJECT_ID(N'dx_learn.Adoption', N'U') IS NULL
 CREATE TABLE dx_learn.Adoption (
     RecKey      CHAR(24)          NOT NULL CONSTRAINT PK_Adoption PRIMARY KEY
                 CONSTRAINT FK_Adoption_Recommendation REFERENCES dx_learn.Recommendation (RecKey),
-    MetricName  VARCHAR(40)       NOT NULL,
-    MetricKey   NVARCHAR(200)     NOT NULL,
+    Revision    INT               NOT NULL,
+    MetricJson  NVARCHAR(400)     NOT NULL CONSTRAINT CK_Adoption_Metric CHECK (ISJSON(MetricJson) = 1),
     AcceptedBy  NVARCHAR(100)     NOT NULL,
     AcceptedAt  DATETIMEOFFSET(3) NOT NULL,
     Note        NVARCHAR(2000)    NOT NULL CONSTRAINT DF_Adoption_Note DEFAULT (N''),
     TaskId      NVARCHAR(64)      NULL,     -- the dx task implementing it; efficacy starts at its MERGED row
     Active      BIT               NOT NULL CONSTRAINT DF_Adoption_Active DEFAULT (1),
     RetiredAt   DATETIMEOFFSET(3) NULL
+);
+GO
+
+-- dx's durable record of each forwarding into pxx's improvement inbox.
+IF OBJECT_ID(N'dx_learn.Forward', N'U') IS NULL
+CREATE TABLE dx_learn.Forward (
+    RecKey        CHAR(24)          NOT NULL CONSTRAINT PK_Forward PRIMARY KEY
+                  CONSTRAINT FK_Forward_Recommendation REFERENCES dx_learn.Recommendation (RecKey),
+    Revision      INT               NOT NULL,
+    Slug          CHAR(12)          NOT NULL,
+    PayloadSha256 CHAR(64)          NOT NULL,
+    State         VARCHAR(12)       NOT NULL
+        CONSTRAINT CK_Forward_State CHECK (State IN ('INTENT','WRITTEN','NOT_WRITTEN','INTERRUPTED','WITHDRAWN')),
+    RecRevision   INT               NOT NULL,
+    UpdatedAt     DATETIMEOFFSET(3) NOT NULL,
+    PxxView       VARCHAR(16)       NULL,
+    Divergence    NVARCHAR(400)     NULL,
+    Note          NVARCHAR(2000)    NOT NULL CONSTRAINT DF_Forward_Note DEFAULT (N'')
 );
 GO
 

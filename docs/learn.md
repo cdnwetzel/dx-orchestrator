@@ -4,17 +4,21 @@
 changing, and stops. A named human accepts or rejects each proposal. An
 accepted proposal becomes a dx task spec that goes through `dx run` and a
 signed `dx merge` like any other change. Once that task merges, `dx learn
-efficacy` judges it against the metric fixed when it was proposed. Changes
-that did not work come back as proposals to revise or revert.
+efficacy` compares the metric fixed at proposal time before and after the
+merge. That is an *observed* change, not proof the change caused it (see
+"Before/after comparison" below). Only strong evidence of no meaningful
+improvement comes back as a proposal to review revising or reverting.
 
 ```
- pxx runs ─┐                     ┌─ PROPOSED ──accept (human)──► dx task spec ─► dx run ─► dx merge (signed)
- ledger ───┤  verify ─► learn ─► │      │                                                      │
- psoperator┤  (fail     (pure,   │      └─reject (human)─► stays down until evidence ≥ 2×      │ MERGED row
- reviews ──┘   closed)  seeded)  └─ model routing ─► pxx inbox/human-review-required          ▼
-                                                     (pxx triage + promote decide)     efficacy: did the
-                                                                                       pre-registered rate fall?
-                                                                                       no ─► adoption_ineffective
+ pxx runs ─┐                    ┌─ PROPOSED ──accept (human)──► dx task spec ─► dx run ─► dx merge (signed)
+ ledger ───┤  verify ─► learn ─►│      │                                                      │ MERGED row
+ psoperator┤  (fail     (pure,  │      └─reject (human)─► stays down until evidence ≥ 2×      ▼
+ reviews ──┘   closed)  seeded) └─ model routing ─► pxx inbox (pxx triage decides)   efficacy: observed
+                                                                                     before/after change,
+                                                                                     not causal; only strong
+                                                                                     evidence of no meaningful
+                                                                                     improvement ─► "review:
+                                                                                     revise or revert?"
 ```
 
 ## Why it lives in dx
@@ -83,7 +87,7 @@ surfaced on.
 | `human_rejection_theme` | One shape of `REDLINE`/`INCOMPLETE`/`ABANDONED`/`ESCALATED` is ≥ 25% of negative rows (decayed weight ≥ 2). Lists tasks where pxx said `COMPLETED` first. | `signature_rate` |
 | `reviewer_lane` | P(availability < 75%) ≥ 0.90. The 75% bar is pxx's own reviewer-calibration bar. | `lane_unavailability` |
 | `operator_failure` | One psoperator denial, stale, target or execution-failure shape recurs (weight ≥ 3). | `signature_rate` |
-| `adoption_ineffective` | An adoption's rate did not fall after its task merged: P(fell) < 0.5 with ≥ 10 observations after. | the adoption's metric |
+| `adoption_ineffective` | Status `no-meaningful-improvement`: ≥ 30 observations on each side of the merge, P ≥ 0.95 that any improvement is below the minimum meaningful effect, and no confounding (below). | the adoption's metric |
 
 **Ranking.** Recommendations are ranked by evidence weight × where the problem
 surfaced. A problem a human catches in the ledger weighs 4. A problem caught by
@@ -113,81 +117,197 @@ a human.
 - This is a guard against an automated caller, not authentication. The
   authority that changes software is still the signed `dx merge`.
 
-**Concurrency.** Every write is compare-and-set against the status the writer
-read.
-- A pass never overwrites a decision made while it ran; it reports the
-  record as left alone.
-- A second decision made from a stale read is refused with nothing recorded.
+**Concurrency (revisions).** Recommendations, adoptions and forward records
+each carry a `revision`. Every change is one transaction (`learn_store.Tx`)
+listing the records it writes, each at the revision it was read. The store
+accepts the transaction only if every one of those is still the stored
+revision, then bumps them; otherwise nothing is written.
+- Status alone was not enough: two `link`s on an ACCEPTED recommendation
+  both saw ACCEPTED. Each now writes the adoption at the revision it read,
+  so the second one is refused.
+- Every command that changes state takes the store's mutation lock, re-reads
+  what it decides on, and commits once.
+- A pass writes back with "skip conflicts": a record decided while the pass
+  ran is left alone and reported.
 
-**Audit.** Every decision is appended to the audit chain before the state
-changes.
+**Audit.** The audit entry is part of the same transaction as the state it
+describes.
 - The JSON store keeps a hash-chained `audit.jsonl`.
 - MSSQL uses an append-only, trigger-guarded table carrying the same chain
   (`EntryJson`, `PrevHash`, `Hash`).
-- The chain is verified before every decision, and a chain that does not
+- The chain is verified before every transaction, and a chain that does not
   verify blocks further decisions.
-- `queue` prints the chain's state first.
+- `queue` prints the chain's state first. Forwarding to pxx is audited too
+  (`forward-intent`, `forward-outcome`, `forward-reconcile`, actor `dx learn`).
 
 **Ordering.** `queue` prints earlier adoptions before new proposals. This
 follows the scrum-master card: the last set of retro actions is checked before
 new ones are added.
 
-## Efficacy statuses
+## Before/after comparison (`dx learn efficacy`)
+
+For each adoption, dx learn splits the metric fixed at proposal time at the
+first `MERGED` row of the implementing task at or after acceptance. It then
+compares the 60 days before with everything after.
+
+**What this shows and what it does not.** It shows how the rate changed
+across the merge. It does not show that the merge caused the change. Other
+things move the same numbers:
+
+- **Regression to the mean.** A proposal is raised *because* a rate looked
+  high, so that rate tends to fall afterwards anyway. "Improvement observed"
+  is therefore biased toward looking better than the change deserves.
+- **Cohort change.** Different tasks, task classes or models before and
+  after the merge are not comparable populations.
+- **Concurrent changes.** A pxx upgrade, a prompt change, another dx task,
+  or a change in the test suite itself.
+- **Another adoption on the same metric** merging inside the window. The two
+  cannot be told apart.
+- **Small samples**, where the prior alone can make equal rates look
+  different.
+
+**What dx learn does about it.** It cannot remove these effects, so it
+refuses verdicts they could explain:
+
+- Every measured row carries a caveat saying it is not a causal estimate.
+- A shift in the model mix or task-class mix across the merge (total
+  variation > 0.30) voids both verdicts: `inconclusive (confounded)`. Only
+  pxx attempts carry these descriptors; for ledger, operator and review
+  metrics the cohort is not characterized, and that is a known gap.
+- Another adoption on the same metric merging within the window also voids
+  both verdicts.
+- The negative verdict, the only one that proposes revising or reverting,
+  requires much more than "did not improve".
 
 | Status | Meaning |
 | --- | --- |
 | `awaiting-task` / `awaiting-merge` | No implementing task linked yet, or the task has no MERGED row at or after acceptance. |
 | `merged-before-adoption` | The linked task merged before the proposal was accepted; it cannot be the change. |
 | `source-not-read` | The metric's source was not read this pass. |
-| `measuring (before a/10, after b/10)` | Fewer than 10 observations on either side of the merge (60-day window before). |
+| `measuring (before a/10, after b/10)` | Fewer than 10 observations on either side of the merge. |
 | `no-baseline-problem` | Nothing was failing before the merge, so there is nothing to credit. |
-| `effective` | P(rate fell) ≥ 0.90 and the raw rate fell. |
-| `ineffective` | The raw rate did not fall. Raised as `adoption_ineffective`. |
-| `inconclusive` | Anything else. |
+| `inconclusive (confounded)` | Cohort shift or an overlapping adoption; see the caveats. |
+| `improvement-observed` | P(rate fell) ≥ 0.90 and the raw rate fell. Observed, not attributed. |
+| `no-meaningful-improvement` | ≥ 30 observations on each side, and P ≥ 0.95 that any improvement is smaller than max(5 points, 25% of the before-rate). Raised as `adoption_ineffective`: a prompt to review whether to revise or revert, never an automatic revert. |
+| `inconclusive` | Everything else, including equal or worse raw rates on weak evidence. |
 
 ## Forwarding to pxx
 
 `dx learn run --forward-pxx` writes `variant_preference` proposals into pxx's
-`inbox/human-review-required/`:
+`inbox/human-review-required/`, in pxx's exact `Proposal` shape (`model` /
+`switch_model`, `basis: correlation`). `pxx improve triage` and `pxx promote`
+then decide as they always have.
 
-- The entry is in pxx's exact `Proposal` shape (`model` / `switch_model`, `basis: correlation`).
-- The write happens under pxx's own `cycle.lock`.
-- The file is opened with `"x"`, so it never overwrites an existing entry.
-- A signature that a human already dispositioned in pxx is never re-raised.
+**Order of operations.** Forwarding runs after the pass's own write, inside
+the same mutation lock every decision takes, so a reject cannot land between
+the check and the write. For each recommendation that is still `PROPOSED`:
 
-`pxx improve triage` and `pxx promote` then decide as they always have.
+1. Commit a forward record in state `INTENT`. The same transaction includes
+   the recommendation at the revision just read, so if anything decided it
+   since, the commit fails and nothing reaches pxx.
+2. Create the pxx entry under pxx's `cycle.lock`, opened with `"x"`: never
+   overwriting, and never re-raising a signature a pxx human already decided.
+3. Commit the outcome: `WRITTEN`, or `NOT_WRITTEN` with the reason.
+   `NOT_WRITTEN` notes starting `retry:` are tried again on later passes.
 
-Three gaps in pxx's own inbox handling, and how dx learn handles each:
+**Interruption.** A crash between steps 1 and 3 leaves `INTENT`. Every
+`dx learn run`, and every reject or retire, first reconciles each forward
+record against what pxx's inbox actually holds:
 
-- **Triage does not lock.** `pxx improve triage` does not take `cycle.lock`, so
-  a human can disposition the signature while dx is writing. dx re-checks
-  after writing and withdraws its entry if that happened. A very narrow race
-  remains, which only pxx can close by taking the lock in triage.
-- **Overwrites.** pxx's own cycle may overwrite a forwarded entry with the
-  same signature. That is the same proposed change, worded by pxx.
-- **Rejecting in dx.** Rejecting in dx learn does not touch pxx's inbox; it
-  prints the `pxx improve triage reject <slug>` to run.
+- Our entry is there, or a pxx human has already decided it → `WRITTEN`.
+- Nothing is there → `INTERRUPTED`, forwarded again if still `PROPOSED`.
 
-Known coarseness: pxx keys inbox entries by `target:operation`. One human
-rejection of `model:switch_model` in pxx therefore blocks every later
-model-switch forward, whichever model it names. dx learn keeps such proposals
-in its own queue and says why it did not forward them.
+The pxx filename is deterministic and created with `"x"`, so a retry cannot
+produce a second entry. Entries are recognized as ours by a fingerprint over
+the proposal fields that pxx's triage never rewrites.
 
-## Storage
+**Rejecting or retiring in dx.** Inside the same lock, dx withdraws its entry
+from pxx's inbox if that entry is still pending and still ours. A foreign or
+already-decided entry is never touched. If `cycle.lock` is busy, the
+withdrawal waits for the next pass.
 
-The default store is a JSON directory (`DX_LEARN_STORE`): atomic writes,
-`fcntl` locking, and a refusal to overwrite a file it cannot parse.
+**pxx's triage takes no lock.** `pxx improve triage` reads the pending entry,
+writes the decided copy, then unlinks the pending file, all without
+`cycle.lock`. dx cannot serialize with it, so it does not pretend to:
 
-To use SQL Server instead:
+- dx never overwrites, never removes anything but its own pending entry, and
+  re-inspects after every change.
+- When a dx human and a pxx human decide differently, the forward record
+  gets a `divergence`. Examples: dx `REJECTED` while pxx `qualified` (possible
+  even after a withdrawal, if triage had already read the entry), or dx
+  `ACCEPTED` while pxx `rejected`. The divergence is audited and printed by
+  `run`, `reject`/`retire` and `queue` until a human resolves it in one tool
+  or the other.
+- dx never resolves a divergence itself.
+- The race can only be closed in pxx, by having triage take `cycle.lock`.
 
-1. Set `DX_LEARN_MSSQL` to an ODBC connection string.
+**pxx's coarse keys.** pxx keys inbox entries by `target:operation`. One pxx
+human rejection of `model:switch_model` therefore blocks later model-switch
+forwards, whichever model they name. dx learn keeps such proposals in its own
+queue and records why.
+
+## Storage and recovery
+
+**JSON store (default, `DX_LEARN_STORE`).** All state lives in one directory
+under an `fcntl` lock: `recommendations.json`, `adoptions.json`,
+`forwards.json`, `audit.jsonl` and `passes.jsonl`. A transaction is written in
+four steps:
+
+1. A checksummed `journal.json`, durably: fsync, atomic rename, fsync of the
+   directory.
+2. The audit line, then the adoption, forward and recommendation files.
+3. Each of those writes is durable in the same way.
+4. The journal is removed last.
+
+Every read and write first replays a pending journal. Replay is idempotent:
+
+- The audit line is recognized by its hash. A torn half-line is trimmed only
+  if it is a prefix of the journal's own line.
+- A record already at its new revision is skipped.
+
+So a crash at any write boundary yields the decision exactly once. A crash
+before the journal is renamed into place yields no decision at all. The tests
+kill the store at every boundary, including during recovery itself.
+
+**When replay is refused.** If replay cannot be proven safe, the store raises
+`RecoveryError` on *every* operation. Cases:
+
+- The audit chain moved past the journal's anchor.
+- A record is at an unexpected revision.
+- A torn audit line is not the journal's.
+- The journal's checksum does not match.
+
+The error names the store, the journal, the transaction and the reason.
+`dx learn recover` retries the replay or repeats the precise error. Resolving
+a refused journal is a human's job: compare it with the named file, restore
+from backup or finish the change by hand, then remove the journal.
+
+**SQL Server (`DX_LEARN_MSSQL`) — UNQUALIFIED.** This backend has never run
+against a live SQL Server. The build environment's network policy denied both
+`packages.microsoft.com` (ODBC driver) and `mcr.microsoft.com` (server image).
+Its logic has been exercised against a revision-aware fake:
+
+- revision checks;
+- `UPDATE … WHERE Revision = @read` with the `@@ROWCOUNT` guard;
+- rollback;
+- the audit chain;
+- `sp_getapplock` for the mutation lock.
+
+The fake proves the logic, not the SQL dialect, driver behavior, locking
+semantics or the schema DDL. dx learn refuses to use this backend unless
+`DX_LEARN_MSSQL_UNQUALIFIED=accept` is set, and warns on every command when
+it is.
+
+To qualify it:
+
+1. On a dev instance, apply `src/dx/learn_mssql.sql` (idempotent).
 2. Run `pip install dx-orchestrator[mssql]`.
-3. Apply `src/dx/learn_mssql.sql` (idempotent).
+3. Run the store tests' scenarios against the live server (concurrent links,
+   stale decisions, rollback, chain verification).
 
-The SQL Server backend adds per-pass fact snapshots (`dx_learn.Attempt`,
-`dx_learn.LedgerEvent`) and a `vYieldLatest` view for T-SQL reporting. The
-MSSQL code path is covered by shape tests only (parameter counts, transaction
-order, rollback). Run it against a real instance before relying on it.
+Once qualified, the backend also provides per-pass fact snapshots
+(`dx_learn.Attempt`, `dx_learn.LedgerEvent`) and a `vYieldLatest` view for
+T-SQL reporting.
 
 ## Instrumentation gaps found while building this
 

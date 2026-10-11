@@ -18,7 +18,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **Detectors:** recurring failure signatures, model preference per task
     class, gate regressions, human-rejection themes (including tasks pxx
     passed and a human then refused), unreliable review lanes, psoperator
-    failure patterns, and adoptions that did not work.
+    failure patterns, and adoptions with strong evidence of no meaningful
+    observed improvement.
   - **Metrics:** every proposal carries the bad-event rate it will be judged
     by, fixed when it is proposed. `dx learn efficacy` measures that rate from
     the implementing task's MERGED row.
@@ -42,6 +43,28 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     - The decision audit was never verified.
   - **pxx contract:** a test runs real `pxx.loop.run_loop` output through the
     reader, so the pxx layout is checked rather than assumed.
+  - **Second review round:**
+    - **Revisions:** every write is one transaction checked against the
+      revision of each record it touches (recommendations, adoptions, forward
+      records). Two concurrent `link`s can no longer both succeed.
+    - **Recoverable JSON transactions:** a durable, checksummed journal is
+      replayed idempotently. The tests crash at every write boundary,
+      including during recovery. If recovery cannot be proven safe, the store
+      refuses every operation with a precise `RecoveryError`; `dx learn
+      recover` completes or explains.
+    - **pxx forwarding:** runs only inside the mutation lock, after the pass's
+      write. A durable `INTENT` is committed against the recommendation's
+      revision before any pxx write, and the outcome is recorded after.
+      Interrupted forwards are reconciled from pxx's inbox without
+      duplicates. Reject/retire withdraws dx's own still-pending entry.
+      Disagreement with pxx's unlocked triage is recorded as a divergence,
+      never resolved silently.
+    - **Efficacy:** reports observed change, not effect.
+      `no-meaningful-improvement` needs ≥ 30 observations a side and strong
+      evidence. Cohort shifts and overlapping adoptions void verdicts.
+      `docs/learn.md` documents the confounding limits.
+    - **SQL Server:** explicitly UNQUALIFIED (no live server was reachable),
+      and refused unless `DX_LEARN_MSSQL_UNQUALIFIED=accept`.
   - **Limits:** never writes to the ledger. No proposal kind relaxes a gate.
   - **Docs:** see `docs/learn.md`.
 

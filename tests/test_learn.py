@@ -1,27 +1,23 @@
-"""dx learn — hermetic tests over synthetic pxx runs, ledgers, audit logs and manifests.
+"""dx learn — hermetic tests: sources, detectors, guardrails, queue, CLI.
 
-Per CONTRIBUTING: a gate without a test is a claim. dx learn's gates are the
-fail-closed source readers, the human-only decisions, and the rule that a
-rejected proposal stays down. Each has a test for the way it could wrongly
-pass, not only the way it correctly refuses.
+Per CONTRIBUTING: a gate without a test is a claim. Store transactions and
+crash recovery are in test_learn_store.py, pxx forwarding in
+test_learn_forward.py, efficacy claims in test_learn_efficacy.py.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from dx import cmd_learn
-from dx.cli import build_parser
-from dx.learn_bridge import FORWARDABLE_KINDS, ForwardError, forward_to_pxx, render_spec
-from dx.learn_engine import LearnConfig, Learner, observations, reconcile
-from dx.learn_model import REC_KINDS, Adoption, Corpus
+from dx.learn_bridge import FORWARDABLE_KINDS, render_spec
+from dx.learn_engine import LearnConfig, Learner, reconcile
+from dx.learn_model import REC_KINDS, Corpus
 from dx.learn_signature import fingerprint, normalize
 from dx.learn_sources import (
     LearnSourceError,
@@ -31,126 +27,19 @@ from dx.learn_sources import (
     read_pxx_runs,
     read_review_manifests,
 )
-from dx.learn_store import JsonStore, MssqlStore, StoreError
-
-NOW = datetime(2026, 10, 1, tzinfo=UTC)
-
-
-def ago(days: float) -> datetime:
-    return NOW - timedelta(days=days)
-
-
-# --------------------------------------------------------------------------- fixtures: pxx
-class PxxState:
-    """Writes run directories in the shape pxx actually produces (checked against
-    real `pxx.loop.run_loop` output in TestPxxContract). By default a run is a
-    `pxx loop` — what `dx run` drives: a `*-loop-*` directory holding the loop's
-    true outcome and gates (no manifest), plus one directory per round whose own
-    outcome may say COMPLETED even when the loop failed."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        (root / "runs").mkdir(parents=True, exist_ok=True)
-        self.n = 0
-
-    def _write(self, d: Path, files: dict[str, Any], events: list[dict[str, Any]]) -> None:
-        d.mkdir()
-        for name, body in files.items():
-            (d / name).write_text(json.dumps(body))
-        with (d / "events.jsonl").open("w") as fh:
-            for e in events:
-                fh.write(json.dumps({"session_id": "s", "seq": 1, "ts": 0, **e}) + "\n")
-
-    def run(self, *, when: datetime, project: str = "svc-a", task: str | None = None,
-            model: str = "glm", code: str = "COMPLETED", summary: str = "",
-            gates: list[dict[str, Any]] | None = None, contributing: list[str] | None = None,
-            loop: bool = True, round_code: str = "COMPLETED") -> str:
-        self.n += 1
-        ts = when.timestamp()
-        task_id = task or f"task-{self.n}"
-        round_id = f"20261001T000000Z-{self.n:08x}"
-        start = {"kind": "session_start", "data": {
-            "run_id": round_id, "provider": "local", "model": model, "project": project,
-            "task_id": task_id, "agent_version_id": "a" * 16, "backend": "native"}}
-        gate_events = [{"kind": "gate_decision", "data": g} for g in gates or []]
-        session_files = {
-            "outcome.json": {"run_id": round_id, "code": round_code if loop else code,
-                             "summary": "" if loop else summary, "ts": ts,
-                             "contributing_codes": [] if loop else contributing or [],
-                             "agent_version_id": "a" * 16},
-            "task.json": {"run_id": round_id, "task_id": task_id, "project": project, "ts": ts},
-            "manifest.json": {"provider": "local", "model": model}}
-        if not loop:
-            self._write(self.root / "runs" / round_id, session_files, [start, *gate_events])
-            return round_id
-        loop_id = f"20261001T000000Z-loop-{self.n:08x}"
-        self._write(self.root / "runs" / round_id, session_files, [start])
-        self._write(self.root / "runs" / loop_id, {
-            "task.json": {"mode": "loop", "run_id": loop_id, "task_preview": "t", "root": "/w"},
-            "outcome.json": {"mode": "loop", "run_id": loop_id, "code": code, "summary": summary,
-                             "ts": ts, "contributing_codes": contributing or []}},
-            [{"kind": "run_created", "data": {"project": project}}, start, *gate_events])
-        return loop_id
-
-
-@pytest.fixture
-def pxx(tmp_path: Path) -> PxxState:
-    return PxxState(tmp_path / "pxx-state")
-
-
-# --------------------------------------------------------------------------- fixtures: ledger
-_VERIFIER = '''import hashlib, json, sys
-prev = "0" * 64
-n = 0
-for i, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
-    row = json.loads(line)
-    if row.get("prev_hash") != prev:
-        print(f"STOP: chain broken at line {i}")
-        sys.exit(1)
-    prev = hashlib.sha256(json.dumps(row, sort_keys=True, separators=(",", ":"),
-                                     ensure_ascii=True).encode()).hexdigest()
-    n += 1
-print(f"OK: {n} row(s) verified. Ledger head hash: {prev}")
-'''
-
-
-def _canon(row: dict[str, Any]) -> str:
-    return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def write_ledger(repo: Path, rows: list[dict[str, Any]]) -> Path:
-    (repo / "tools").mkdir(parents=True, exist_ok=True)
-    (repo / "tools" / "verify_chain.py").write_text(_VERIFIER)
-    prev, out = "0" * 64, []
-    base = {"author_human": "Ada Author", "author_seat": "S-Dev", "reviewer_seat": None,
-            "sha": None, "evidence": ""}
-    for r in [{"action": "GENESIS", "task_id": "GENESIS", "ts": "2026-01-01T00:00:00Z"}, *rows]:
-        full = {**base, **r, "prev_hash": prev}
-        out.append(_canon(full))
-        prev = hashlib.sha256(_canon(full).encode()).hexdigest()
-    (repo / "ledger.jsonl").write_text("".join(line + "\n" for line in out))
-    return repo
-
-
-def row(task: str, action: str, when: datetime, evidence: str = "") -> dict[str, Any]:
-    return {"task_id": task, "action": action, "evidence": evidence,
-            "ts": when.strftime("%Y-%m-%dT%H:%M:%SZ")}
-
-
-# --------------------------------------------------------------------------- fixtures: psoperator
-def write_audit(path: Path, decisions: list[tuple[str, str, str]]) -> Path:
-    prev = "0" * 64
-    lines = []
-    for i, (decision, kind, reason) in enumerate(decisions, 1):
-        e: dict[str, Any] = {"seq": i, "ts": ago(5).timestamp() + i, "prev_hash": prev,
-                             "frame_id": i, "frame_hash": "f" * 64, "action": {"type": kind},
-                             "tier": 1, "decision": decision, "approver": "human:cli",
-                             "reason": reason}
-        e["hash"] = hashlib.sha256(json.dumps(e, sort_keys=True).encode()).hexdigest()
-        prev = e["hash"]
-        lines.append(json.dumps(e, sort_keys=True))
-    path.write_text("\n".join(lines) + "\n")
-    return path
+from dx.learn_store import JsonStore
+from learn_helpers import (
+    NOW,
+    _canon,
+    _corpus,
+    _dx,
+    _learn,
+    ago,
+    lint_world,
+    row,
+    write_audit,
+    write_ledger,
+)
 
 
 # --------------------------------------------------------------------------- signatures
@@ -274,17 +163,6 @@ class TestOperatorAndReview:
         c = Corpus()
         read_review_manifests(tmp_path / "review", c)
         assert len(c.lanes) == 1 and len(c.quarantined) == 1
-
-
-# --------------------------------------------------------------------------- detectors
-def _learn(c: Corpus, adoptions: list[Adoption] | None = None):
-    return Learner(LearnConfig(mc_draws=4000), NOW).learn(c, adoptions or [])
-
-
-def _corpus(pxx: PxxState) -> Corpus:
-    c = Corpus()
-    read_pxx_runs(pxx.root, c)
-    return c
 
 
 class TestDetectors:
@@ -420,238 +298,6 @@ class TestQueue:
         rec.status = "ACCEPTED"
         assert reconcile([], {rec.rec_key: rec}, cfg, NOW) == []
         assert reconcile([rec], {rec.rec_key: rec}, cfg, NOW) == []
-
-
-class TestEfficacy:
-    def _setup(self, tmp_path, pxx, *, fixed: bool):
-        merged = ago(30)
-        for i in range(40):
-            when = ago(31 + i) if i < 20 else ago(29 - (i - 20))
-            bad = i < 20 or not fixed
-            pxx.run(when=when, task=f"t{i % 5}", code="LINT_BLOCKED" if bad else "COMPLETED",
-                    summary="E999 broken")
-        c = _corpus(pxx)
-        read_ledger(write_ledger(tmp_path / "ledger", [row("T-FIX", "MERGED", merged)]), c)
-        sig = next(iter(c.signatures))
-        ad = Adoption(rec_key="k" * 24, metric={"name": "signature_rate", "key": sig, "source": "pxx"},
-                      accepted_by="Chris", accepted_at=ago(40), task_id="T-FIX")
-        return c, ad
-
-    def test_effective_when_rate_falls_after_merge(self, tmp_path, pxx):
-        c, ad = self._setup(tmp_path, pxx, fixed=True)
-        row_ = Learner(LearnConfig(mc_draws=4000), NOW).efficacy(c, [ad])[0]
-        assert row_["status"] == "effective"
-
-    def test_ineffective_comes_back_as_a_proposal(self, tmp_path, pxx):
-        c, ad = self._setup(tmp_path, pxx, fixed=False)
-        recs = Learner(LearnConfig(mc_draws=4000), NOW).learn(c, [ad])
-        kinds = [r.kind for r in recs]
-        assert "adoption_ineffective" in kinds
-        # and the adopted metric is not re-proposed as if new
-        assert not [r for r in recs if r.kind == "recurring_failure"
-                    and r.metric == ad.metric]
-
-    def test_not_measured_before_the_change_ships(self, pxx):
-        pxx.run(when=ago(1), code="LINT_BLOCKED", summary="x")
-        c = _corpus(pxx)
-        ad = Adoption(rec_key="k" * 24, metric={"name": "signature_rate", "key": "x", "source": "pxx"},
-                      accepted_by="Chris", accepted_at=ago(5))
-        assert Learner(LearnConfig(), NOW).efficacy(c, [ad])[0]["status"] == "awaiting-task"
-        ad.task_id = "T-NOT-MERGED"
-        assert Learner(LearnConfig(), NOW).efficacy(c, [ad])[0]["status"] == "awaiting-merge"
-
-    def test_metric_definitions_are_shared(self, pxx):
-        pxx.run(when=ago(1), code="LINT_BLOCKED", summary="x", gates=[{"gate": "lint", "allowed": False}])
-        c = _corpus(pxx)
-        assert observations({"name": "gate_fail_rate", "key": "lint", "source": "pxx"}, c)[0][1] is True
-        with pytest.raises(ValueError):
-            observations({"name": "made-up", "key": "x", "source": "pxx"}, c)
-
-
-# --------------------------------------------------------------------------- pxx inbox bridge
-class TestForward:
-    def _variant(self, pxx):
-        for i in range(20):
-            pxx.run(when=ago(i % 10 + 1), model="qwen",
-                    code="COMPLETED" if i % 10 < 3 else "NO_TEST_PROGRESS")
-            pxx.run(when=ago(i % 10 + 1), model="glm",
-                    code="COMPLETED" if i % 10 < 9 else "NO_TEST_PROGRESS")
-        return next(r for r in _learn(_corpus(pxx)) if r.kind == "variant_preference")
-
-    def test_forwarded_entry_is_readable_by_pxx_triage(self, pxx):
-        from pxx.improve.triage import pending
-        rec = self._variant(pxx)
-        slug, outcome = forward_to_pxx(rec, pxx.root)
-        assert outcome.startswith("forwarded")
-        [entry] = pending(pxx.root)
-        assert entry["slug"] == slug and entry["target"] == "model"
-        assert entry["operation"] == "switch_model" and "error" not in entry
-        assert entry["confidence"] <= 0.9 and entry["basis"] == "correlation"
-
-    def test_never_clobbers_and_respects_human_disposition(self, pxx):
-        from pxx.improve.triage import dispose
-        rec = self._variant(pxx)
-        slug, _ = forward_to_pxx(rec, pxx.root)
-        assert "already pending" in forward_to_pxx(rec, pxx.root)[1]
-        dispose(pxx.root, slug, qualify=False, note="not now", by="Chris")
-        assert "already dispositioned" in forward_to_pxx(rec, pxx.root)[1]
-
-    def test_non_pxx_kinds_are_not_forwarded(self, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        rec = _learn(_corpus(pxx))[0]
-        with pytest.raises(ForwardError):
-            forward_to_pxx(rec, pxx.root)
-
-
-# --------------------------------------------------------------------------- stores
-class TestJsonStore:
-    def test_decision_audit_chain_detects_edits(self, tmp_path, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        store = JsonStore(tmp_path / "s")
-        rec = _learn(_corpus(pxx))[0]
-        store.save_recs([rec], NOW, {})
-        for action in ("accept", "link"):
-            store.decide(rec, None, actor="Chris", action=action, detail={}, now=NOW,
-                         expected_status="PROPOSED")
-        assert store.verify_audit() == 2
-        audit = tmp_path / "s" / "audit.jsonl"
-        audit.write_text(audit.read_text().replace("Chris", "Mallory", 1))
-        with pytest.raises(StoreError):
-            store.verify_audit()
-
-    def test_decision_audit_chain_detects_a_deleted_row(self, tmp_path, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        store = JsonStore(tmp_path / "s")
-        rec = _learn(_corpus(pxx))[0]
-        store.save_recs([rec], NOW, {})
-        for action in ("accept", "link", "retire"):
-            store.decide(rec, None, actor="Chris", action=action, detail={}, now=NOW,
-                         expected_status="PROPOSED")
-        audit = tmp_path / "s" / "audit.jsonl"
-        lines = audit.read_text().splitlines()
-        audit.write_text("\n".join(lines[1:]) + "\n")   # every remaining row is self-consistent
-        with pytest.raises(StoreError, match="prev_hash"):
-            store.verify_audit()
-
-    def test_unreadable_store_is_never_overwritten(self, tmp_path):
-        (tmp_path / "s").mkdir()
-        (tmp_path / "s" / "recommendations.json").write_text("{oops")
-        with pytest.raises(StoreError, match="will not overwrite"):
-            JsonStore(tmp_path / "s").save_recs([], NOW, {})
-
-
-class _FakeCursor:
-    """Records statements; answers the three reads MssqlStore makes."""
-
-    def __init__(self, conn: _FakeConn) -> None:
-        self.conn, self.fast_executemany, self.last = conn, False, ""
-
-    def execute(self, sql: str, params: list[Any] | None = None) -> None:
-        assert sql.count("?") == len(params or []), f"placeholder/param mismatch in: {sql[:60]}"
-        if self.conn.fail_on and self.conn.fail_on in sql:
-            raise RuntimeError("boom")
-        self.last = sql
-        words = sql.split()
-        self.conn.log.append(("execute", words[2] if words[0] in ("SET", "SELECT") else words[1]))
-        self.conn.log.append(("sql", " ".join(words)))
-        if "INSERT dx_learn.DecisionAudit" in sql:
-            self.conn.audit.append((len(self.conn.audit) + 1, params[4], params[5], params[6]))
-
-    def executemany(self, sql: str, rows: list[list[Any]]) -> None:
-        for r in rows:
-            assert sql.count("?") == len(r)
-        self.conn.log.append(("executemany", sql.split()[1]))
-
-    def fetchone(self) -> Any:
-        if "SELECT Status" in self.last:
-            return None if self.conn.status is None else [self.conn.status]
-        if "SELECT TOP (1) Hash" in self.last:
-            return [self.conn.audit[-1][3]] if self.conn.audit else None
-        return [7]
-
-    def fetchall(self) -> list[Any]:
-        if "FROM dx_learn.DecisionAudit" in self.last:
-            return list(self.conn.audit)
-        return []
-
-    def close(self) -> None:
-        pass
-
-
-class _FakeConn:
-    def __init__(self, fail_on: str | None = None) -> None:
-        self.log: list[tuple[str, Any]] = []
-        self.fail_on = fail_on
-        self.status: str | None = None
-        self.audit: list[tuple[int, str, str, str]] = []
-
-    def cursor(self) -> _FakeCursor:
-        return _FakeCursor(self)
-
-    def commit(self) -> None:
-        self.log.append(("commit", None))
-
-    def rollback(self) -> None:
-        self.log.append(("rollback", None))
-
-
-class TestMssqlStoreShape:
-    """No SQL Server in CI: these pin parameter counts and transaction shape only."""
-
-    def _store(self, conn: _FakeConn) -> MssqlStore:
-        return MssqlStore("DSN=x", connect=lambda *a, **k: conn)
-
-    def test_decide_audits_first_in_one_transaction(self, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        rec = _learn(_corpus(pxx))[0]
-        conn = _FakeConn()
-        ad = Adoption(rec.rec_key, dict(rec.metric), "Chris", NOW)
-        conn.status = "PROPOSED"
-        self._store(conn).decide(rec, ad, actor="Chris", action="accept", detail={}, now=NOW,
-                                 expected_status="PROPOSED")
-        sql = [x for kind, x in conn.log if kind == "sql"]
-        order = [next(i for i, q in enumerate(sql) if marker in q) for marker in (
-            "SELECT AuditId",                    # chain verified first
-            "SELECT Status",                     # status re-read under lock (compare-and-set)
-            "SELECT TOP (1) Hash",               # chain tail, locked
-            "INSERT dx_learn.DecisionAudit",     # audit row
-            "UPDATE dx_learn.Recommendation")]   # then state
-        assert order == sorted(order)
-        assert conn.log[-1] == ("commit", None)
-        assert self._store(conn).verify_audit() == 1   # the row it wrote chains from genesis
-
-    def test_failure_rolls_back(self, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        rec = _learn(_corpus(pxx))[0]
-        conn = _FakeConn(fail_on="dx_learn.Recommendation WITH (UPDLOCK, SERIALIZABLE)")
-        conn.status = "PROPOSED"
-        with pytest.raises(RuntimeError):
-            self._store(conn).decide(rec, None, actor="Chris", action="accept", detail={}, now=NOW,
-                                     expected_status="PROPOSED")
-        assert conn.log[-1] == ("rollback", None)
-
-    def test_record_pass_writes_facts(self, pxx):
-        pxx.run(when=ago(1))
-        conn = _FakeConn()
-        self._store(conn).record_pass({"x": 1}, _corpus(pxx), NOW)
-        assert ("executemany", "dx_learn.Attempt") in conn.log
-
-    def test_schema_ships_with_the_package(self):
-        import dx
-        sql = (Path(dx.__file__).parent / "learn_mssql.sql").read_text()
-        assert "INSTEAD OF UPDATE, DELETE" in sql and "dx_learn.Recommendation" in sql
-
-
-# --------------------------------------------------------------------------- CLI end to end
-def _dx(monkeypatch, *argv: str) -> None:
-    monkeypatch.setattr(sys, "argv", ["dx", *argv])
-    args = build_parser().parse_args(list(argv))
-    args.func(args)
 
 
 class TestCli:
@@ -809,45 +455,6 @@ class TestPxxContract:
         assert [a.code for a in c.attempts] == ["ROUND_CAP"]
 
 
-class TestConcurrentDecisions:
-    """Finding 1: a learn pass running while a human decides must not undo the decision."""
-
-    def test_pass_does_not_overwrite_a_decision_made_meanwhile(self, tmp_path, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        store, cfg = JsonStore(tmp_path / "s"), LearnConfig(mc_draws=2000)
-        store.save_recs(_learn(_corpus(pxx)), NOW, {})
-        # the pass reads...
-        existing = store.load_recs()
-        expected = {k: r.status for k, r in existing.items()}
-        changed = reconcile(_learn(_corpus(pxx)), existing, cfg, NOW)
-        # ...a human accepts meanwhile...
-        key = changed[0].rec_key
-        rec = store.load_recs()[key]
-        rec.status, rec.decided_by, rec.decided_at = "ACCEPTED", "Chris", NOW
-        store.decide(rec, None, actor="Chris", action="accept", detail={}, now=NOW,
-                     expected_status="PROPOSED")
-        # ...and the pass's write-back skips it
-        assert key in store.save_recs(changed, NOW, expected)
-        assert store.load_recs()[key].status == "ACCEPTED"
-
-    def test_second_decision_on_the_same_read_is_refused(self, tmp_path, pxx):
-        from dx.learn_store import StaleDecision
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        store = JsonStore(tmp_path / "s")
-        rec = _learn(_corpus(pxx))[0]
-        store.save_recs([rec], NOW, {})
-        rec.status = "ACCEPTED"
-        store.decide(rec, None, actor="Chris", action="accept", detail={}, now=NOW,
-                     expected_status="PROPOSED")
-        rec.status = "REJECTED"
-        with pytest.raises(StaleDecision):
-            store.decide(rec, None, actor="Pat", action="reject", detail={}, now=NOW,
-                         expected_status="PROPOSED")
-        assert store.verify_audit() == 1
-
-
 class TestWhoDecides:
     """Finding 3."""
 
@@ -862,63 +469,15 @@ class TestWhoDecides:
     def test_people_are_accepted(self, who):
         assert cmd_learn._human(who) == who.strip()
 
-    def test_os_account_is_recorded_beside_the_name(self, tmp_path, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        store = JsonStore(tmp_path / "s")
-        rec = _learn(_corpus(pxx))[0]
-        store.save_recs([rec], NOW, {})
-        cmd_learn._decide(store, rec, None, by="Chris", action="reject", detail={}, now=NOW,
-                          expected="PROPOSED")
-        entry = json.loads((tmp_path / "s" / "audit.jsonl").read_text())
+    def test_os_account_is_recorded_beside_the_name(self, tmp_path, pxx, monkeypatch, capsys):
+        lint_world(pxx)
+        monkeypatch.setenv("DX_LEARN_PXX_STATE", str(pxx.root))
+        _dx(monkeypatch, "learn", "run", "--no-ledger", "--json", "--now", NOW.isoformat())
+        key = json.loads(capsys.readouterr().out)["proposed"][0]
+        _dx(monkeypatch, "learn", "reject", key, "--by", "Chris", "--note", "not now")
+        store = Path(cmd_learn.os.environ["DX_LEARN_STORE"])
+        entry = json.loads((store / "audit.jsonl").read_text())
         assert entry["detail"]["by"] == "Chris" and entry["detail"]["os_user"]
-
-
-class TestEfficacyIsHonest:
-    """Findings 4, 5, 6."""
-
-    def _merged(self, tmp_path, c: Corpus, when: datetime) -> None:
-        read_ledger(write_ledger(tmp_path / "ledger", [row("T-FIX", "MERGED", when)]), c)
-
-    def test_unread_source_is_never_measured_elsewhere(self, tmp_path, pxx):
-        pxx.run(when=ago(1))
-        c = _corpus(pxx)
-        self._merged(tmp_path, c, ago(5))
-        ad = Adoption("k" * 24, {"name": "signature_rate", "key": "s", "source": "operator"},
-                      "Chris", ago(10), task_id="T-FIX")
-        assert Learner(LearnConfig(), NOW).efficacy(c, [ad])[0]["status"] == "source-not-read"
-
-    def test_zero_versus_zero_is_not_a_verdict(self, tmp_path, pxx):
-        for i in range(60):
-            pxx.run(when=ago(31 + i * 0.4))
-        for i in range(10):
-            pxx.run(when=ago(1 + i))
-        c = _corpus(pxx)
-        self._merged(tmp_path, c, ago(30))
-        ad = Adoption("k" * 24, {"name": "class_failure_rate", "key": "svc-a", "source": "pxx"},
-                      "Chris", ago(40), task_id="T-FIX")
-        learner = Learner(LearnConfig(mc_draws=4000), NOW)
-        assert learner.efficacy(c, [ad])[0]["status"] == "no-baseline-problem"
-        assert not [r for r in learner.learn(c, [ad]) if r.kind == "adoption_ineffective"]
-
-    def test_tiny_baseline_is_still_measuring(self, tmp_path, pxx):
-        for i in range(3):
-            pxx.run(when=ago(31 + i), code="ROUND_CAP")
-        for i in range(40):
-            pxx.run(when=ago(1 + i * 0.5))
-        c = _corpus(pxx)
-        self._merged(tmp_path, c, ago(30))
-        ad = Adoption("k" * 24, {"name": "class_failure_rate", "key": "svc-a", "source": "pxx"},
-                      "Chris", ago(40), task_id="T-FIX")
-        assert Learner(LearnConfig(), NOW).efficacy(c, [ad])[0]["status"].startswith("measuring")
-
-    def test_merge_before_adoption_does_not_count(self, tmp_path, pxx):
-        pxx.run(when=ago(1))
-        c = _corpus(pxx)
-        self._merged(tmp_path, c, ago(40))
-        ad = Adoption("k" * 24, {"name": "class_failure_rate", "key": "svc-a", "source": "pxx"},
-                      "Chris", ago(1), task_id="T-FIX")
-        assert Learner(LearnConfig(), NOW).efficacy(c, [ad])[0]["status"] == "merged-before-adoption"
 
 
 class TestNoDraftLoosensAControl:
@@ -1045,46 +604,3 @@ class TestMalformedInputsQuarantine:
         assert c.attempts == [] and len(c.quarantined) == 1
 
 
-class TestAuditAndPxxRaces:
-    """Finding 12."""
-
-    def test_tampered_audit_blocks_further_decisions(self, tmp_path, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        store = JsonStore(tmp_path / "s")
-        recs = _learn(_corpus(pxx))
-        store.save_recs(recs, NOW, {})
-        store.decide(recs[0], None, actor="Chris", action="reject", detail={}, now=NOW,
-                     expected_status="PROPOSED")
-        audit = tmp_path / "s" / "audit.jsonl"
-        audit.write_text(audit.read_text().replace("Chris", "Mallory"))
-        with pytest.raises(StoreError):
-            store.decide(recs[0], None, actor="Chris", action="note", detail={}, now=NOW,
-                         expected_status="PROPOSED")
-
-    def test_mssql_audit_chain_detects_an_edit(self, pxx):
-        for i, t in enumerate(["a", "b", "c", "d"]):
-            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999")
-        rec = _learn(_corpus(pxx))[0]
-        conn = _FakeConn()
-        conn.status = "PROPOSED"
-        store = MssqlStore("DSN=x", connect=lambda *a, **k: conn)
-        store.decide(rec, None, actor="Chris", action="reject", detail={}, now=NOW,
-                     expected_status="PROPOSED")
-        aid, body, prev, digest = conn.audit[0]
-        conn.audit[0] = (aid, body.replace("Chris", "Mallory"), prev, digest)
-        with pytest.raises(StoreError, match="content hash"):
-            store.verify_audit()
-
-    def test_forward_withdraws_if_a_human_decided_meanwhile(self, pxx, monkeypatch):
-        import pxx.improve.cycle as cycle
-        for i in range(20):
-            pxx.run(when=ago(i % 10 + 1), model="qwen",
-                    code="COMPLETED" if i % 10 < 3 else "NO_TEST_PROGRESS")
-            pxx.run(when=ago(i % 10 + 1), model="glm")
-        rec = next(r for r in _learn(_corpus(pxx)) if r.kind == "variant_preference")
-        answers = iter([None, "rejected"])        # undecided at the check, decided after the write
-        monkeypatch.setattr(cycle, "human_disposition", lambda *_a: next(answers))
-        slug, outcome = forward_to_pxx(rec, pxx.root)
-        assert outcome.startswith("withdrawn")
-        assert not (pxx.root / "inbox" / "human-review-required" / f"{slug}.json").exists()

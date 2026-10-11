@@ -64,3 +64,20 @@ def prob_greater(x: BetaPost, y: BetaPost, draws: int = 20000, seed: int = 0) ->
     wins = sum(rng.betavariate(x.alpha, x.beta) > rng.betavariate(y.alpha, y.beta)
                for _ in range(draws))
     return wins / draws
+
+
+def prob_diff_below(x: BetaPost, y: BetaPost, delta: float, draws: int = 20000,
+                    seed: int = 0) -> float:
+    """P(rate_x - rate_y < delta) under independent Beta posteriors."""
+    rng = random.Random(seed)
+    hits = sum(rng.betavariate(x.alpha, x.beta) - rng.betavariate(y.alpha, y.beta) < delta
+               for _ in range(draws))
+    return hits / draws
+
+
+def total_variation(a: dict[str, int], b: dict[str, int]) -> float:
+    """Total-variation distance between two count distributions (0 = same mix, 1 = disjoint)."""
+    na, nb = sum(a.values()), sum(b.values())
+    if not na or not nb:
+        return 0.0
+    return 0.5 * sum(abs(a.get(k, 0) / na - b.get(k, 0) / nb) for k in set(a) | set(b))
