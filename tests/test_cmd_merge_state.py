@@ -173,36 +173,60 @@ class TestRefusalsWriteNothing:
         assert "not a commit in" in capsys.readouterr().err
 
 
-class TestTheGreenPath:
-    def test_a_candidate_already_on_the_branch_is_recorded_as_such(
-        self, gate, tmp_path,
-    ):
-        """In the pilot pxx commits the candidate onto main itself, so the gate's
-        `git merge --no-ff` has nothing to do. The MERGED row must say that --
-        not "merged at <sha>" over a merge that never happened (T-0060)."""
-        repo = tmp_path / "work"
-        repo.mkdir()
-        _git(repo, "init", "-q", "-b", "main")
-        (repo / "a").write_text("a\n")
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "base")
-        (repo / "b").write_text("b\n")
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-qm", "the work, committed on main by the run")
-        candidate = _git(repo, "rev-parse", "HEAD")
+def _inline_candidate(tmp_path):
+    """The pre-0.23.0 shape: pxx committed the candidate onto main itself."""
+    repo = tmp_path / "work"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a").write_text("a\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    (repo / "b").write_text("b\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "the work, committed on main by the run")
+    return repo, _git(repo, "rev-parse", "HEAD")
 
-        code, out, _ = gate(
+
+class TestTheGreenPath:
+    def test_a_candidate_already_on_the_branch_is_refused_naming_the_flag(
+        self, gate, tmp_path, capsys,
+    ):
+        """Plan D-3 (2026-10-08): a candidate already reachable from the target
+        is a legacy inline commit; recording MERGED over it would attest to a
+        merge that never happened (F-003). Refused before any row, and the
+        refusal names the flag that records it anyway."""
+        repo, candidate = _inline_candidate(tmp_path)
+        code, before, after = gate(
             [_row("T-1", "ADMITTED"), _row("T-1", "EXECUTED", sha=candidate)],
             {"task_id": "T-1", "approve_role": "code_review", "sha": candidate},
             "--repo", str(repo))
+        assert code == 1 and after == before
+        err = capsys.readouterr().err
+        assert "already reachable" in err and "--allow-already-on-branch" in err
+        assert "D-3" in err
+        assert _git(repo, "rev-parse", "HEAD") == candidate, "nothing may be written"
+
+    def test_a_legacy_inline_candidate_is_recorded_as_such_with_the_flag(
+        self, gate, tmp_path, capsys,
+    ):
+        """With the flag, 0.22.0's behaviour: the MERGED row says no merge
+        commit was created (T-0060), never "merged at <sha>" over a merge that
+        never happened -- and it says the flag was used."""
+        repo, candidate = _inline_candidate(tmp_path)
+        code, out, _ = gate(
+            [_row("T-1", "ADMITTED"), _row("T-1", "EXECUTED", sha=candidate)],
+            {"task_id": "T-1", "approve_role": "code_review", "sha": candidate},
+            "--repo", str(repo), "--allow-already-on-branch")
         assert code == 0, out
+        assert "--allow-already-on-branch in effect" in capsys.readouterr().err
 
         rows = [json.loads(line) for line in
                 (gate.ledger / "ledger.jsonl").read_text().splitlines() if line.strip()]
         assert [r["action"] for r in rows[-2:]] == ["SIGNED", "MERGED"]
         assert rows[-1]["sha"] == candidate
-        assert "already the head" in rows[-1]["evidence"]
+        assert "already reachable" in rows[-1]["evidence"]
         assert "no merge commit" in rows[-1]["evidence"]
+        assert "--allow-already-on-branch" in rows[-1]["evidence"]
         assert _git(repo, "rev-parse", "HEAD") == candidate, "nothing may be written"
         assert _git(repo, "log", "--merges", "--oneline") == ""
 

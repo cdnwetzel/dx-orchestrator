@@ -355,6 +355,11 @@ def tiered(monkeypatch, tmp_path, fake_ledger):
     monkeypatch.setenv("DX_LEDGER_REPO", str(fake_ledger))
 
     def _run(touch: list[str], *, signer=REVIEWER, repo: bool = True, argv=()):
+        # The candidate is committed on a task branch and the checkout returns
+        # to main, the shape every run leaves since 0.23.0 (plan D-3); the
+        # gate then makes a real merge. The tier is read from the chain diff
+        # root_base..candidate either way.
+        _git(scope, "switch", "-q", "-c", "task/T-TEST", base)
         for rel in touch:
             f = scope / rel
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -362,6 +367,7 @@ def tiered(monkeypatch, tmp_path, fake_ledger):
         _git(scope, "add", "-A")
         _git(scope, "commit", "-qm", "the work")
         candidate = _git(scope, "rev-parse", "HEAD")
+        _git(scope, "switch", "-q", "main")
         # the fake ledger's chain names candidate "e"*40; rebuild it on this one
         from conftest import _canonical, _chain  # noqa: PLC0415
         rows, head = _chain([

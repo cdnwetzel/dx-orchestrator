@@ -81,7 +81,7 @@ If a step fails, it exits non-zero with a specific error and you can re-run afte
 Verify the install before configuring anything:
 
 ```bash
-dx --version    # dx 0.22.0
+dx --version    # dx 0.23.0
 pytest          # all green
 ```
 
@@ -303,6 +303,8 @@ task actually succeeded:
 Exit code `3` — `dx`'s code for "the task ran and failed", distinct from `2`,
 which means governance refused the role (§8). pxx's own exit code is reported in
 the message rather than returned, so a caller can always tell the two apart.
+(In branch mode there is one more: `4`, the task finished but the checkout is
+parked on its task branch for a person to return — `docs/task-branches.md`.)
 **And `hello.py` was written** — pxx says so in its own error line:
 `1 file already modified: hello.py [...] diff_lines=11`. That is the fail-closed
 shell-verify gate firing *after* the edit landed, not instead of it.
