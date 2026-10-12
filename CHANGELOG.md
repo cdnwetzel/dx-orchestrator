@@ -7,7 +7,98 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+## [0.24.0] — 2026-10-12
+
+### Added
+
+- **`dx learn` — continuous improvement, recommend-only.** It reads four
+  records and proposes ranked changes; it changes nothing itself.
+  - **Sources:** pxx run directories; the devswarm ledger, verified with
+    `get_ledger_head` first; the psoperator audit chain, re-verified; and
+    review-lane manifests. pxx attempts are joined to dx tasks through
+    `EXECUTED run=`.
+  - **Detectors:** recurring failure signatures, model preference per task
+    class, gate regressions, human-rejection themes (including tasks pxx
+    passed and a human then refused), unreliable review lanes, psoperator
+    failure patterns, and adoptions with strong evidence of no meaningful
+    observed improvement.
+  - **Metrics:** every proposal carries the bad-event rate it will be judged
+    by, fixed when it is proposed. `dx learn efficacy` measures that rate from
+    the implementing task's MERGED row.
+  - **Decisions:** human-only (`--by` refuses dx itself) and audited in a hash
+    chain. A rejected proposal stays down until its evidence doubles.
+    `accept` writes a dx task spec.
+  - **pxx:** `--forward-pxx` hands model-routing proposals to pxx's
+    human-review inbox under its `cycle.lock`.
+  - **Storage:** a JSON store by default, or SQL Server (`DX_LEARN_MSSQL`,
+    extra `[mssql]`, schema `src/dx/learn_mssql.sql`).
+  - **Hardening:** an independent review of the first cut found twelve
+    problems, and each is fixed with a regression test:
+    - `pxx loop` run directories (what `dx run` produces) were quarantined
+      and their rounds counted as successes.
+    - Decisions could be undone by a concurrent pass.
+    - Efficacy could fall back to the wrong source, judge two equal zero
+      rates, or credit a merge that predated adoption.
+    - CORRECTION rows were attributed by task id rather than row hash.
+    - Model-written commit subjects could supply `scope=`/`run=`.
+    - Rows appended after verification were trusted.
+    - The decision audit was never verified.
+  - **pxx contract:** a test runs real `pxx.loop.run_loop` output through the
+    reader, so the pxx layout is checked rather than assumed.
+  - **Second review round:**
+    - **Revisions:** every write is one transaction checked against the
+      revision of each record it touches (recommendations, adoptions, forward
+      records). Two concurrent `link`s can no longer both succeed.
+    - **Recoverable JSON transactions:** a durable, checksummed journal is
+      replayed idempotently. The tests crash at every write boundary,
+      including during recovery. If recovery cannot be proven safe, the store
+      refuses every operation with a precise `RecoveryError`; `dx learn
+      recover` completes or explains.
+    - **pxx forwarding:** runs only inside the mutation lock, after the pass's
+      write. A durable `INTENT` is committed against the recommendation's
+      revision before any pxx write, and the outcome is recorded after.
+      Interrupted forwards are reconciled from pxx's inbox without
+      duplicates. Reject/retire withdraws dx's own still-pending entry.
+      Disagreement with pxx's unlocked triage is recorded as a divergence,
+      never resolved silently.
+    - **Efficacy:** reports observed change, not effect.
+      `no-meaningful-improvement` needs ≥ 30 observations a side and strong
+      evidence. Cohort shifts and overlapping adoptions void verdicts.
+      `docs/learn.md` documents the confounding limits.
+    - **SQL Server:** explicitly UNQUALIFIED (no live server was reachable),
+      and refused unless `DX_LEARN_MSSQL_UNQUALIFIED=accept`.
+    - **Fixes from an independent review of that round:**
+      - `link` is first-writer-wins (`--replace-task` to change it), so two
+        concurrent CLI links no longer both land.
+      - Decisions take `--seen <token>` from `show`/`queue` to bind to what
+        the human looked at.
+      - dx's own pending pxx entry is checked first, and only human
+        dispositions count as pxx decisions.
+      - Entries pxx's cycle overwrote are marked `SUPERSEDED` and offered
+        again; a blocked signature no longer churns every pass.
+      - Readers take the lock and replay before verifying the audit.
+      - The no-improvement bar is relative to the baseline, so a halved low
+        rate is never a revert prompt.
+      - The "after" window is bounded to 60 days; overlap counts retired
+        adoptions and the whole window.
+      - MSSQL reads `@@ROWCOUNT` explicitly and only releases an applock it
+        holds.
+      - `dx learn spec` regenerates an accepted proposal's spec.
+      - STALE forwards are withdrawn.
+      - The kind is renamed `adoption_no_improvement`.
+  - **Limits:** never writes to the ledger. No proposal kind relaxes a gate.
+  - **Docs:** see `docs/learn.md`.
+
+### Fixed
+
+- The generated task spec's **Base commit** guidance predated task branches
+  (0.23.0). It now names the `base_sha` recorded at ADMITTED as the branch
+  point in branch mode (`dx run --task-branch`), and `docs/learn.md` explains
+  the flow. A regression test pins the guidance.
+- Removed `Recommendation.pxx_slug`, a field nothing ever set or read —
+  forwarding state is tracked on `ForwardRecord.slug`. JSON stores written
+  while the field existed still load (the key is ignored; a test pins this),
+  and the UNQUALIFIED SQL Server schema drops the unused column.
 
 ## [0.23.0] — 2026-10-12
 
@@ -1239,6 +1330,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.24.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.2...v0.22.0
 [0.21.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.1...v0.21.2

@@ -40,9 +40,12 @@ so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO`, or `ledger.repo` in the manifest, at your own ledger to
 gate real merges.
 
-The test suite is the part built to be evaluated from outside: 1051 tests,
-including real-GPG signature checks against committed keys, runnable with no lab
-hardware, no keyring and no network. Run it without the sibling clones and it is
+The test suite is the part built to be evaluated from outside: 1200 tests
+collected — 1191 passed, 9 skipped in a full local run; eight of the skips
+need psoperator/Pillow (CI installs them), and the ninth is the count-claim
+check itself standing down unless the invocation is exactly `pytest tests` —
+including real-GPG signature checks against committed keys, runnable with no
+lab hardware, no keyring and no network. Run it without the sibling clones and it is
 fully hermetic — the handful of checks that need the real role-card deck or the
 reference ledger skip, and say so. CI runs it both ways: hermetic first, then
 again after cloning those repos, where a skip is treated as a failure. If you are
@@ -89,6 +92,7 @@ walkthrough from a clean box to a real code-generation task.
 | `dx run` | Load role card → inject mandate → route to hardware → invoke pxx |
 | `dx merge` | Merge gate: RL-003 checks, the `approval_tier` check over the chain diff, then `git merge --no-ff` (`--repo`) and `SIGNED`/`MERGED` rows carrying `approval_tier=`, `mechanism=` (from the key registry) and `sod_exception=` when the author signed → writes a `dx.merge_gate.v1` bundle |
 | `dx tier` | Which approval a task's candidate needs (`single-reviewer`, `two-human`, `control-plane`) and who may sign — the merge gate's decision, read-only (`--json`) |
+| `dx learn` | Continuous improvement, recommend-only: `run` reads pxx runs, the verified ledger, the psoperator audit chain and review manifests and ranks proposals; `queue`/`show`; a named human `accept`s (→ a dx task spec) or `reject`s; `link` names the implementing task; `efficacy` reports the observed before/after change in the metric fixed when it was proposed (correlational, not causal); `recover` completes or precisely refuses an interrupted store transaction. Never writes to the ledger; see `docs/learn.md` |
 | `dx verify-gui` | Capture screen (SSH or PSOperator observer) → check with a VLM → write a `dx.gui_verification.v1` bundle |
 
 Exit codes: `0` success, `1` error or gate failure, `2` Anchored role refused, `3` the task itself failed, `4` the task finished but the checkout is parked on its task branch (branch mode; a person returns it).
@@ -219,6 +223,11 @@ file ends up saying what actually runs.
 | `PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH` | Owner-only observer attestation key, required by `dx verify-gui --observer` |
 | `PSOPERATOR_MODEL_ENDPOINT` / `PSOPERATOR_MODEL_NAME` | Model the GUI agent drives |
 | `PSOPERATOR_AUDIT_LOG_PATH` | Where PSOperator writes its audit log |
+| `DX_LEARN_STORE` | `dx learn` queue/adoption/audit directory (default `~/.local/state/dx/learn`) |
+| `DX_LEARN_MSSQL` | ODBC connection string; when set, `dx learn` uses SQL Server (`pip install dx-orchestrator[mssql]`, schema `src/dx/learn_mssql.sql`) instead of the JSON store |
+| `DX_LEARN_MSSQL_UNQUALIFIED` | Must be `accept` for `dx learn` to use SQL Server: that backend has never run against a live server and is unqualified |
+| `DX_LEARN_PXX_STATE` | pxx state dir `dx learn` reads runs from and forwards to (default: pxx's own `state_dir`) |
+| `DX_LEARN_PSOPERATOR_AUDIT` | psoperator audit log for `dx learn` to verify and read (skipped when unset) |
 
 There are no hardcoded remote hosts anywhere in the package. An unconfigured
 `gui_verification` section is an error, not a fallback to somebody else's box.
@@ -268,6 +277,7 @@ fails the build if this README drifts from the implementation.
 | `TUTORIAL.md` | Validated walkthrough, clean box → real generated code |
 | `VISION.md` | Seven-pillar architecture, red lines, lessons learned |
 | `RESOURCES.md` | Footprint, host tooling, fleet sizing |
+| `docs/learn.md` | `dx learn`: sources and trust rules, the algorithm, the queue, efficacy, pxx forwarding, storage, instrumentation gaps |
 | `CHANGELOG.md` | Release history |
 | `SECURITY.md` | Trust boundaries, disclosure route, what dx does *not* protect |
 | `CONTRIBUTING.md` | Dev setup, the gates, fixture rules |

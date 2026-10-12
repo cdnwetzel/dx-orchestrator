@@ -3,6 +3,7 @@ import sys
 
 from . import __version__
 from .cmd_doctor import register_doctor_subcommand
+from .cmd_learn import register_learn_subcommand
 from .cmd_merge import register_merge_subcommand
 from .cmd_roles import register_roles_subcommand
 from .cmd_run import register_run_subcommand
@@ -27,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_merge_subcommand(subparsers)
     register_tier_subcommand(subparsers)
     register_verify_subcommand(subparsers)
+    register_learn_subcommand(subparsers)
     return parser
 
 
