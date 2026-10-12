@@ -240,7 +240,8 @@ def _emit_evidence(
     if status is not None:
         artifacts["git-status.txt"] = status
     # Which mode the run was in, always stated; the facts of a task branch
-    # when there was one (plan D-3). `base_branch_restored` is the check a
+    # when there was one (plan D-3), including whether the launcher asserted
+    # the mode with --task-branch. `base_branch_restored` is the check a
     # person reads first: not ok means the pilot is parked on the task branch
     # and no new run can be admitted until someone returns it.
     artifacts["branch.json"] = json.dumps(
@@ -730,7 +731,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             print(f"❌ task branch refused for {args.task_id}: {exc}",
                   file=sys.stderr, flush=True)
             sys.exit(EXIT_ERROR)
-        run = BranchRun(base_branch=branches.base, base_sha=base_sha, branch=branch)
+        run = BranchRun(base_branch=branches.base, base_sha=base_sha, branch=branch,
+                        asserted=bool(args.task_branch))
         print(f"🌿 {args.task_id} on {branch} at {base_sha[:12]} (base {branches.base})",
               flush=True)
     # Captured before the run so the bundle's source_head is the base the diff

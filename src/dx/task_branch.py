@@ -222,10 +222,13 @@ def merge_conflicts(repo: Path, ours: str, theirs: str) -> list[str] | None:
 
 
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
-        capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BranchError(f"git merge-base --is-ancestor in {repo}: {exc}") from exc
     if result.returncode in (0, 1):
         return result.returncode == 0
     raise BranchError(
@@ -240,6 +243,10 @@ class BranchRun:
     base_branch: str
     base_sha: str
     branch: str
+    #: the launcher passed --task-branch (the manifest decided the mode; this
+    #: records what the launcher expected, since pxx's command line in
+    #: command.txt cannot show a dx flag)
+    asserted: bool = False
     candidate_tag: str | None = None
     head_after: str | None = None
     #: step 7 completed: checkout back on the base, task branch deleted
@@ -253,6 +260,7 @@ class BranchRun:
             "base_branch": self.base_branch,
             "base_sha": self.base_sha,
             "branch": self.branch,
+            "asserted_by_flag": self.asserted,
             "candidate_tag": self.candidate_tag,
             "head_after": self.head_after,
             "restored": self.restored,

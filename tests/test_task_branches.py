@@ -268,7 +268,7 @@ class TestRun:
         assert manifest["checks"]["base_branch_restored"]["ok"] is True
         assert manifest["checks"]["candidate_tagged"]["ok"] is True
         assert manifest["checks"]["produced_changes"]["ok"] is True, "the snapshot was taken on the branch"
-        assert "--task-branch" in manifest["checks"]["pxx_exit_zero"]["path"] or True
+        assert branch["asserted_by_flag"] is True, "the launcher passed --task-branch"
         out = capsys.readouterr().out
         assert "candidate/T-BR" in out and "back on main" in out
 
@@ -413,6 +413,7 @@ class TestRun:
         assert code == 0
         assert _tags(pilot) == ["candidate/T-BR"]
         assert _git(pilot, "symbolic-ref", "--short", "HEAD") == "main"
+        assert _bundle(tmp_path / "ev")[1]["asserted_by_flag"] is False
 
     def test_inline_mode_is_unchanged(self, pilot, ledger, base, stub, tmp_path, monkeypatch):
         """No section: pxx commits on main, as 0.22.0 did; branch.json says so."""

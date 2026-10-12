@@ -97,10 +97,12 @@ design PR.
 
 `artifacts/branch.json`: `mode` (`branch` or `inline`), and in branch mode
 `base_branch`, `base_sha`, `branch`, `candidate_tag`, `head_after`,
-`restored`, `parked` (the reason, when not restored). Checks:
+`asserted_by_flag`, `restored`, `parked` (the reason, when not restored). Checks:
 `candidate_tagged` (ok iff a commit was pinned) and `base_branch_restored`
-(ok iff step 7 completed). `command.txt` shows `--task-branch` when the
-launcher passed it. The diff and status in the bundle are a snapshot taken on
+(ok iff step 7 completed). `asserted_by_flag` in `branch.json` records
+whether the launcher passed `--task-branch` (`command.txt` is pxx's command
+line, which cannot show a dx flag). The diff and status in the bundle are a
+snapshot taken on
 the task branch right after pxx returned, before the checkout moved.
 
 The EXECUTED row is unchanged (`PROVENANCE_KEYS` stays `run, model, pxx,
