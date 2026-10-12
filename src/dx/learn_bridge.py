@@ -186,7 +186,10 @@ def render_spec(rec: Recommendation, task_id: str, *, accepted_by: str) -> str:
 
 - **Role:** `{rec.suggested_role}`   <!-- suggested; pick per USAGE.md § Pick a role -->
 - **Scope:** `<path>`
-- **Base commit:** `<sha or "current HEAD">`
+- **Base commit:** `<sha>` — with task branches on, `dx run` branches from the
+  `base_sha` recorded at ADMITTED in `queue/<task id>.json` (launch with
+  `dx run --task-branch`); "current HEAD" is not a branch point there.
+  Inline mode only: `<sha or "current HEAD">`.
 
 ## 1. Objective
 

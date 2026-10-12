@@ -414,7 +414,7 @@ _SQL_COLUMNS: dict[str, tuple[str, list[str]]] = {
     "rec": ("dx_learn.Recommendation", [
         "Kind", "Subject", "Score", "EvidenceWeight", "EvidenceJson", "DraftText", "MetricJson",
         "TargetsJson", "SuggestedRole", "Status", "CreatedAt", "UpdatedAt", "DecidedBy",
-        "DecidedAt", "DecisionNote", "WeightAtDecision", "PxxSlug"]),
+        "DecidedAt", "DecisionNote", "WeightAtDecision"]),
     "adoption": ("dx_learn.Adoption", [
         "MetricJson", "AcceptedBy", "AcceptedAt", "Note", "TaskId", "Active", "RetiredAt"]),
     "forward": ("dx_learn.Forward", [
@@ -429,7 +429,7 @@ def _sql_values(record: Record) -> list[Any]:
         return [r.kind, r.subject, r.score, r.evidence_weight, _canonical(to_jsonable(r.evidence)),
                 r.draft_text, _canonical(r.metric), json.dumps(list(r.targets)),
                 r.suggested_role, r.status, r.created_at, r.updated_at, r.decided_by,
-                r.decided_at, r.decision_note, r.weight_at_decision, r.pxx_slug]
+                r.decided_at, r.decision_note, r.weight_at_decision]
     if isinstance(record, Adoption):
         a = record
         return [_canonical(a.metric), a.accepted_by, a.accepted_at, a.note, a.task_id,
@@ -521,7 +521,7 @@ class MssqlStore:
                 metric=json.loads(r[8]), targets=tuple(json.loads(r[9] or "[]")),
                 suggested_role=r[10], status=r[11], created_at=r[12], updated_at=r[13],
                 decided_by=r[14], decided_at=r[15], decision_note=r[16],
-                weight_at_decision=r[17], pxx_slug=r[18])
+                weight_at_decision=r[17])
         return out
 
     def load_adoptions(self) -> dict[str, Adoption]:

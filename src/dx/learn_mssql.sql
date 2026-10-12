@@ -45,7 +45,6 @@ CREATE TABLE dx_learn.Recommendation (
     DecidedAt        DATETIMEOFFSET(3) NULL,
     DecisionNote     NVARCHAR(2000)    NULL,
     WeightAtDecision FLOAT             NULL,
-    PxxSlug          CHAR(12)          NULL,
     -- A decided recommendation always names who decided it.
     CONSTRAINT CK_Recommendation_Decided CHECK (
         Status NOT IN ('ACCEPTED','REJECTED','RETIRED') OR (DecidedBy IS NOT NULL AND DecidedAt IS NOT NULL))

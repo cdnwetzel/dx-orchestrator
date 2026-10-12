@@ -303,6 +303,15 @@ nothing reads it back.
 commits. If that write fails, the decision stands and
 `dx learn spec <key> --out <path>` writes the spec from the stored proposal.
 
+**The spec and branch mode.** The generated spec's *Base commit* is a
+placeholder to fill before `dx run`. With task branches enabled
+(`docs/task-branches.md`), the branch point is not chosen at run time: `dx
+run` reads the `base_sha` recorded at ADMITTED from `queue/<task id>.json` in
+the ledger repo, refuses the run when that is not a commit in the scope, and
+branches from exactly it. Fill the spec with that commit and launch with
+`dx run --task-branch`; "current HEAD" is a moving target and belongs to
+inline mode only.
+
 **When replay is refused.** If replay cannot be proven safe, the store raises
 `RecoveryError` on *every* operation. Cases:
 

@@ -572,7 +572,6 @@ def reconcile(fresh: list[Recommendation], existing: dict[str, Recommendation],
             rec.draft_text = (f"[Re-raised: evidence grew {rec.evidence_weight / max(then, 1e-9):.1f}x "
                               f"since it was {prev.status.lower()}] " + rec.draft_text)
         rec.status, rec.created_at, rec.updated_at = "PROPOSED", prev.created_at or now, now
-        rec.pxx_slug = prev.pxx_slug
         rec.revision = prev.revision   # the revision this pass read: the write is checked against it
         out.append(rec)
     for key, prev in existing.items():

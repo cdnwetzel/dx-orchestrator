@@ -203,7 +203,6 @@ class Recommendation:
     decided_at: datetime | None = None
     decision_note: str | None = None
     weight_at_decision: float | None = None
-    pxx_slug: str | None = None          # set once forwarded to pxx's improve inbox
     # Optimistic-concurrency revision: 0 = never stored. Every committed write
     # bumps it; a write naming a stale revision is refused (see learn_store).
     revision: int = 0
@@ -274,8 +273,7 @@ def rec_from_json(d: dict[str, Any]) -> Recommendation:
         suggested_role=d.get("suggested_role") or "tech-lead", status=d["status"],
         created_at=dt("created_at"), updated_at=dt("updated_at"), decided_by=d.get("decided_by"),
         decided_at=dt("decided_at"), decision_note=d.get("decision_note"),
-        weight_at_decision=d.get("weight_at_decision"), pxx_slug=d.get("pxx_slug"),
-        revision=int(d.get("revision", 0)))
+        weight_at_decision=d.get("weight_at_decision"), revision=int(d.get("revision", 0)))
 
 
 def adoption_from_json(d: dict[str, Any]) -> Adoption:

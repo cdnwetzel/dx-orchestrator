@@ -40,9 +40,12 @@ so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO`, or `ledger.repo` in the manifest, at your own ledger to
 gate real merges.
 
-The test suite is the part built to be evaluated from outside: 1198 tests,
-including real-GPG signature checks against committed keys, runnable with no lab
-hardware, no keyring and no network. Run it without the sibling clones and it is
+The test suite is the part built to be evaluated from outside: 1200 tests
+collected — 1191 passed, 9 skipped in a full local run; eight of the skips
+need psoperator/Pillow (CI installs them), and the ninth is the count-claim
+check itself standing down unless the invocation is exactly `pytest tests` —
+including real-GPG signature checks against committed keys, runnable with no
+lab hardware, no keyring and no network. Run it without the sibling clones and it is
 fully hermetic — the handful of checks that need the real role-card deck or the
 reference ledger skip, and say so. CI runs it both ways: hermetic first, then
 again after cloning those repos, where a skip is treated as a failure. If you are

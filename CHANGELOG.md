@@ -89,6 +89,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **Limits:** never writes to the ledger. No proposal kind relaxes a gate.
   - **Docs:** see `docs/learn.md`.
 
+### Fixed
+
+- The generated task spec's **Base commit** guidance predated task branches
+  (0.23.0). It now names the `base_sha` recorded at ADMITTED as the branch
+  point in branch mode (`dx run --task-branch`), and `docs/learn.md` explains
+  the flow. A regression test pins the guidance.
+- Removed `Recommendation.pxx_slug`, a field nothing ever set or read —
+  forwarding state is tracked on `ForwardRecord.slug`. JSON stores written
+  while the field existed still load (the key is ignored; a test pins this),
+  and the UNQUALIFIED SQL Server schema drops the unused column.
+
 ## [0.23.0] — 2026-10-12
 
 ### Added

@@ -272,6 +272,15 @@ class TestGuardrails:
         assert "Do not loosen any gate" in spec and rec.metric["key"] in spec
         assert "dx learn link" in spec and "not the author" in spec
 
+    def test_spec_names_the_recorded_base_in_branch_mode(self, pxx):
+        # Since 0.23.0 the branch point comes from the base_sha recorded at
+        # ADMITTED, never from "current HEAD"; the generated spec must say so.
+        for i, t in enumerate(["a", "b", "c", "d"]):
+            pxx.run(when=ago(i + 1), task=t, code="LINT_BLOCKED", summary="E999 broken")
+        rec = _learn(_corpus(pxx))[0]
+        spec = render_spec(rec, "T-77", accepted_by="Chris")
+        assert "base_sha" in spec and "ADMITTED" in spec and "--task-branch" in spec
+
 
 # --------------------------------------------------------------------------- reconcile + efficacy
 class TestQueue:

@@ -349,3 +349,24 @@ def test_cli_pass_reports_and_preserves_a_decision_made_during_it(tmp_path, pxx,
     summary = json.loads(capsys.readouterr().out)
     assert summary["skipped_decided_meanwhile"] == [key] and key not in summary["proposed"]
     assert store.load_recs()[key].status == "ACCEPTED"
+
+
+# =========================================================================== compatibility
+def test_a_store_written_while_pxx_slug_existed_still_loads(tmp_path, pxx):
+    """dx learn's first cut persisted a Recommendation.pxx_slug field. It was
+    dead — forwarding state lives on ForwardRecord.slug — and is removed. A
+    JSON store written while it existed must still load (the key is ignored),
+    and the next write must drop it."""
+    store = JsonStore(tmp_path / "s")
+    rec = _seed(store, pxx)
+    path = tmp_path / "s" / "recommendations.json"
+    raw = json.loads(path.read_text())
+    assert "pxx_slug" not in raw[rec.rec_key]
+    raw[rec.rec_key]["pxx_slug"] = "model:switch_model"      # the pre-removal shape
+    path.write_text(json.dumps(raw))
+    assert store.load_recs()[rec.rec_key] == rec             # ignored, not an error
+    store.commit(Tx("Chris", "reject", rec.rec_key, NOW,
+                    writes=[replace(rec, status="REJECTED", decided_by="Chris",
+                                    decided_at=NOW, weight_at_decision=rec.evidence_weight)]))
+    raw = json.loads(path.read_text())
+    assert "pxx_slug" not in raw[rec.rec_key]                # the next write drops it
