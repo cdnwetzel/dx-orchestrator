@@ -893,6 +893,18 @@ def cmd_run(args: argparse.Namespace) -> None:
                 f"the work is not committed, so there is no candidate to bind.",
                 file=sys.stderr, flush=True,
             )
+        elif run is not None and head_after == pre_run_head:
+            # HEAD moved past source_head only by the seed commit: pxx
+            # committed nothing, so there is no candidate. (Inline mode
+            # records the seed commit here, as 0.22.0 did; branch mode is
+            # stricter, since the seed is reproducible from the predecessor's
+            # bundle and was never the run's work.)
+            print(
+                f"⚠️  Not recording EXECUTED for {args.task_id}: pxx committed "
+                f"nothing; HEAD {head_after[:12]} is the seed commit, not a "
+                f"candidate.",
+                file=sys.stderr, flush=True,
+            )
         elif run is not None and run.candidate_tag is None:
             # §3.3 step 6, fail-closed: the ledger never names a sha that
             # nothing pins. The branch is kept (the checkout is parked on it).

@@ -74,6 +74,9 @@ if action == "commit":
     write(); git("add", "-A"); git("commit", "-qm", "the work (pxx stub)"); sys.exit(0)
 if action == "dirty":
     write(); sys.exit(0)
+if action == "commit-then-dirty":
+    write(); git("add", "-A"); git("commit", "-qm", "the work (pxx stub)")
+    files[:] = ["src/leftover.py"]; write(); sys.exit(0)
 if action == "fail-reset":
     # what pxx's restore_safety_net does on a non-COMPLETED outcome
     write(); git("checkout", "--", "."); git("clean", "-fdq"); sys.exit(3)
@@ -369,6 +372,44 @@ class TestRun:
         monkeypatch.delenv("STUB_PXX_ACTION")
         assert _run_task(pilot, ev, task="T-NEXT") == 1
         assert "task/T-BR" in capsys.readouterr().err
+
+    def test_9b_a_dirty_tree_with_a_commit_parks_but_records_the_candidate(
+            self, pilot, ledger, base, stub, tmp_path, monkeypatch, capsys):
+        """§3.3 step 8: the work may be good and an EXECUTED may have been
+        recorded; what is needed is a person at the checkout, not a rework."""
+        _manifest(tmp_path, monkeypatch, BRANCH_ON)
+        monkeypatch.setenv("STUB_PXX_ACTION", "commit-then-dirty")
+        ev = tmp_path / "ev"
+        assert _run_task(pilot, ev) == 4
+        candidate = _git(pilot, "rev-parse", "candidate/T-BR^{commit}")
+        assert _git(pilot, "symbolic-ref", "--short", "HEAD") == "task/T-BR"
+        assert _git(pilot, "status", "--porcelain").startswith("??"), "the leftover is untouched"
+        assert _git(pilot, "rev-parse", "main") == base
+        rows = [r for r in _rows(ledger) if r["task_id"] == TASK]
+        assert [r["action"] for r in rows] == ["ADMITTED", "EXECUTED"]
+        assert rows[-1]["sha"] == candidate
+        manifest, branch = _bundle(ev)
+        assert manifest["checks"]["candidate_tagged"]["ok"] is True
+        assert manifest["checks"]["base_branch_restored"]["ok"] is False
+        assert branch["candidate_tag"] == "candidate/T-BR" and branch["restored"] is False
+        err = capsys.readouterr().err
+        assert "parked on task/T-BR" in err
+
+    def test_a_seed_only_run_records_no_candidate_and_says_why(
+            self, pilot, ledger, base, stub, tmp_path, monkeypatch, capsys):
+        _manifest(tmp_path, monkeypatch, BRANCH_ON)
+        patch = tmp_path / "T-0" / "artifacts" / "run-diff.patch"
+        patch.parent.mkdir(parents=True)
+        patch.write_text("--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n")
+        monkeypatch.setenv("STUB_PXX_ACTION", "noop")
+        code = _run_task(pilot, tmp_path / "ev", "--seed-patch", str(patch), "--seed-from", "T-0")
+        assert code == 0
+        err = capsys.readouterr().err
+        assert "pxx committed nothing" in err and "seed commit" in err
+        assert "could not be tagged" not in err
+        assert _actions(ledger) == ["ADMITTED"] and _tags(pilot) == []
+        assert _git(pilot, "symbolic-ref", "--short", "HEAD") == "main"
+        assert "task/T-BR" not in _branches(pilot)
 
     def test_11_a_re_admitted_id_gets_a_fresh_branch_and_a_suffixed_tag(
             self, pilot, ledger, base, stub, tmp_path, monkeypatch):
