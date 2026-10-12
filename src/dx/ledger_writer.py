@@ -298,7 +298,7 @@ def git_merge_no_ff(repo: Path, sha: str, *, task_id: str) -> str:
             f"Uncommitted changes would be swept into the merge commit."
         )
     before = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    _git(
+    merge = _git(
         repo,
         "-c",
         "user.name=dx",
@@ -309,10 +309,33 @@ def git_merge_no_ff(repo: Path, sha: str, *, task_id: str) -> str:
         sha,
         "-m",
         f"Merge {task_id} ({sha[:12]}) under dx merge gate",
+        check=False,
     )
+    if merge.returncode != 0:
+        # A conflicting merge exits 1 with HEAD unchanged and the checkout
+        # mid-merge (MERGE_HEAD, conflict markers). Through 0.22.0 the error
+        # propagated with the tree left that way; the next `dx run` would
+        # have found a dirty checkout and refused, and a person had to work
+        # out why. Abort first, so a failed merge leaves the checkout exactly
+        # as it was, then say what git said. `dx merge` tests the merge with
+        # `merge-tree` before any row is written, so reaching here means the
+        # tree changed in between or the merge failed for another reason.
+        conflicts = _git(repo, "diff", "--name-only", "--diff-filter=U", check=False)
+        abort = _git(repo, "merge", "--abort", check=False)
+        left = "" if abort.returncode == 0 else (
+            f" (and `git merge --abort` failed: {abort.stderr.strip()[:200]}; "
+            f"the checkout is mid-merge)")
+        raise LedgerWriteError(
+            f"git merge --no-ff {sha[:12]} into {repo} failed (exit "
+            f"{merge.returncode}): {(merge.stdout + merge.stderr).strip()[:300]}"
+            f"{left}. No merge commit was made"
+            + (f"; conflicting: {', '.join(conflicts.stdout.split())}"
+               if conflicts.stdout.strip() else "") + "."
+        )
     after = _git(repo, "rev-parse", "HEAD").stdout.strip()
     if after == before:
-        # `git merge` said "Already up to date": the candidate was already
+        # Exit zero and HEAD unchanged is the one shape left: `git merge` said
+        # "Already up to date", the candidate was already
         # reachable from HEAD -- in the pilot, pxx commits it onto the branch
         # itself -- so no merge commit exists. Say so rather than record a
         # merge that did not happen (T-0060, 2026-09-23, the first bridge

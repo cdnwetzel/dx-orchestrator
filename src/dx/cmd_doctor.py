@@ -11,9 +11,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ._argtypes import SubParsers
+from .approval_tier import DeclarationError, load_declaration
 from .config_loader import (
+    BranchesConfig,
     ConfigError,
     endpoint_warnings,
+    get_approval_config,
+    get_branches_config,
     get_config_path,
     get_gui_config,
     get_ledger_repo_path,
@@ -182,6 +186,88 @@ def _reviewer_posture() -> list[str]:
     return lines
 
 
+def _branch_posture() -> tuple[list[str], bool]:
+    """Task branches (plan D-3): the manifest's switch, then the state of
+    each checkout the executor role declares — on its base or not, clean or
+    not, stray task branches (each a run that did not return, with the two
+    commands that return it), candidate tags. Derived, never restated.
+
+    ❌ (a failed doctor) only when branch mode is on and a checkout is not
+    on its base or holds a stray branch: that is a pilot no run can be
+    admitted to. With branch mode off the same facts are ⚠️, since nothing
+    reads them yet."""
+    from .task_branch import (
+        BranchError,
+        candidate_tags,
+        current_branch,
+        status_porcelain,
+        stray_task_branches,
+    )
+
+    lines: list[str] = []
+    ok = True
+    try:
+        cfg = get_branches_config()
+    except ConfigError as exc:
+        return [f"❌ task branches: {exc}"], False
+    if cfg is None:
+        lines.append("🌿 task branches: off (manifest has no branches section) — inline "
+                     "mode: pxx commits on the checked-out branch, before sign-off (F-003)")
+    elif not cfg.enabled:
+        lines.append("🌿 task branches: off (manifest branches: enabled false) — inline "
+                     "mode: pxx commits on the checked-out branch, before sign-off (F-003)")
+    else:
+        lines.append(f"🌿 task branches: on — each run on {cfg.prefix}<task id> from "
+                     f"{cfg.base}; sign-off merges for real (plan D-3)")
+    enabled = cfg is not None and cfg.enabled
+    eff = cfg or BranchesConfig(enabled=False)
+
+    try:
+        approval = get_approval_config()
+        scopes = (list(load_declaration(approval.declaration, approval.role,
+                                        approval.ai_root).scopes)
+                  if approval is not None else [])
+    except (ConfigError, DeclarationError, OSError) as exc:
+        lines.append(f"   ⚠️  the executor's declared scopes could not be read: {exc}")
+        return lines, ok
+    if not scopes:
+        lines.append("   (no approval declaration in the manifest, so no checkout to "
+                     "inspect; the posture is read from the executor role's declared scopes)")
+        return lines, ok
+    for scope in scopes:
+        repo = Path(scope)
+        if not (repo / ".git").exists():
+            lines.append(f"   ⚠️  {repo}: not a git repository (or not present here)")
+            continue
+        try:
+            on = current_branch(repo)
+            dirty = status_porcelain(repo)
+            stray = stray_task_branches(repo, eff)
+            tags = candidate_tags(repo)
+        except BranchError as exc:
+            lines.append(f"   ⚠️  {repo}: {exc}")
+            if enabled:
+                ok = False
+            continue
+        on_base = on == eff.base
+        clean = not dirty.strip()
+        healthy = on_base and clean and not stray
+        icon = "✅" if healthy else ("❌" if enabled else "⚠️")
+        if not healthy and enabled:
+            ok = False
+        lines.append(
+            f"   {icon} {repo}: on {on or 'a detached HEAD'}"
+            + ("" if on_base else f" (base is {eff.base})")
+            + (", clean" if clean else f", {len(dirty.strip().splitlines())} uncommitted path(s)")
+            + f", {len(stray)} stray task branch(es), {len(tags)} candidate tag(s)"
+        )
+        for name in stray:
+            lines.append(f"      {name}: a run did not return the checkout. Look at it, then:")
+            lines.append(f"         git -C {repo} switch {eff.base}")
+            lines.append(f"         git -C {repo} branch -D {name}")
+    return lines, ok
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     print("🔍 dx doctor — self-test\n")
     all_ok = True
@@ -290,6 +376,15 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 print(line)
         except Exception as exc:  # noqa: BLE001 — posture is a report, never a crash
             print(f"⚠️  could not derive the reviewer posture: {exc}")
+        # 5c. Task branches: the switch and the checkout(s). Core when on.
+        try:
+            branch_lines, branch_ok = _branch_posture()
+            for line in branch_lines:
+                print(line)
+            if not branch_ok:
+                all_ok = False
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️  could not derive the branch posture: {exc}")
     else:
         print(f"❌ Hardware manifest missing at {cfg_path}")
         all_ok = False

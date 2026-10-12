@@ -9,6 +9,59 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 _Nothing yet._
 
+## [0.23.0] — 2026-10-12
+
+### Added
+
+- **Task branches.** A manifest `branches:` section (`enabled` with no
+  default, `base: main`, `prefix: task/`) puts every `dx run` on
+  `<prefix><task id>` created at the task's recorded `base_sha` (read from
+  its queue file) from a clean checkout on the base branch; pxx keeps
+  `--commit` and commits there. After the run the candidate is pinned by a
+  `candidate/<task id>` tag (`-2`, `-3`… on a re-admitted id) before EXECUTED
+  is recorded — a tag that cannot be confirmed means no EXECUTED row and the
+  branch is kept — and the checkout returns to the base with the task branch
+  deleted. A run that leaves the tree dirty parks the checkout on its branch
+  and exits with the new code `4` (`EXIT_BRANCH_NOT_RESTORED`), distinct from
+  `3`: the work may be good, a person is needed at the checkout, and the next
+  branch-mode run is refused until it is returned. `dx run --task-branch`
+  asserts the mode and is refused when the manifest says inline, so a
+  launcher never gets a silent inline run. The bundle gains
+  `artifacts/branch.json` and the checks `candidate_tagged` and
+  `base_branch_restored`. Nothing reaches the base branch before a human
+  merges it (plan D-3, 2026-10-08; AskPS `ps-coding-wp3-design.md`, Kimi
+  design review 2026-10-12). See `docs/task-branches.md`.
+- **`dx merge` tests the merge before it signs.** With `--repo`, before the
+  signature step and before any row: the target must be clean (and on the
+  base branch in branch mode), and the candidate must merge cleanly by
+  `git merge-tree --write-tree` (git ≥ 2.38). A conflict refuses the gate
+  with no row written and the signature still valid; the remedy stated is a
+  rework based at the current base, never a rebase or a hand-merge under
+  dx's name. A clean merge is a real two-parent merge named by the MERGED
+  row.
+- **`--allow-already-on-branch`.** A candidate already reachable from the
+  target (committed inline, before task branches) is refused before any row,
+  and the refusal names this flag. With it, 0.22.0's behaviour: MERGED
+  records that no merge commit was created, with the flag named in the
+  evidence and a banner printed, like `--force`.
+- **`dx doctor` branch posture.** The switch, then each checkout the
+  executor role declares: on its base or not, clean or not, stray task
+  branches (each with the two commands that return it), candidate tags. ❌
+  when branch mode is on and a checkout is off its base or holds a stray
+  branch.
+
+### Fixed
+
+- **A conflicting `git merge --no-ff` no longer leaves the checkout
+  mid-merge.** `git_merge_no_ff` read HEAD before and after and never git's
+  exit status; a conflict raised through the git wrapper after SIGNED was
+  appended, leaving SIGNED without MERGED and `MERGE_HEAD` with conflict
+  markers in the target (unreachable while every candidate sat on `main`;
+  reproduced 2026-10-12 against a real repository). It now aborts the merge,
+  names the conflicting paths, and raises; only an exit-zero merge with HEAD
+  unchanged is `AlreadyOnBranch`. Through `dx merge` the pre-check above
+  means no SIGNED row is written for a merge that cannot land.
+
 ## [0.22.0] — 2026-10-06
 
 ### Added
@@ -1186,6 +1239,7 @@ defects that writing the test suite exposed.
   and hardware routing from `~/.config/dx/hardware_manifest.yml`.
 - `scripts/setup_dependencies.sh`, `README.md`, `VISION.md`, `checkpoint.md`.
 
+[0.23.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.2...v0.22.0
 [0.21.2]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/cdnwetzel/dx-orchestrator/compare/v0.21.0...v0.21.1

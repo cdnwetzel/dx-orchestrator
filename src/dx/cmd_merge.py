@@ -34,7 +34,12 @@ from .approval_tier import (
     load_declaration,
 )
 from .cmd_verify import Verdict, verify_gui
-from .config_loader import ConfigError, get_approval_config, get_ledger_repo_path
+from .config_loader import (
+    ConfigError,
+    get_approval_config,
+    get_branches_config,
+    get_ledger_repo_path,
+)
 from .evidence import (
     Check,
     EvidenceError,
@@ -67,6 +72,14 @@ from .ledger_writer import (
     git_merge_no_ff,
     read_head,
 )
+from .task_branch import (
+    BranchError,
+    current_branch,
+    is_ancestor,
+    merge_conflicts,
+    status_porcelain,
+)
+from .task_branch import git as _branch_git
 
 
 def _ok(msg: str) -> None:
@@ -123,6 +136,17 @@ def register_merge_subcommand(subparsers: SubParsers) -> None:
         help=(
             "Bypass ALL merge gates — the RL-003 signature check AND GUI "
             "verification. Audit-visible; use only for emergency rollback."
+        ),
+    )
+    parser.add_argument(
+        "--allow-already-on-branch",
+        action="store_true",
+        help=(
+            "Record a candidate that is already reachable from the target "
+            "checkout (committed inline, before task branches — plan D-3, "
+            "2026-10-08). No merge commit can be made for it; refused without "
+            "this flag so a sign-off is never recorded over a merge that did "
+            "not happen. Audit-visible: the MERGED row says the flag was used."
         ),
     )
     parser.add_argument(
@@ -368,6 +392,78 @@ def _note_queue(
         _warn(f"{qf.name} could not be updated after the merge: {exc}")
 
 
+def _precheck_merge(
+    args: argparse.Namespace, target: Path, task_sha: str, rec: dict[str, object]
+) -> None:
+    """(0c) Before any row: the target checkout is where a merge may land
+    (on the base branch in branch mode; clean in either mode), the candidate
+    is not already reachable from it (or the legacy flag was given), and the
+    merge is conflict-free by `git merge-tree --write-tree`. Every refusal
+    here leaves the ledger and the checkout untouched."""
+    try:
+        branches = get_branches_config()
+    except ConfigError as exc:
+        rec["failure"] = "branches_config"
+        _fail(f"manifest `branches:` section unusable: {exc}")
+    try:
+        on = current_branch(target)
+        rec["target_branch"] = on
+        if branches is not None and branches.enabled and on != branches.base:
+            rec["failure"] = "target_not_on_base"
+            _fail(
+                f"{target} is on {on!r}, not on the base branch {branches.base!r}; "
+                f"the merge would land on the wrong branch. Return the checkout "
+                f"to {branches.base} first (`dx doctor` prints how)."
+            )
+        dirty = status_porcelain(target)
+        if dirty:
+            rec["failure"] = "target_dirty"
+            _fail(
+                f"{target} has {len(dirty.splitlines())} uncommitted path(s); a "
+                f"merge into a dirty checkout would sweep them into the merge "
+                f"commit. Commit or discard them first."
+            )
+        head = _branch_git(target, "rev-parse", "HEAD")
+        rec["target_head"] = head
+        if is_ancestor(target, task_sha, head):
+            if not args.allow_already_on_branch:
+                rec["failure"] = "already_on_branch"
+                _fail(
+                    f"candidate {task_sha[:12]} is already reachable from "
+                    f"{on or head[:12]}; it was committed inline, not on a task "
+                    f"branch (plan D-3, 2026-10-08), so no merge commit can be "
+                    f"made and nothing is recorded. To record a legacy inline "
+                    f"candidate anyway, re-run with --allow-already-on-branch."
+                )
+            # Audit-visible, like --force: the flag has to say something.
+            _warn(
+                f"--allow-already-on-branch in effect for {args.task_id}: "
+                f"candidate {task_sha[:12]} is already reachable from "
+                f"{on or head[:12]}; the MERGED row will record no merge commit "
+                f"(legacy inline candidate, plan D-3)."
+            )
+            rec["already_on_branch"] = True
+            return
+        conflicts = merge_conflicts(target, head, task_sha)
+        if conflicts is not None:
+            rec["failure"] = "merge_conflict"
+            rec["conflicts"] = conflicts
+            _fail(
+                f"candidate {task_sha[:12]} does not merge cleanly into "
+                f"{on or 'HEAD'} at {head[:12]}: conflicts in "
+                f"{', '.join(conflicts) or '(paths not named by git)'}. Nothing "
+                f"was written and the signature stays valid. Remedy: re-admit a "
+                f"rework based at the current {on or 'head'}, seeded from this "
+                f"candidate's recorded diff, and review that. dx never rebases "
+                f"and never resolves a merge under its own name."
+            )
+        _ok(f"Candidate {task_sha[:12]} merges cleanly into {on or 'HEAD'} at "
+            f"{head[:12]} (git merge-tree).")
+    except BranchError as exc:
+        rec["failure"] = "merge_precheck_error"
+        _fail(f"merge pre-check failed: {exc}")
+
+
 def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
     if args.force:
         _warn(
@@ -477,6 +573,14 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                     f"the approved work is not where the merge would happen"
                 )
             _ok(f"Candidate {task_sha[:12]} is a commit in {target}.")
+            # (0c) The merge would land, and where it would land. Tested with
+            # `merge-tree`, which touches no file: a conflict here refuses the
+            # gate with NO row written, so the signature (bound to the head)
+            # stays valid and the remedy is a rework, never a hand-merge under
+            # dx's name. Through 0.22.0 a conflict surfaced only after SIGNED
+            # was appended, leaving SIGNED without MERGED and the checkout
+            # mid-merge (AskPS WP-3 design §1).
+            _precheck_merge(args, target, task_sha, rec)
 
         # (1) Signature verifies against a currently-valid key in docs/keys/
         signer = verify_detached_signature(sig_path, msg_path, ledger_repo)
@@ -634,14 +738,38 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                     merge_note = f"git merge --no-ff into {args.repo} at {merged_sha}"
                     _ok(f"Merged {str(task_sha)[:12]} into {target} — {merged_sha[:12]}")
                 except AlreadyOnBranch as already:
+                    if not args.allow_already_on_branch:
+                        # (0c) saw the candidate as not yet reachable, so the
+                        # checkout changed under the gate. SIGNED stands with
+                        # no MERGED row: the truthful state, corrected on the
+                        # record (RL-009), never papered over here.
+                        rec["failure"] = "already_on_branch_after_signed"
+                        _fail(
+                            f"candidate {str(task_sha)[:12]} became reachable from "
+                            f"{target} between the pre-check and the merge; no "
+                            f"merge commit was made and no MERGED row is written. "
+                            f"SIGNED was recorded; correct on the record (RL-009)."
+                        )
                     merged_sha = already.head
                     merge_note = (
-                        f"candidate {str(task_sha)[:12]} was already the head of "
+                        f"candidate {str(task_sha)[:12]} was already reachable from "
                         f"{args.repo} ({already.head[:12]}); git merge --no-ff created "
-                        f"no merge commit"
+                        f"no merge commit (--allow-already-on-branch: legacy inline "
+                        f"candidate, plan D-3)"
                     )
-                    _ok(f"{str(task_sha)[:12]} is already the head of {target}; "
-                        f"no merge commit created")
+                    _ok(f"{str(task_sha)[:12]} is already reachable from {target}; "
+                        f"no merge commit created (--allow-already-on-branch)")
+                except LedgerWriteError as exc:
+                    # The merge failed after SIGNED (an I/O error, or the tree
+                    # changed since the pre-check). git_merge_no_ff aborted it,
+                    # so the checkout is as found. SIGNED without MERGED is the
+                    # truthful state.
+                    rec["failure"] = "merge_failed_after_signed"
+                    _fail(
+                        f"merge failed after SIGNED was recorded: {exc} The "
+                        f"checkout was left as found. SIGNED stands with no "
+                        f"MERGED row; correct on the record (RL-009)."
+                    )
                 rec["merged"] = {
                     "repo": str(target),
                     "task_sha": str(task_sha),

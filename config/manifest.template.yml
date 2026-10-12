@@ -87,3 +87,18 @@ roles:
 # review:
 #   enabled: true
 #   mode: advisory
+
+# Task branches (dx.config_loader.get_branches_config; plan D-3, 2026-10-08).
+# Address-free, so it lives here and is carried into the generated manifest.
+# Absent: inline mode — pxx commits on whatever branch the scope has checked
+# out, so the work is on `main` before anyone signs. With `enabled: true` each
+# `dx run` creates `<prefix><task id>` at the task's recorded base from a clean
+# checkout on `base`, pxx commits there, the candidate is tagged
+# `candidate/<task id>` at EXECUTED, the checkout returns to `base`, and
+# `dx merge` makes a real two-parent merge. `enabled` has no default: a typo
+# must not become "inline". See docs/task-branches.md.
+#
+# branches:
+#   enabled: true
+#   base: main
+#   prefix: task/

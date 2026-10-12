@@ -40,7 +40,7 @@ so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO`, or `ledger.repo` in the manifest, at your own ledger to
 gate real merges.
 
-The test suite is the part built to be evaluated from outside: 1017 tests,
+The test suite is the part built to be evaluated from outside: 1049 tests,
 including real-GPG signature checks against committed keys, runnable with no lab
 hardware, no keyring and no network. Run it without the sibling clones and it is
 fully hermetic — the handful of checks that need the real role-card deck or the
@@ -91,7 +91,7 @@ walkthrough from a clean box to a real code-generation task.
 | `dx tier` | Which approval a task's candidate needs (`single-reviewer`, `two-human`, `control-plane`) and who may sign — the merge gate's decision, read-only (`--json`) |
 | `dx verify-gui` | Capture screen (SSH or PSOperator observer) → check with a VLM → write a `dx.gui_verification.v1` bundle |
 
-Exit codes: `0` success, `1` error or gate failure, `2` Anchored role refused, `3` the task itself failed.
+Exit codes: `0` success, `1` error or gate failure, `2` Anchored role refused, `3` the task itself failed, `4` the task finished but the checkout is parked on its task branch (branch mode; a person returns it).
 
 `2` is reserved for dx's own governance decision and is never produced by a tool dx shells out to — pxx exits 2 in the wild, so its code is printed rather than returned. If you read `2`, policy refused the run; if you read `3`, the run was allowed and the work failed.
 

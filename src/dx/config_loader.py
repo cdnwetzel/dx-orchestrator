@@ -221,6 +221,7 @@ def validate_manifest() -> None:
     _as_mapping(cfg.get("psoperator"), "psoperator", path)
     _as_mapping(cfg.get("ledger"), "ledger", path)
     get_review_config()
+    get_branches_config()
 
 
 def get_gui_config() -> dict[str, Any]:
@@ -389,6 +390,84 @@ def get_review_config() -> ReviewConfig | None:
             f"found {mode!r}."
         )
     return ReviewConfig(enabled=enabled, mode=mode)
+
+
+BRANCH_BASE_DEFAULT = "main"
+BRANCH_PREFIX_DEFAULT = "task/"
+
+
+@dataclass(frozen=True)
+class BranchesConfig:
+    """The manifest's `branches:` section — whether `dx run` works on a task
+    branch and `dx merge` makes a real merge (plan D-3, 2026-10-08; AskPS
+    `ps-coding-wp3-design.md`).
+
+    Inline mode (the section absent, or `enabled: false`) is what every run
+    did through 0.22.0: pxx commits on whatever branch the scope has checked
+    out, so the work is on `main` before anyone signs. Branch mode puts each
+    run on `<prefix><task_id>` created at the task's recorded base, tags the
+    candidate at EXECUTED, and returns the checkout to `base`; sign-off then
+    merges for real. There is no default for `enabled`: a typo must not become
+    "inline".
+    """
+    enabled: bool
+    base: str = BRANCH_BASE_DEFAULT
+    prefix: str = BRANCH_PREFIX_DEFAULT
+
+    def branch_for(self, task_id: str) -> str:
+        return f"{self.prefix}{task_id}"
+
+
+def _ref_component(value: object, field: str, path: Path) -> str:
+    """A branch name or prefix the manifest may name: a non-empty string with
+    none of the characters git refuses in a ref. The full check is git's
+    (`check-ref-format`), run when the branch is created; this catches the
+    manifest typo before the first run does."""
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(
+            f"{path}: `branches.{field}` must be a non-empty string, found {value!r}."
+        )
+    bad = set(" \t\n~^:?*[\\") & set(value)
+    if bad or ".." in value or "@{" in value or value.startswith("-") or value.startswith("/"):
+        raise ConfigError(
+            f"{path}: `branches.{field}` is not a git ref name: {value!r}."
+        )
+    return value
+
+
+def get_branches_config() -> BranchesConfig | None:
+    """The `branches:` section, or None when the manifest has none (inline
+    mode). Present but malformed is an error, not None, on the pattern of
+    `get_review_config`; `validate_manifest` calls this, so `dx doctor` fails
+    on a bad section before the first run does."""
+    try:
+        raw = load_config().get("branches")
+    except FileNotFoundError:
+        return None
+    if raw is None:
+        return None
+    path = get_config_path()
+    section = _as_mapping(raw, "branches", path)
+    enabled = section.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ConfigError(
+            f"{path}: `branches.enabled` must be a boolean (true/false), found "
+            f"{enabled!r}. There is no default: say which."
+        )
+    base = _ref_component(section.get("base", BRANCH_BASE_DEFAULT), "base", path)
+    prefix = _ref_component(section.get("prefix", BRANCH_PREFIX_DEFAULT), "prefix", path)
+    if base.startswith(prefix):
+        raise ConfigError(
+            f"{path}: `branches.base` ({base!r}) starts with `branches.prefix` "
+            f"({prefix!r}); the base would read as a stray task branch."
+        )
+    unknown = sorted(set(section) - {"enabled", "base", "prefix"})
+    if unknown:
+        raise ConfigError(
+            f"{path}: `branches` has unknown key(s) {', '.join(unknown)}; "
+            f"it takes enabled, base, prefix."
+        )
+    return BranchesConfig(enabled=enabled, base=base, prefix=prefix)
 
 
 DEFAULT_PSOPERATOR_REPO = Path("~/ai/psoperator").expanduser()
