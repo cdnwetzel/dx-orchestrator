@@ -87,6 +87,10 @@ def _no_writes_to_the_real_evidence_store():
     )
 
 
+# dx learn's shared fixture (pxx run directories in pxx's real layout).
+from learn_helpers import pxx  # noqa: E402,F401
+
+
 @pytest.fixture(autouse=True)
 def _isolate_dx_env(monkeypatch, tmp_path_factory):
     """Point dx at fixtures and drop any inherited dx env for every test."""
@@ -98,6 +102,11 @@ def _isolate_dx_env(monkeypatch, tmp_path_factory):
     # dx run and dx verify-gui both emit by default. Redirect to a throwaway dir
     # unless the test sets its own.
     monkeypatch.setenv("DX_EVIDENCE_DIR", str(tmp_path_factory.mktemp("dx-evidence")))
+    # Same rule for dx learn: no test reaches the real queue, pxx state, audit
+    # log or a SQL Server. A test that needs one sets it explicitly.
+    for var in ("DX_LEARN_MSSQL", "DX_LEARN_PXX_STATE", "DX_LEARN_PSOPERATOR_AUDIT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DX_LEARN_STORE", str(tmp_path_factory.mktemp("dx-learn")))
     yield
 
 
