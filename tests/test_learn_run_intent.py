@@ -26,6 +26,7 @@ import json
 
 import pytest
 
+from dx import learn_views
 from dx.learn_engine import LearnConfig, Learner, _key, observations, reconcile
 from dx.learn_forward import EXPLORATORY_REFUSAL, forward_proposals
 from dx.learn_model import (
@@ -435,6 +436,47 @@ class TestEfficacyPolicySeam:
         assert r["status"] == "inconclusive (policy-changed)"
         assert any("new excluded intent value: smoke" in cv for cv in r["caveats"])
         assert any("v2" in cv for cv in r["caveats"])
+
+    def test_a_post_seam_adoption_straddling_the_seam_is_voided(self, tmp_path, pxx,
+                                                                monkeypatch):
+        """The maintainer lands the v1→v2 seam and bumps the current policy
+        version to v2 (the state POLICY_SEAMS + the constant will be in after
+        the first real policy change). The pre-seam default must still resolve
+        to the genesis v1: if it resolved to the new current version, this
+        v2-bound adoption's before-window would be measured under v2 on both
+        sides and the comparison would silently compute across the seam —
+        exactly what A5 forbids."""
+        c = self._world(tmp_path, pxx)
+        seam = PolicySeam(version="v2", at=ago(10),
+                          description="new excluded intent value: smoke")
+        monkeypatch.setattr(learn_views, "POLICY_VERSION", "v2")   # the bump at seam-landing
+        learner = Learner(CFG, NOW, view=CONSERVATIVE,
+                          policy_seams={CONSERVATIVE: [seam]})
+        [r] = learner.efficacy(c, [self._adoption(view=CONSERVATIVE, policy_version="v2")])
+        assert r["status"] == "inconclusive (policy-changed)"
+        assert any("new excluded intent value: smoke" in cv for cv in r["caveats"])
+
+    def test_a_legacy_adoption_measured_entirely_before_the_seam_is_not_voided(
+            self, tmp_path, pxx, monkeypatch):
+        """Companion: a v1-bound adoption whose before AND after windows both
+        precede the seam is measured under v1 throughout — the comparison
+        stands. (If the pre-seam default followed the bumped current version,
+        this legacy adoption would void forever.)"""
+        for i in range(20):                          # merge 150 days ago; failing before
+            pxx.run(when=ago(151 + i), code="ROUND_CAP")
+            pxx.run(when=ago(149 - i), code="COMPLETED")
+        c = _corpus(pxx)
+        read_ledger(write_ledger(tmp_path / "ledger", [row("T-FIX", "MERGED", ago(150))]), c)
+        seam = PolicySeam(version="v2", at=ago(10),     # long after both windows end
+                          description="new excluded intent value: smoke")
+        monkeypatch.setattr(learn_views, "POLICY_VERSION", "v2")
+        learner = Learner(CFG, NOW, view=CONSERVATIVE,
+                          policy_seams={CONSERVATIVE: [seam]})
+        ad = Adoption("k" * 24, {"name": "class_failure_rate", "key": "svc-a",
+                                 "source": "pxx"}, "Chris", ago(160), task_id="T-FIX",
+                      view=CONSERVATIVE, policy_version="v1")
+        [r] = learner.efficacy(c, [ad])
+        assert r["status"] == "improvement-observed"
 
     def test_no_seam_no_void(self, tmp_path, pxx):
         c = self._world(tmp_path, pxx)

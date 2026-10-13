@@ -151,7 +151,12 @@ Adoptions recorded before views default to the all-runs policy *at read time*
 — their stored records are never rewritten. If the policy changes — a new
 excluded intent value, or a revision of a view definition — between or inside
 the windows, the comparison is voided as `inconclusive (policy-changed)` with
-the seam named, never silently computed across it.
+the seam named, never silently computed across it. Mechanically: times before
+a view's first recorded seam always resolve to the *genesis* policy (`v1`,
+never bumped), while new adoptions bind the *current* policy — landing a seam
+means recording it in `POLICY_SEAMS` and bumping the current version, and the
+split between those two constants is what guarantees a seam always voids the
+comparisons that cross it.
 
 **What the kinds cannot do.** The kinds are a closed list. None of them relaxes
 a gate, budget, risk tier or freshness window, and a test pins that list.

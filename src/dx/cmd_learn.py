@@ -496,6 +496,9 @@ def cmd_learn_accept(args: argparse.Namespace) -> None:
                           decision_note=args.note, weight_at_decision=rec.evidence_weight)
         adoption = Adoption(rec_key=rec.rec_key, metric=dict(rec.metric), accepted_by=by,
                             accepted_at=now, note=args.note, task_id=args.task,
+                            # The CURRENT policy at proposal time — never the
+                            # genesis default policy_at() uses before the first
+                            # seam (learn_views: the two are split on purpose).
                             view=rec.view, policy_version=CURRENT_POLICY[rec.view],
                             revision=prior.revision if prior else 0)
         spec = render_spec(updated, args.task or "<TASK-ID>", accepted_by=by)

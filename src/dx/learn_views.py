@@ -45,11 +45,22 @@ VIEW_LABELS = {
 # subject of the analysis), and "unknown" can never be excluded by intent rules.
 EXCLUDED_INTENTS = frozenset({"probe", "eval", "drill"})
 
-# The exclusion-policy version in force for every view. A policy change — a
-# new excluded intent value, or a revision of a view definition — is a named
-# seam appended to POLICY_SEAMS with its effective time; efficacy comparisons
-# across a seam are voided as "inconclusive (policy-changed)".
-POLICY_VERSION = "v1"
+# The exclusion-policy versions, deliberately two constants:
+#
+# * GENESIS_POLICY — the policy in force before a view's FIRST seam. It is
+#   never bumped: policy_at() resolves times before the first seam to it, so
+#   a seam always splits the span into the version before and the version
+#   after. (If the pre-seam default followed the current version instead,
+#   landing the first seam and bumping the current version would make
+#   before == after == the new version, and a comparison straddling the seam
+#   would silently compute across it — what A5 forbids.)
+# * CURRENT_POLICY — what NEW adoptions bind at proposal time. Landing a seam
+#   means two edits: append it to POLICY_SEAMS and bump CURRENT_POLICY[view]
+#   (and POLICY_VERSION below, its scalar source). GENESIS_POLICY stays.
+#
+# With no seams recorded, genesis == current == "v1".
+GENESIS_POLICY = "v1"
+POLICY_VERSION = "v1"          # current version new adoptions bind; bump at seam-landing
 CURRENT_POLICY = {view: POLICY_VERSION for view in VIEWS}
 
 
@@ -82,8 +93,11 @@ class ViewReport:
 
 
 def policy_at(view: str, t: datetime, seams: dict[str, list[PolicySeam]] | None = None) -> str:
-    """The exclusion-policy version in force for ``view`` at time ``t``."""
-    version = POLICY_VERSION
+    """The exclusion-policy version in force for ``view`` at time ``t``.
+
+    Times before the first seam resolve to GENESIS_POLICY — never to the
+    current version — so a seam always voids comparisons straddling it."""
+    version = GENESIS_POLICY
     for s in sorted((POLICY_SEAMS if seams is None else seams).get(view, []), key=lambda s: s.at):
         if s.at <= t:
             version = s.version
