@@ -118,8 +118,14 @@ def _read_events(run_dir: Path) -> _Events:
             out.session_starts.append(data)
         if ev.get("kind") != "gate_decision":
             continue
-        if not isinstance(data, dict) or not isinstance(data.get("gate"), str) \
-                or not isinstance(data.get("allowed"), bool):
+        if not isinstance(data, dict) or not isinstance(data.get("gate"), str):
+            raise ValueError(f"events.jsonl line {n}: malformed gate_decision")
+        if "allowed" not in data:
+            # A non-verdict notification (pxx's transport_retry / fallback):
+            # endpoint resilience, not a gate outcome. It carries no verdict,
+            # so it contributes no gate observation — and must not cost the run.
+            continue
+        if not isinstance(data["allowed"], bool):
             raise ValueError(f"events.jsonl line {n}: malformed gate_decision")
         out.gates.append(GateObs(data["gate"], data["allowed"]))
         failures = data.get("new_failures", [])

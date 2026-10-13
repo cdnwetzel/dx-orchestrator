@@ -86,6 +86,34 @@ class TestPxxReader:
         read_pxx_runs(pxx.root, c)
         assert not c.attempts and c.quarantined
 
+    def test_non_verdict_gate_events_do_not_quarantine_the_run(self, pxx):
+        # Real pxx emits transport_retry / fallback gate_decision events with no
+        # `allowed` verdict (pxx backends/native.py): endpoint resilience
+        # notifications, not gate outcomes. They must not cost the whole run —
+        # on the 2026-10-12 pilot corpus they quarantined 184 of 875 runs.
+        rid = pxx.run(when=ago(1), loop=False, gates=[
+            {"gate": "transport_retry", "endpoint": "http://127.0.0.1:1",
+             "reason": "ConnectError", "retries_left": 2, "delay_s": 5.0},
+            {"gate": "fallback", "from": "m1", "to": "m2", "reason": "ConnectError"},
+            {"gate": "scope_recheck", "round": 1, "allowed": True}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert [a.run_id for a in c.attempts] == [rid] and not c.quarantined
+        # only the verdict event becomes a gate observation
+        assert [(g.gate, g.allowed) for a in c.attempts for g in a.gates] == [("scope_recheck", True)]
+
+    def test_a_non_bool_allowed_still_quarantines(self, pxx):
+        pxx.run(when=ago(1), loop=False, gates=[{"gate": "tests", "allowed": "yes"}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert not c.attempts and c.quarantined
+
+    def test_a_gate_event_with_no_gate_name_still_quarantines(self, pxx):
+        pxx.run(when=ago(1), loop=False, gates=[{"retries_left": 2}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert not c.attempts and c.quarantined
+
     def test_missing_runs_dir_refuses(self, tmp_path):
         with pytest.raises(LearnSourceError, match="no pxx runs directory"):
             read_pxx_runs(tmp_path / "nowhere", Corpus())

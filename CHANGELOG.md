@@ -7,6 +7,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `dx learn` quarantined any pxx run whose `events.jsonl` held a
+  `gate_decision` without an `allowed` verdict — but pxx's `transport_retry`
+  and `fallback` endpoint-resilience notifications legitimately carry none.
+  On the first real-evidence pilot (875 finished runs), this discarded 184
+  runs holding 86% of all failures, biasing every rate toward success.
+  Non-verdict events are now ignored; a missing gate name or a non-boolean
+  `allowed` still quarantines. Found by the 2026-10-12 pilot.
+
 ## [0.24.0] — 2026-10-12
 
 ### Added
