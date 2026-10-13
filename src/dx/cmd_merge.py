@@ -519,10 +519,10 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
         # its own failure; the record is then simply absent and the check
         # says so.
         try:
-            try:
-                sections = (get_branches_config(), get_review_config(), get_approval_config())
-            except FileNotFoundError:
-                sections = (None, None, None)   # no manifest: the record says so
+            sections = (get_branches_config(), get_review_config(), get_approval_config())
+        except (OSError, ConfigError):
+            sections = (None, None, None)   # no usable manifest: the record classifies why
+        try:
             rec["effective"] = capture_effective_config(
                 cli_overrides={
                     "force": bool(getattr(args, "force", False)),

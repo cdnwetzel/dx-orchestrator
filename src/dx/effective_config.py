@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .config_loader import ConfigSnapshot, get_config_snapshot
+from .config_loader import ConfigError, ConfigSnapshot, get_config_snapshot
 from .evidence import Check
 from .redact import redact
 
@@ -80,27 +80,39 @@ def _section(obj: Any) -> Any:
 class EffectiveConfig:
     """Captured once; carried by value; written verbatim."""
 
-    snapshot: ConfigSnapshot | None   # None when no manifest was loaded (merge with DX_LEDGER_REPO only)
+    snapshot: ConfigSnapshot | None   # None when no manifest was loaded
     json_text: str        # the redacted canonical record — the bytes written
     sha256: str           # sha256(json_text.encode()) — held here, never in the artifact
     captured_utc: str
+    unavailable_kind: str | None = None    # why no manifest was loaded (classify_unavailable)
+    unavailable_detail: str | None = None
 
     def check(self, written_text: str) -> Check:
-        """The `manifest_digest` check: the bytes that will be written equal
-        the bytes captured. Full digests in the detail, so a read-back can
-        quote them."""
-        ok = hashlib.sha256(written_text.encode("utf-8")).hexdigest() == self.sha256
+        """The `manifest_digest` check. `ok` means two things at once: a
+        manifest was loaded and digested, AND the bytes that will be written
+        equal the bytes captured. With no manifest loaded the check is NOT ok
+        and says `unrecorded:` with the classified reason — the record is
+        still written and verifiable, but there is no manifest binding to
+        claim. Full digests in the detail, so a read-back can quote them."""
+        bytes_ok = hashlib.sha256(written_text.encode("utf-8")).hexdigest() == self.sha256
         snap = self.snapshot
-        manifest_part = (
-            f"normalized={snap.normalized_sha256 or 'null'} raw={snap.raw_sha256}"
-            if snap is not None else "manifest=none (no manifest was loaded)"
-        )
+        if snap is None:
+            return Check(
+                ok=False,
+                path="artifacts/config.json",
+                detail=(
+                    f"unrecorded: no manifest was loaded ({self.unavailable_kind}: "
+                    f"{self.unavailable_detail}); effective={self.sha256}"
+                    + ("" if bytes_ok else " (written bytes differ from the captured record)")
+                ),
+            )
         return Check(
-            ok=ok,
+            ok=bytes_ok,
             path="artifacts/config.json",
             detail=(
-                f"{manifest_part} effective={self.sha256}"
-                + ("" if ok else " (written bytes differ from the captured record)")
+                f"normalized={snap.normalized_sha256 or 'null'} raw={snap.raw_sha256} "
+                f"effective={self.sha256}"
+                + ("" if bytes_ok else " (written bytes differ from the captured record)")
             ),
         )
 
@@ -112,6 +124,28 @@ class EffectiveConfig:
                                "unavailable": "no manifest was loaded"},
                               indent=2, sort_keys=True) + "\n"
         return observe_manifest(self.snapshot.path)
+
+
+def classify_unavailable(exc: BaseException) -> tuple[str, str]:
+    """Why the manifest could not be loaded, as a kind a reader can act on.
+
+    `requested-*`: DX_CONFIG names a file explicitly, so its absence or
+    unreadability is an operator error, never a legitimate "no manifest".
+    `default-*`: nothing named a manifest and the default path is absent
+    (legitimate for `dx merge` with DX_LEDGER_REPO set), unreadable, or
+    invalid. The caller's own fail-closed behaviour on these is unchanged;
+    this only labels the record.
+    """
+    requested = "DX_CONFIG" in os.environ
+    if isinstance(exc, FileNotFoundError):
+        kind = "missing" if requested else "absent"
+    elif isinstance(exc, ConfigError):
+        kind = "invalid"
+    elif isinstance(exc, OSError):
+        kind = "unreadable"
+    else:
+        kind = "error"
+    return (f"{'requested' if requested else 'default'}-{kind}", redact(str(exc))[0])
 
 
 def capture_effective_config(
@@ -129,13 +163,17 @@ def capture_effective_config(
     needs is passed in by the caller that just resolved it; this function
     reads the environment once, here, and the loader's snapshot of the
     mapping those values came from."""
+    unavailable: dict[str, str] | None = None
     try:
         snapshot: ConfigSnapshot | None = get_config_snapshot()
-        manifest_unavailable: str | None = None
-    except FileNotFoundError as exc:
+    except (OSError, ConfigError) as exc:
         # `dx merge` with DX_LEDGER_REPO set runs without a manifest; the
-        # record says so rather than inventing one or refusing the gate.
-        snapshot, manifest_unavailable = None, redact(str(exc))[0]
+        # record says so — classified — rather than inventing one. The
+        # caller's own refusal on a missing or invalid manifest (dx run's
+        # route resolution, dx merge's precheck) is untouched by this.
+        snapshot = None
+        kind, detail = classify_unavailable(exc)
+        unavailable = {"kind": kind, "detail": detail}
     env_overrides = {
         name: _env_value(os.environ[name]) for name in OVERRIDE_ENV if name in os.environ
     }
@@ -157,7 +195,7 @@ def capture_effective_config(
     }
     record = {
         "manifest": snapshot.as_json() if snapshot is not None else None,
-        "manifest_unavailable": manifest_unavailable,
+        "manifest_unavailable": unavailable,
         "overrides_env": env_overrides,
         "overrides_cli": cli_overrides,
         "resolved": resolved,
@@ -175,6 +213,8 @@ def capture_effective_config(
         json_text=redacted,
         sha256=hashlib.sha256(redacted.encode("utf-8")).hexdigest(),
         captured_utc=str(record["captured_utc"]),
+        unavailable_kind=unavailable["kind"] if unavailable else None,
+        unavailable_detail=unavailable["detail"] if unavailable else None,
     )
 
 

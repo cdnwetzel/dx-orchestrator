@@ -9,6 +9,7 @@ import pytest
 
 from dx.config_loader import (
     CanonicalizationError,
+    ConfigError,
     canonical_manifest_json,
     get_config_snapshot,
     load_config,
@@ -271,15 +272,52 @@ def test_observation_error_text_is_redacted(tmp_path):
     assert "[REDACTED:" in obs["unavailable"]
 
 
-def test_no_manifest_is_recorded_as_such_not_invented(tmp_path, monkeypatch):
-    """`dx merge` with DX_LEDGER_REPO set runs without a manifest; the record
-    says so, the check still verifies the written bytes, and the observation
-    is `unavailable`."""
+def test_an_explicitly_requested_missing_manifest_is_requested_missing_and_unrecorded(tmp_path, monkeypatch):
+    """DX_CONFIG names a file that is not there: an operator error, labelled
+    as such; the check is NOT ok (no manifest binding to claim), the record
+    is still written and its bytes still verify, the observation is
+    unavailable."""
     monkeypatch.setenv("DX_CONFIG", str(tmp_path / "absent.yml"))
     eff = capture_effective_config(cli_overrides={})
     rec = json.loads(eff.json_text)
-    assert rec["manifest"] is None and rec["manifest_unavailable"].startswith("Hardware manifest not found")
-    assert eff.snapshot is None
+    assert rec["manifest"] is None
+    assert rec["manifest_unavailable"]["kind"] == "requested-missing"
+    assert rec["manifest_unavailable"]["detail"].startswith("Hardware manifest not found")
     check = eff.check(eff.json_text)
-    assert check.ok and "manifest=none" in check.detail
+    assert check.ok is False and check.detail.startswith("unrecorded: no manifest was loaded (requested-missing")
+    assert f"effective={eff.sha256}" in check.detail
     assert json.loads(eff.observe())["unavailable"] == "no manifest was loaded"
+
+
+def test_a_legitimately_absent_default_manifest_is_default_absent(tmp_path, monkeypatch):
+    """No DX_CONFIG and no file at the default path — `dx merge` with
+    DX_LEDGER_REPO set runs this way on purpose. Still unrecorded, labelled
+    differently from an operator error."""
+    from dx import config_loader
+    monkeypatch.delenv("DX_CONFIG", raising=False)
+    monkeypatch.setattr(config_loader, "DEFAULT_CONFIG_PATH", tmp_path / "nowhere.yml")
+    eff = capture_effective_config(cli_overrides={})
+    assert json.loads(eff.json_text)["manifest_unavailable"]["kind"] == "default-absent"
+    assert eff.check(eff.json_text).ok is False
+
+
+def test_an_invalid_manifest_is_classified_invalid_and_the_loader_still_refuses(tmp_path, monkeypatch):
+    _manifest(tmp_path, monkeypatch, "roles: [unclosed\n", name="bad.yml")   # invalid YAML
+    with pytest.raises(ConfigError):          # the loader's own refusal is unchanged
+        get_config_snapshot()
+    eff = capture_effective_config(cli_overrides={})
+    assert json.loads(eff.json_text)["manifest_unavailable"]["kind"] == "requested-invalid"
+    assert eff.check(eff.json_text).ok is False
+
+
+def test_an_unreadable_manifest_is_classified_unreadable(tmp_path, monkeypatch):
+    import os
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything")
+    path = _manifest(tmp_path, monkeypatch, name="locked.yml")
+    path.chmod(0)
+    try:
+        eff = capture_effective_config(cli_overrides={})
+    finally:
+        path.chmod(0o600)
+    assert json.loads(eff.json_text)["manifest_unavailable"]["kind"] == "requested-unreadable"
