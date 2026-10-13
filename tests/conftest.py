@@ -118,6 +118,7 @@ def _reset_caches():
     def clear():
         config_loader._config = None
         config_loader._config_source = None
+        config_loader._config_snapshot = None
         role_registry._registry = None
         role_registry._registry_source = None
 

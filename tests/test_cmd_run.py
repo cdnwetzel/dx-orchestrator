@@ -270,6 +270,85 @@ class TestEvidenceEmission:
         assert manifest["role"] == "widget-engineer"
         assert "Evidence:" in capsys.readouterr().out
 
+    def test_the_bundle_carries_the_captured_configuration_and_its_check(self, monkeypatch, tmp_path):
+        """S3: config.json is the record captured before pxx ran, written
+        verbatim; the digest that verifies it is in the check, not the file;
+        the observation is a separate artifact."""
+        import hashlib
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--no-commit", "--evidence-dir", str(tmp_path))
+        bundle = next((tmp_path / "T-EV").iterdir())
+        cfg_text = (bundle / "artifacts" / "config.json").read_text()
+        cfg = json.loads(cfg_text)
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        check = manifest["checks"]["manifest_digest"]
+        assert check["ok"] is True and check["path"] == "artifacts/config.json"
+        assert f"effective={hashlib.sha256(cfg_text.encode()).hexdigest()}" in check["detail"]
+        assert f"raw={cfg['manifest']['raw_sha256']}" in check["detail"]
+        assert "effective_sha256" not in cfg_text
+        assert cfg["overrides_cli"]["no_commit"] is True
+        assert cfg["resolved"]["route"]["endpoint"] == "http://vllm.invalid:8007"
+        observed = json.loads((bundle / "artifacts" / "config-observed.json").read_text())
+        assert observed["post_run_raw_sha256"] == cfg["manifest"]["raw_sha256"]
+        sums = (bundle / "SHA256SUMS").read_text()
+        assert "artifacts/config.json" in sums and "artifacts/config-observed.json" in sums
+
+    def test_a_manifest_edited_after_capture_leaves_the_record_and_moves_the_observation(
+        self, monkeypatch, tmp_path, manifest_path
+    ):
+        import shutil
+        copy = tmp_path / "manifest.yml"
+        shutil.copy(manifest_path, copy)
+        monkeypatch.setenv("DX_CONFIG", str(copy))
+
+        class Result:
+            returncode = 0
+
+        def edit_then_ok(*a, **k):
+            copy.write_text(copy.read_text() + "\n# edited while pxx ran\n")
+            return Result()
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", edit_then_ok)
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--no-commit", "--evidence-dir", str(tmp_path / "ev"))
+        bundle = next((tmp_path / "ev" / "T-EV").iterdir())
+        cfg = json.loads((bundle / "artifacts" / "config.json").read_text())
+        observed = json.loads((bundle / "artifacts" / "config-observed.json").read_text())
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        assert manifest["checks"]["manifest_digest"]["ok"] is True
+        assert observed["post_run_raw_sha256"] != cfg["manifest"]["raw_sha256"]
+
+    def test_a_manifest_deleted_before_emission_is_an_unavailable_observation_not_a_failure(
+        self, monkeypatch, tmp_path, manifest_path
+    ):
+        import shutil
+        copy = tmp_path / "manifest.yml"
+        shutil.copy(manifest_path, copy)
+        monkeypatch.setenv("DX_CONFIG", str(copy))
+
+        class Result:
+            returncode = 0
+
+        def delete_then_ok(*a, **k):
+            copy.unlink()
+            return Result()
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", delete_then_ok)
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--no-commit", "--evidence-dir", str(tmp_path / "ev"))
+        bundle = next((tmp_path / "ev" / "T-EV").iterdir())
+        observed = json.loads((bundle / "artifacts" / "config-observed.json").read_text())
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        assert observed["post_run_raw_sha256"] is None
+        assert observed["unavailable"].startswith("FileNotFoundError")
+        assert manifest["checks"]["manifest_digest"]["ok"] is True
+
     def test_a_failed_run_still_emits_a_bundle(self, monkeypatch, tmp_path):
         """A store that only records successes is a highlight reel."""
         code = self._run_with_evidence(monkeypatch, tmp_path, pxx_code=2)

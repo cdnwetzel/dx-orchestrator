@@ -9,6 +9,24 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Manifest-digest evidence (S3).** `load_config` reads the manifest once
+  and caches a `ConfigSnapshot` with the mapping: the raw digest of the
+  bytes read and a normalized digest over a collision-free canonical form
+  of the parsed mapping (`k:`-prefixed keys, `t:`-tagged timestamps, binary
+  and non-finite floats; non-string keys and cycles are recorded as
+  unsupported, never a load failure). `dx run` and `dx merge` capture the
+  effective configuration at the moment they resolve it — snapshot
+  digests, `DX_*` overrides (names; values only when paths), CLI flags, the
+  resolved sections and the route with endpoint userinfo/query/fragment
+  removed — redact it, digest it, and write it verbatim as
+  `artifacts/config.json`; the `manifest_digest` check verifies the written
+  bytes against the digest held in the check, which the artifact does not
+  contain. A separate `artifacts/config-observed.json` records a post-run
+  read of the manifest (hash, or `unavailable` with a redacted reason) and
+  can never fail emission. `dx doctor` prints full digests of its own read.
+  `--no-evidence` runs leave no record. `MergeGateBundle` gains
+  `artifacts`. Specification: AskPS/ACP `dx-s3-manifest-digest-spec-20261012-v4`.
+
 - **`dx learn` run-intent stratification — three detector views over one
   complete corpus** (dx half of the cross-repo run-intent spec with pxx).
   pxx records a declared `run_intent` (`operational` | `probe` | `eval` |
