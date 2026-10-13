@@ -39,14 +39,22 @@ from .learn_bridge import (
 )
 from .learn_model import ForwardRecord, Recommendation
 from .learn_store import StaleDecision, Store, Tx
+from .learn_views import ALL_RUNS, EXPLORATORY
 
 ACTOR = "dx learn"
 _RETRY = "retry: "          # NOT_WRITTEN notes with this prefix are forwarded again later
 _DECIDED_VIEWS = frozenset({"qualified", "rejected"})
+# An exploratory-view proposal carries no decision weight by construction:
+# refused here, loudly, so declared-intent filtering can never reach pxx's
+# production config through this path.
+EXPLORATORY_REFUSAL = (f"exploratory view ({EXPLORATORY}): declared-intent-filtered proposals "
+                       "carry no decision weight and are never forwarded to pxx")
 
 
 def _eligible(rec: Recommendation, fwd: ForwardRecord | None) -> bool:
     if rec.status != "PROPOSED" or rec.kind not in FORWARDABLE_KINDS:
+        return False
+    if rec.view == EXPLORATORY:
         return False
     if fwd is None:
         return True
@@ -83,6 +91,19 @@ def forward_proposals(store: Store, state_dir: Path, now: datetime) -> list[dict
         recs, fwds = store.load_recs(), store.load_forwards()
         for key in sorted(recs):
             rec, fwd = recs[key], fwds.get(key)
+            if rec.view == EXPLORATORY and rec.status == "PROPOSED" \
+                    and rec.kind in FORWARDABLE_KINDS:
+                # Refused, loudly: never eligible, and the refusal is reported
+                # every pass so the boundary is visible, not silent.
+                results.append({"rec_key": key, "state": "REFUSED", "note": EXPLORATORY_REFUSAL})
+                continue
+            if rec.view != ALL_RUNS:
+                # The forwarding path predates views and carries the all-runs
+                # queue — the same proposals it always carried. Forwarding the
+                # newer conservative view would be new behavior (and pxx keys
+                # its inbox by slug, so two views of one condition would race
+                # one entry); it is a separate decision, not this feature.
+                continue
             if not _eligible(rec, fwd):
                 continue
             try:

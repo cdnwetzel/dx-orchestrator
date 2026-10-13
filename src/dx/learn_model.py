@@ -25,6 +25,16 @@ NEGATIVE_ACTIONS = frozenset({"REDLINE", "INCOMPLETE", "ABANDONED", "ESCALATED"}
 # deliberate omission, so it is never counted for or against a lane.
 LANE_RESULTS = frozenset({"PASS", "PASS_WITH_FINDINGS", "FAIL", "NO_REVIEW", "EXCLUDED"})
 
+# Declared run intent (pxx, prospective). Default is "unknown": legacy and
+# unmarked runs are never implicitly operational, never implicitly probe.
+# An unrecognized value reads as "unknown" (fail-safe, forward-compatible).
+RUN_INTENTS = frozenset({"operational", "probe", "eval", "drill", "unknown"})
+# Provenance trust levels. "first-party" names a code path (pxx's own internal
+# call sites), not a cryptographic attestation; "declared" is external and
+# unverified. dx records only these two: anything that is not a clean,
+# cross-checked first-party record is treated as not-first-party ("declared").
+RUN_INTENT_PROVENANCES = frozenset({"first-party", "declared"})
+
 # What a learned recommendation may be. Closed on purpose: there is no kind
 # that relaxes a gate, a budget or a risk tier, and a test holds that line.
 REC_KINDS = frozenset({
@@ -101,6 +111,9 @@ class Attempt:
     gates: tuple[GateObs, ...]
     signatures: tuple[str, ...]
     dx_task_id: str | None = None
+    # Declared at session construction (pxx). "unknown" + None = legacy/unmarked.
+    run_intent: str = "unknown"
+    run_intent_provenance: str | None = None
 
     @property
     def success(self) -> bool:
@@ -166,6 +179,17 @@ class Quarantined:
     error: str
 
 
+@dataclass(frozen=True)
+class Notice:
+    """A run-record anomaly that changes how the run is read, surfaced by run
+    id in the pass output. A notice never quarantines: the run stays in the
+    corpus and is read conservatively instead (e.g. conflicting intent records
+    read as ``unknown``)."""
+    kind: str            # intent-conflict | intent-unrecognized | intent-provenance-*
+    run_id: str
+    detail: str
+
+
 @dataclass
 class Corpus:
     attempts: list[Attempt] = field(default_factory=list)
@@ -174,6 +198,7 @@ class Corpus:
     lanes: list[LaneResult] = field(default_factory=list)
     signatures: dict[str, Signature] = field(default_factory=dict)
     quarantined: list[Quarantined] = field(default_factory=list)
+    notices: list[Notice] = field(default_factory=list)  # intent conflicts etc., by run id
     sources: dict[str, str] = field(default_factory=dict)  # source -> what was read, for the report
     ledger_head: str | None = None
 
@@ -203,6 +228,9 @@ class Recommendation:
     decided_at: datetime | None = None
     decision_note: str | None = None
     weight_at_decision: float | None = None
+    # The detector view that raised this proposal ("all-runs" for every
+    # proposal predating views; legacy records without the field read as such).
+    view: str = "all-runs"
     # Optimistic-concurrency revision: 0 = never stored. Every committed write
     # bumps it; a write naming a stale revision is refused (see learn_store).
     revision: int = 0
@@ -219,6 +247,12 @@ class Adoption:
     task_id: str | None = None       # the dx task implementing it; efficacy starts at its MERGED row
     active: bool = True
     retired_at: datetime | None = None
+    # The exclusion policy the metric was pre-registered under: the view and
+    # the policy version named at proposal time (e.g. all-runs + "v1"). Legacy
+    # records without these fields default to the all-runs policy AT READ
+    # TIME; their stored records are never rewritten.
+    view: str = "all-runs"
+    policy_version: str = "v1"
     revision: int = 0
 
 
@@ -273,7 +307,8 @@ def rec_from_json(d: dict[str, Any]) -> Recommendation:
         suggested_role=d.get("suggested_role") or "tech-lead", status=d["status"],
         created_at=dt("created_at"), updated_at=dt("updated_at"), decided_by=d.get("decided_by"),
         decided_at=dt("decided_at"), decision_note=d.get("decision_note"),
-        weight_at_decision=d.get("weight_at_decision"), revision=int(d.get("revision", 0)))
+        weight_at_decision=d.get("weight_at_decision"), view=d.get("view") or "all-runs",
+        revision=int(d.get("revision", 0)))
 
 
 def adoption_from_json(d: dict[str, Any]) -> Adoption:
@@ -282,6 +317,7 @@ def adoption_from_json(d: dict[str, Any]) -> Adoption:
         accepted_at=parse_iso(d["accepted_at"], "accepted_at"), note=d.get("note") or "",
         task_id=d.get("task_id"), active=bool(d.get("active", True)),
         retired_at=parse_iso(d["retired_at"], "retired_at") if d.get("retired_at") else None,
+        view=d.get("view") or "all-runs", policy_version=d.get("policy_version") or "v1",
         revision=int(d.get("revision", 0)))
 
 

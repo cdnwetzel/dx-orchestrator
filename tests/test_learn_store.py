@@ -339,10 +339,14 @@ def test_cli_pass_reports_and_preserves_a_decision_made_during_it(tmp_path, pxx,
     _dx(monkeypatch, "learn", "run", "--no-ledger", "--json", "--now", NOW.isoformat())
     key = json.loads(capsys.readouterr().out)["proposed"][0]
     real_reconcile = cmd_learn.reconcile
+    decided = False
 
     def reconcile_then_decide(*a, **k):   # after the pass read the queue, before it writes
+        nonlocal decided
         out = real_reconcile(*a, **k)
-        store.commit(_accept_tx(store.load_recs()[key]))
+        if not decided:   # the pass reconciles once per view; the decision lands once
+            decided = True
+            store.commit(_accept_tx(store.load_recs()[key]))
         return out
     monkeypatch.setattr(cmd_learn, "reconcile", reconcile_then_decide)
     _dx(monkeypatch, "learn", "run", "--no-ledger", "--json", "--now", NOW.isoformat())

@@ -7,6 +7,51 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`dx learn` run-intent stratification — three detector views over one
+  complete corpus** (dx half of the cross-repo run-intent spec with pxx).
+  pxx records a declared `run_intent` (`operational` | `probe` | `eval` |
+  `drill` | `unknown`, default `unknown`) and a `run_intent_provenance`
+  (`first-party` | `declared`) at session construction; dx reads
+  `session_start` first with `task.json` as cross-check.
+  - **Ingestion is unchanged and complete**: every readable run enters the
+    corpus and the all-runs accounting, whatever its intent; legacy runs are
+    `unknown` and stay in every view. Conflicting intent records read as
+    `unknown` and are surfaced by run id as notices — never quarantined, and
+    the convenient value never wins. Unrecognized values read as `unknown`.
+  - **Provenance is a trust level, not an attestation**: anything that is not
+    a clean, cross-checked `first-party` record (declared, missing, malformed
+    or conflicting provenance) is treated as not-first-party and retained by
+    the conservative view.
+  - **Views:** `all-runs` (today's behavior; `rec_key` derivation unchanged
+    byte-for-byte, so pre-existing proposals — including the three deferred
+    pilot ones — keep their keys, dispositions and adoption links),
+    `operational-analysis` (conservative: excludes only first-party,
+    non-contradictory probe/eval/drill), and `declared-intent-filtered`
+    (exploratory: excludes every positively declared probe/eval/drill).
+    `unknown` is never excluded. A proposal stales only in its own view.
+  - **Exploratory carries no decision weight — enforced**: the forwarding
+    path refuses exploratory proposals every pass with a loud REFUSED note,
+    and `dx learn accept` / `dx learn spec` refuse to turn one into a task.
+    The forwarding path still carries the all-runs queue only.
+  - **Exclusions are measured, never silent**: each pass reports per-view
+    included/excluded counts by intent and provenance, the excluded-but-failed
+    runs by run id, intent notices, and mixed-provenance warnings (a declared
+    probe/eval/drill run contradicted by operational runs in its scope or by
+    a ledger link stays in the conservative view and is warned about in every
+    view's report).
+  - **Efficacy binds the policy**: an adoption records the view and
+    exclusion-policy version named at proposal time; records predating views
+    default to the all-runs policy at read time without a rewrite. A
+    comparison across a policy seam (a new excluded intent value, or a
+    view-definition revision) is voided as `inconclusive (policy-changed)`
+    with the seam named.
+  - The UNQUALIFIED MSSQL backend moves together: `View` on
+    Recommendation/Adoption, `PolicyVersion` on Adoption, and
+    `RunIntent`/`RunIntentProvenance` on the per-pass Attempt snapshot
+    (DDL, columns, values and loaders in lockstep).
+
 ### Fixed
 
 - `dx learn` quarantined any pxx run whose `events.jsonl` held a
