@@ -93,6 +93,71 @@ surfaced on.
 surfaced. A problem a human catches in the ledger weighs 4. A problem caught by
 psoperator weighs 3. A problem caught by a pxx gate weighs 1.5–2.
 
+## Run intent and the three detector views
+
+pxx records a declared `run_intent` (`operational` | `probe` | `eval` |
+`drill` | `unknown`, default `unknown`) and a `run_intent_provenance`
+(`first-party` | `declared`) at session construction, identically in
+`task.json` and the `session_start` event. Intent never changes how a run is
+gated, budgeted or routed — it is metadata for reading, not a control.
+
+**Ingestion is complete and unchanged.** Every readable run enters the corpus
+and the all-runs accounting, whatever its intent. Legacy and unmarked runs
+ingest as `unknown`; nothing is dropped, relabeled or deleted. `session_start`
+is read first with `task.json` as cross-check. On any conflict the run reads
+as `unknown` and the conflict is surfaced by run id as a *notice* in the pass
+output — never a quarantine, and the convenient value is never chosen. An
+unrecognized intent value also reads as `unknown`.
+
+**Provenance is a trust level, not an attestation.** `first-party` names pxx's
+own internal call sites (a code path, not a cryptographic proof); `declared`
+is external and unverified. dx records only these two levels: anything that is
+not a clean first-party record — a declared, missing, malformed, conflicting,
+or uncross-checkable provenance — is treated as not-first-party and recorded
+`declared`. The raw anomaly is surfaced as a notice.
+
+Each pass computes three views; a view only selects which attempts the
+detectors see:
+
+| View | Excludes | Standing |
+| --- | --- | --- |
+| `all-runs` | nothing | Today's behavior; the continuity baseline. Its `rec_key` derivation is the pre-views one, byte-for-byte: proposals raised before views (including any deferred ones) keep their keys, dispositions and adoption links, and no duplicates are minted. |
+| `operational-analysis` (CONSERVATIVE) | only **first-party, non-contradictory** probe/eval/drill declarations | Retains `unknown`, every `declared` label, and every contradictory label. A caller cannot remove evidence from this view by labeling it. |
+| `declared-intent-filtered` (EXPLORATORY) | every positively declared probe/eval/drill run, any provenance | Labeled EXPLORATORY wherever shown. Its proposals **carry no decision weight** — enforced, not just displayed: the forwarding path refuses them every pass with a loud REFUSED note, and `dx learn accept` / `dx learn spec` refuse to turn one into a task. |
+
+`unknown` is never excluded from any view, and `operational` is never excluded
+either. Only the two new views bind the view name into their `rec_key`
+derivation. A proposal goes STALE only when its own view stops finding the
+condition — views never merge or stale each other. Detectors, thresholds and
+scoring are identical across views.
+
+**Exclusions are measured, never silent.** Every pass reports, per view and in
+text and `--json`: included/excluded counts by intent and provenance, the
+excluded-but-failed runs by run id (a non-`COMPLETED` run must not disappear
+without a trace), intent notices, and mixed-provenance warnings. Exclusion
+removes a run from one named detector input only — never from ingestion,
+accounting, all-runs, audit or resolution tracking.
+
+**Mislabel protection.** A run declared probe/eval/drill whose project/scope
+also carries operational-declared runs, or that links to a ledger task, is
+contradicted: it raises a mixed-provenance warning by run id in *every* view's
+report, is excluded *only* in the exploratory view, and stays in the
+conservative one. No auto-relabeling in either direction.
+
+**Efficacy binds the policy.** An adoption records the view and the
+exclusion-policy version named at proposal time (e.g. `all-runs@v1`); its
+before/after windows are computed under that identical view and policy.
+Adoptions recorded before views default to the all-runs policy *at read time*
+— their stored records are never rewritten. If the policy changes — a new
+excluded intent value, or a revision of a view definition — between or inside
+the windows, the comparison is voided as `inconclusive (policy-changed)` with
+the seam named, never silently computed across it. Mechanically: times before
+a view's first recorded seam always resolve to the *genesis* policy (`v1`,
+never bumped), while new adoptions bind the *current* policy — landing a seam
+means recording it in `POLICY_SEAMS` and bumping the current version, and the
+split between those two constants is what guarantees a seam always voids the
+comparisons that cross it.
+
 **What the kinds cannot do.** The kinds are a closed list. None of them relaxes
 a gate, budget, risk tier or freshness window, and a test pins that list.
 Every generated spec's non-goals say that moving the metric by loosening a
@@ -196,6 +261,7 @@ refuses verdicts they could explain:
 | `measuring (before a/10, after b/10)` | Fewer than 10 observations on either side of the merge. |
 | `no-baseline-problem` | Nothing was failing before the merge, so there is nothing to credit. |
 | `inconclusive (confounded)` | Cohort shift or an overlapping adoption; see the caveats. |
+| `inconclusive (policy-changed)` | The run-intent exclusion policy changed between or inside the measurement windows (see "Run intent and the three detector views"); the seam is named and the comparison is void. |
 | `improvement-observed` | P(rate fell) ≥ 0.90 and the raw rate fell. Observed, not attributed. |
 | `no-meaningful-improvement` | ≥ 30 observations on each side, and P ≥ 0.95 that any improvement is below 25% of the before-rate. The bar is relative on purpose: an absolute floor would, at a low baseline, call even a halved rate "no improvement". Raised as `adoption_no_improvement`: a prompt to review whether to revise or revert, never an automatic revert. |
 | `inconclusive` | Everything else, including equal or worse raw rates on weak evidence. |

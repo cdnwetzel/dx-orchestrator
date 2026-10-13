@@ -56,6 +56,16 @@ from .learn_store import (
     StoreError,
     Tx,
 )
+from .learn_views import (
+    CURRENT_POLICY,
+    EXPLORATORY,
+    POLICY_SEAMS,
+    VIEW_LABELS,
+    VIEWS,
+    ViewReport,
+    mixed_provenance,
+    select,
+)
 
 DEFAULT_STORE = Path("~/.local/state/dx/learn").expanduser()
 MSSQL_ACK = "accept"
@@ -296,7 +306,7 @@ def _check_seen(args: argparse.Namespace, rec: Recommendation, ad: Adoption | No
 
 
 def _line(r: Recommendation) -> str:
-    return f"  [{r.rec_key[:8]}] {r.score:8.2f}  {r.kind:22} {r.subject}"
+    return f"  [{r.rec_key[:8]}] {r.score:8.2f}  {r.kind:22} {r.subject}  view={r.view}"
 
 
 def _guard(fn: Any) -> Any:
@@ -318,14 +328,25 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
     corpus = _gather(args)
     cfg = LearnConfig()
     pxx_state = None if args.no_pxx else _pxx_state_dir(args)
+    mixed = mixed_provenance(corpus)
 
     with store.mutation_lock():
         # 1. settle forwarding left over from earlier passes or interrupted decisions
         forwards = reconcile_forwards(store, pxx_state, now) if pxx_state else []
-        # 2. learn and write back, checked against the revisions this pass read
+        # 2. learn each view and write back, checked against the revisions this
+        #    pass read. Ingestion is complete and shared; a view only selects
+        #    which attempts its detectors see, and reconciles its own proposals.
         adoptions = store.load_adoptions()
-        fresh = Learner(cfg, now).learn(corpus, adoptions.values())
-        changed = reconcile(fresh, store.load_recs(), cfg, now)
+        existing = store.load_recs()
+        changed: list[Recommendation] = []
+        view_reports: dict[str, ViewReport] = {}
+        for view in VIEWS:
+            attempts, view_reports[view] = select(corpus, view, mixed)
+            view_corpus = replace(corpus, attempts=attempts)
+            learner = Learner(cfg, now, view=view, policy_seams=POLICY_SEAMS)
+            fresh = learner.learn(view_corpus,
+                                  [a for a in adoptions.values() if a.view == view])
+            changed += reconcile(fresh, existing, cfg, now, view=view)
         conflicts = store.commit(Tx("dx learn", "pass", "pass", now, writes=list(changed),
                                     audit=False), skip_conflicts=True)
         skipped = [c.split(":", 1)[1] for c in conflicts if c.startswith("rec:")]
@@ -336,14 +357,19 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
         # 3. only now, and still inside the lock, forward what is still PROPOSED
         forwarded = (forward_proposals(store, pxx_state, now)
                      if args.forward_pxx and pxx_state else [])
+        refused = [f for f in forwarded if f["state"] == "REFUSED"]
+        forwarded = [f for f in forwarded if f["state"] != "REFUSED"]
         stale = [r.rec_key for r in changed if r.status == "STALE"]
         summary: dict[str, Any] = {
             "sources": corpus.sources, "attempts": len(corpus.attempts),
             "tasks": len(corpus.tasks), "operator_decisions": len(corpus.operator),
             "lane_results": len(corpus.lanes),
             "quarantined": [to_jsonable(q) for q in corpus.quarantined],
+            "notices": [to_jsonable(n) for n in corpus.notices],
+            "views": {name: _view_summary(r) for name, r in view_reports.items()},
             "proposed": [r.rec_key for r in changed if r.status == "PROPOSED"],
-            "stale": stale, "forwarded": forwarded, "skipped_decided_meanwhile": skipped,
+            "stale": stale, "forwarded": forwarded, "forward_refused": refused,
+            "skipped_decided_meanwhile": skipped,
             "divergences": [f for f in forwards if f["divergence"]]}
         store.record_pass(summary, corpus, now)
 
@@ -352,15 +378,43 @@ def cmd_learn_run(args: argparse.Namespace) -> None:
     if corpus.quarantined:
         text.append(f"  ⚠ {len(corpus.quarantined)} record(s) quarantined and not learned from:")
         text += [f"    - {q.source} {q.where}: {q.error}" for q in corpus.quarantined[:10]]
+    if corpus.notices:
+        text.append(f"  ⚠ {len(corpus.notices)} run-intent notice(s) (read conservatively; "
+                    "the runs stay in the corpus):")
+        text += [f"    - {n.run_id}: {n.detail}" for n in corpus.notices[:10]]
+    text += _view_text(view_reports)
     open_recs = sorted((r for r in changed if r.status == "PROPOSED"), key=lambda r: -r.score)
     text.append(f"  {len(open_recs)} open proposal(s) updated, {len(stale)} gone stale")
     text += [_line(r) for r in open_recs[:10]]
     text += [f"  pxx: {f['rec_key'][:8]} {f['state']} — {f['note']}" for f in forwarded]
+    text += [f"  pxx: {f['rec_key'][:8]} REFUSED — {f['note']}" for f in refused]
     text += [f"  ⚠ DIVERGED {f['rec_key'][:8]}: {f['divergence']}" for f in forwards
              if f["divergence"]]
     text += [f"  left alone (decided while this pass ran): {k[:8]}" for k in skipped]
     text.append("  next: dx learn queue · dx learn show <key> · dx learn accept <key> --by <you>")
     _emit(args, summary, text)
+
+
+def _view_summary(report: ViewReport) -> dict[str, Any]:
+    return {"label": VIEW_LABELS[report.view], "included": report.included,
+            "excluded": report.excluded, "by_intent": report.by_intent,
+            "by_provenance": report.by_provenance,
+            "excluded_but_failed": [{"run_id": rid, "code": code}
+                                    for rid, code in report.excluded_but_failed],
+            "mixed_provenance_warnings": report.mixed_provenance}
+
+
+def _view_text(reports: dict[str, ViewReport]) -> list[str]:
+    text = ["  views (detector inputs; every run stays ingested and accounted in all-runs):"]
+    for name, r in reports.items():
+        why = ", ".join(f"{i}: {cell['excluded']} excluded"
+                        for i, cell in sorted(r.by_intent.items()) if cell["excluded"])
+        text.append(f"    view {name} ({VIEW_LABELS[name]}): {r.included} included, "
+                    f"{r.excluded} excluded" + (f" — {why}" if why else ""))
+        text += [f"      excluded-but-failed: {rid} ({code})" for rid, code in r.excluded_but_failed]
+        text += [f"      ⚠ mixed provenance: {rid} — {reason} (excluded only in the "
+                 "exploratory view)" for rid, reason in sorted(r.mixed_provenance.items())]
+    return text
 
 
 @_guard
@@ -403,6 +457,7 @@ def cmd_learn_show(args: argparse.Namespace) -> None:
     ad = store.load_adoptions().get(rec.rec_key)
     text = [f"{rec.rec_key}  {rec.kind}  {rec.status}  score {rec.score}  "
             f"seen-token {_token(rec, ad)}",
+            f"  view: {rec.view} ({VIEW_LABELS.get(rec.view, rec.view)})",
             f"  {rec.subject}", "", f"  {rec.draft_text}", "",
             f"  judged by: {rec.metric['name']} for {rec.metric['key']} "
             f"(source: {rec.metric.get('source', '?')})",
@@ -426,6 +481,10 @@ def cmd_learn_accept(args: argparse.Namespace) -> None:
         rec = _find(store.load_recs(), args.key)
         prior = store.load_adoptions().get(rec.rec_key)
         _check_seen(args, rec, prior)
+        if rec.view == EXPLORATORY:
+            _die(f"{rec.rec_key[:8]} is an exploratory-view proposal ({EXPLORATORY}): "
+                 "declared-intent filtering carries no decision weight — it cannot be "
+                 "accepted, forwarded or turned into a task. Nothing was recorded.")
         if rec.status not in ("PROPOSED", "STALE"):
             _die(f"{rec.rec_key[:8]} is {rec.status}; only an open proposal can be accepted")
         if out is not None and (out.exists() or not out.parent.is_dir()):
@@ -437,6 +496,10 @@ def cmd_learn_accept(args: argparse.Namespace) -> None:
                           decision_note=args.note, weight_at_decision=rec.evidence_weight)
         adoption = Adoption(rec_key=rec.rec_key, metric=dict(rec.metric), accepted_by=by,
                             accepted_at=now, note=args.note, task_id=args.task,
+                            # The CURRENT policy at proposal time — never the
+                            # genesis default policy_at() uses before the first
+                            # seam (learn_views: the two are split on purpose).
+                            view=rec.view, policy_version=CURRENT_POLICY[rec.view],
                             revision=prior.revision if prior else 0)
         spec = render_spec(updated, args.task or "<TASK-ID>", accepted_by=by)
         _commit(store, Tx(by, "accept", rec.rec_key, now, writes=[updated, adoption],
@@ -467,6 +530,10 @@ def _deliver_spec(spec: str, out: Path | None, key: str, *, accepted: bool) -> N
 def cmd_learn_spec(args: argparse.Namespace) -> None:
     store = _open_store(args)
     rec = _find(store.load_recs(), args.key)
+    if rec.view == EXPLORATORY:
+        _die(f"{rec.rec_key[:8]} is an exploratory-view proposal ({EXPLORATORY}): "
+             "declared-intent filtering carries no decision weight — no task spec "
+             "is ever generated from it.")
     if rec.status != "ACCEPTED" or not rec.decided_by:
         _die(f"{rec.rec_key[:8]} is {rec.status}; only an accepted proposal has a spec")
         raise AssertionError  # unreachable
@@ -566,9 +633,24 @@ def cmd_learn_efficacy(args: argparse.Namespace) -> None:
     now = _now(args)
     store = _open_store(args)
     every = list(store.load_adoptions().values())     # retired ones still confound
-    ads = [a for a in every if a.active]
-    rows = Learner(LearnConfig(), now).efficacy(_gather(args), ads, every) if ads else []
+    corpus = _gather(args)
+    mixed = mixed_provenance(corpus)
+    rows = []
+    # Each adoption is measured under the identical view and policy its metric
+    # was pre-registered under; a policy seam across the windows voids the
+    # comparison (inconclusive (policy-changed)), never a silent cross-seam read.
+    for view in VIEWS:
+        view_every = [a for a in every if a.view == view]
+        ads = [a for a in view_every if a.active]
+        if not ads:
+            continue
+        attempts, _ = select(corpus, view, mixed)
+        view_corpus = replace(corpus, attempts=attempts)
+        rows += Learner(LearnConfig(), now, view=view,
+                        policy_seams=POLICY_SEAMS).efficacy(view_corpus, ads, view_every)
     payload = [{"rec_key": r["adoption"].rec_key, "task_id": r["adoption"].task_id,
+                "view": r["adoption"].view, "policy": f"{r['adoption'].view}@"
+                                                      f"{r['adoption'].policy_version}",
                 "metric": r["adoption"].metric, "status": r["status"],
                 "before": None if r["before"] is None else round(r["before"].mean, 4),
                 "after": None if r["after"] is None else round(r["after"].mean, 4),
@@ -583,7 +665,7 @@ def cmd_learn_efficacy(args: argparse.Namespace) -> None:
         rates = (f" {p['before']:.0%} → {p['after']:.0%}"
                  if p["before"] is not None and p["after"] is not None else "")
         text.append(f"  [{p['rec_key'][:8]}] {p['status']:<26} task={p['task_id'] or '—'}"
-                    f"{rates}  {p['metric']['name']}")
+                    f"{rates}  {p['metric']['name']}  view={p['view']} policy={p['policy']}")
         text += [f"      · {c}" for c in p["caveats"][1:]]
     if not payload:
         text.append("  (no active adoptions)")

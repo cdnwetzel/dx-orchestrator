@@ -414,9 +414,10 @@ _SQL_COLUMNS: dict[str, tuple[str, list[str]]] = {
     "rec": ("dx_learn.Recommendation", [
         "Kind", "Subject", "Score", "EvidenceWeight", "EvidenceJson", "DraftText", "MetricJson",
         "TargetsJson", "SuggestedRole", "Status", "CreatedAt", "UpdatedAt", "DecidedBy",
-        "DecidedAt", "DecisionNote", "WeightAtDecision"]),
+        "DecidedAt", "DecisionNote", "WeightAtDecision", "View"]),
     "adoption": ("dx_learn.Adoption", [
-        "MetricJson", "AcceptedBy", "AcceptedAt", "Note", "TaskId", "Active", "RetiredAt"]),
+        "MetricJson", "AcceptedBy", "AcceptedAt", "Note", "TaskId", "Active", "RetiredAt",
+        "View", "PolicyVersion"]),
     "forward": ("dx_learn.Forward", [
         "Slug", "PayloadSha256", "State", "RecRevision", "UpdatedAt", "PxxView", "Divergence",
         "Note"]),
@@ -429,11 +430,11 @@ def _sql_values(record: Record) -> list[Any]:
         return [r.kind, r.subject, r.score, r.evidence_weight, _canonical(to_jsonable(r.evidence)),
                 r.draft_text, _canonical(r.metric), json.dumps(list(r.targets)),
                 r.suggested_role, r.status, r.created_at, r.updated_at, r.decided_by,
-                r.decided_at, r.decision_note, r.weight_at_decision]
+                r.decided_at, r.decision_note, r.weight_at_decision, r.view]
     if isinstance(record, Adoption):
         a = record
         return [_canonical(a.metric), a.accepted_by, a.accepted_at, a.note, a.task_id,
-                1 if a.active else 0, a.retired_at]
+                1 if a.active else 0, a.retired_at, a.view, a.policy_version]
     f = record
     return [f.slug, f.payload_sha256, f.state, f.rec_revision, f.updated_at, f.pxx_view,
             f.divergence, f.note]
@@ -521,13 +522,14 @@ class MssqlStore:
                 metric=json.loads(r[8]), targets=tuple(json.loads(r[9] or "[]")),
                 suggested_role=r[10], status=r[11], created_at=r[12], updated_at=r[13],
                 decided_by=r[14], decided_at=r[15], decision_note=r[16],
-                weight_at_decision=r[17])
+                weight_at_decision=r[17], view=r[18] or "all-runs")
         return out
 
     def load_adoptions(self) -> dict[str, Adoption]:
         return {r[0]: Adoption(rec_key=r[0], revision=int(r[1]), metric=json.loads(r[2]),
                                accepted_by=r[3], accepted_at=r[4], note=r[5] or "",
-                               task_id=r[6], active=bool(r[7]), retired_at=r[8])
+                               task_id=r[6], active=bool(r[7]), retired_at=r[8],
+                               view=r[9] or "all-runs", policy_version=r[10] or "v1")
                 for r in self._select("adoption")}
 
     def load_forwards(self) -> dict[str, ForwardRecord]:
@@ -598,9 +600,11 @@ class MssqlStore:
             if corpus.attempts:
                 cur.executemany(
                     "INSERT dx_learn.Attempt (PassId, RunId, Ts, TaskKey, DxTaskId, TaskClass, "
-                    "Model, AgentVersionId, Code, Success) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "Model, AgentVersionId, Code, Success, RunIntent, RunIntentProvenance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [[pass_id, a.run_id, a.ts, a.task_key, a.dx_task_id, a.task_class, a.model,
-                      a.agent_version_id, a.code, 1 if a.success else 0] for a in corpus.attempts])
+                      a.agent_version_id, a.code, 1 if a.success else 0,
+                      a.run_intent, a.run_intent_provenance] for a in corpus.attempts])
             events = corpus.ledger_events()
             if events:
                 cur.executemany(

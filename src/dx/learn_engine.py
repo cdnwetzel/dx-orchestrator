@@ -39,6 +39,11 @@ from .learn_stats import (
     prob_greater,
     total_variation,
 )
+from .learn_views import (
+    ALL_RUNS,
+    PolicySeam,
+    policy_at,
+)
 
 
 class MetricUnavailable(Exception):
@@ -137,9 +142,25 @@ def _review_requested(a: Attempt) -> bool:
 
 
 class Learner:
-    def __init__(self, config: LearnConfig, now: datetime) -> None:
+    def __init__(self, config: LearnConfig, now: datetime, *, view: str = ALL_RUNS,
+                 policy_seams: dict[str, list[PolicySeam]] | None = None) -> None:
         self.cfg = config
         self.now = now
+        # The view this pass computes. Detectors, thresholds and scoring are
+        # identical across views; a view only selects which attempts they see
+        # (the caller passes a view-filtered corpus) and how their proposals
+        # are keyed.
+        self.view = view
+        self.policy_seams = policy_seams
+
+    def _rkey(self, *parts: str) -> str:
+        """Proposal identity. The all-runs derivation is the pre-views one,
+        byte-for-byte: legacy keys, dispositions and adoption links are
+        preserved and no duplicates are minted. Only the two newer views bind
+        the view name into their key derivation."""
+        if self.view == ALL_RUNS:
+            return _key(*parts)
+        return _key(*parts, f"view:{self.view}")
 
     def _w(self, ts: datetime | None) -> float:
         return 1.0 if ts is None else decay_weight(ts, self.now, self.cfg.half_life_days)
@@ -149,7 +170,7 @@ class Learner:
 
     def learn(self, corpus: Corpus, adoptions: Iterable[Adoption]) -> list[Recommendation]:
         adoptions = list(adoptions)
-        active = [a for a in adoptions if a.active]
+        active = [a for a in adoptions if a.active and a.view == self.view]
         covered = {(a.metric["name"], a.metric["key"]) for a in active}
         recs: list[Recommendation] = []
         recs += self.recurring_failures(corpus)
@@ -199,7 +220,7 @@ class Learner:
                         "Find the shared cause and remove it at the source (spec template, "
                         "fixture, tooling) rather than retrying past it."))
             out.append(Recommendation(
-                rec_key=_key("recurring", sig_id), kind="recurring_failure",
+                rec_key=self._rkey("recurring", sig_id), view=self.view, kind="recurring_failure",
                 subject=f"{'test' if is_test else sig.gate}: {sig.normalized_text[:60]}",
                 score=round(weight * SURFACE_COST.get(sig.gate, SURFACE_COST["pxx"]), 3),
                 evidence_weight=round(weight, 3),
@@ -239,7 +260,7 @@ class Learner:
                 continue
             lift = min(trusted[m].mean for m in beaten) - trusted[best].mean
             out.append(Recommendation(
-                rec_key=_key("variant", task_class, best), kind="variant_preference",
+                rec_key=self._rkey("variant", task_class, best), view=self.view, kind="variant_preference",
                 subject=f"{task_class}: prefer {best}",
                 score=round(lift * trusted[best].n_eff * 2.0, 3),
                 evidence_weight=round(trusted[best].n_eff, 3),
@@ -274,7 +295,7 @@ class Learner:
             if rise < self.cfg.regression_min_drop or p_up < self.cfg.regression_confidence:
                 continue
             out.append(Recommendation(
-                rec_key=_key("regression", gate), kind="gate_regression",
+                rec_key=self._rkey("regression", gate), view=self.view, kind="gate_regression",
                 subject=f"pxx {gate} gate regression",
                 score=round(rise * rp.n_eff * SURFACE_COST.get(gate, 2.0), 3),
                 evidence_weight=round(rp.n_eff, 3),
@@ -313,7 +334,7 @@ class Learner:
             gap = (f" pxx reported COMPLETED on {len(honest_green)} of these tasks: the automated "
                    f"gates passed work a human then refused." if honest_green else "")
             out.append(Recommendation(
-                rec_key=_key("rejection", sig_id), kind="human_rejection_theme",
+                rec_key=self._rkey("rejection", sig_id), view=self.view, kind="human_rejection_theme",
                 subject=f"{sig.gate}: {sig.normalized_text[:60]}",
                 score=round(w * SURFACE_COST["ledger"], 3), evidence_weight=round(w, 3),
                 evidence={"action": sig.gate, "pattern": sig.normalized_text,
@@ -346,7 +367,7 @@ class Learner:
             if p_bad < self.cfg.lane_confidence:
                 continue
             out.append(Recommendation(
-                rec_key=_key("lane", lane), kind="reviewer_lane",
+                rec_key=self._rkey("lane", lane), view=self.view, kind="reviewer_lane",
                 subject=f"review lane {lane} unreliable",
                 score=round(p.mean * p.n_eff * SURFACE_COST["lane"], 3),
                 evidence_weight=round(p.n_eff, 3),
@@ -382,7 +403,7 @@ class Learner:
                                    "Look at grounding and locator layers.",
             }.get(decision, "Find the shared cause in the executor or skill and fix it there.")
             out.append(Recommendation(
-                rec_key=_key("operator", sig_id), kind="operator_failure",
+                rec_key=self._rkey("operator", sig_id), view=self.view, kind="operator_failure",
                 subject=f"psoperator {decision}: {sig.normalized_text[:50]}",
                 score=round(w * SURFACE_COST["operator"], 3), evidence_weight=round(w, 3),
                 evidence={"decision": decision, "pattern": sig.normalized_text,
@@ -453,6 +474,12 @@ class Learner:
                 continue
             before = [bad for ts, bad in obs if start - window <= ts < start]
             after = [bad for ts, bad in obs if start <= ts < start + window]
+            seam = self._policy_seam(ad, start, window)
+            if seam is not None:
+                row.update(status="inconclusive (policy-changed)",
+                           runs_before=len(before), runs_after=len(after))
+                row["caveats"].append(seam)
+                continue
             bp = beta_from((b, 1.0) for b in before)
             ap = beta_from((b, 1.0) for b in after)
             row.update(before=bp, after=ap, runs_after=len(after), runs_before=len(before))
@@ -495,6 +522,28 @@ class Learner:
                 row["status"] = "inconclusive"
         return report
 
+    def _policy_seam(self, ad: Adoption, start: datetime, window: timedelta) -> str | None:
+        """An adoption's metric is pre-registered under one exclusion policy
+        (view + version). If the policy in force across the measurement span
+        is not that bound policy — a new excluded intent value, or a revision
+        of a view definition, between or inside the windows — the comparison
+        is voided, never silently computed across the seam."""
+        lo, hi = start - window, start + window
+        before_v = policy_at(ad.view, lo, self.policy_seams)
+        after_v = policy_at(ad.view, hi - timedelta(microseconds=1), self.policy_seams)
+        if before_v == after_v == ad.policy_version:
+            return None
+        seams = [s for s in (self.policy_seams or {}).get(ad.view, [])
+                 if lo <= s.at < hi]
+        if seams:
+            what = "; ".join(f"{s.description} (→ {s.version} at {s.at.isoformat()})"
+                             for s in seams)
+        else:
+            current = before_v if before_v != ad.policy_version else after_v
+            what = f"bound policy {ad.view}@{ad.policy_version} is no longer in force (now {current})"
+        return (f"exclusion policy changed across the measurement windows: {what}; "
+                "the comparison is void")
+
     def _cohort_shift(self, metric: dict[str, str], corpus: Corpus, start: datetime,
                       window: timedelta) -> str | None:
         """Did the population being measured change across the merge? Only pxx
@@ -521,7 +570,7 @@ class Learner:
         ad: Adoption = row["adoption"]
         bp, ap = row["before"], row["after"]
         return Recommendation(
-            rec_key=_key("efficacy", ad.rec_key), kind="adoption_no_improvement",
+            rec_key=self._rkey("efficacy", ad.rec_key), view=self.view, kind="adoption_no_improvement",
             subject=f"adopted change {ad.rec_key[:8]} ({ad.task_id}): no meaningful improvement observed",
             score=round(ap.n_eff * ap.mean * 3.0, 3), evidence_weight=float(row["runs_after"]),
             evidence={"rec_key": ad.rec_key, "task_id": ad.task_id, "metric": ad.metric,
@@ -541,7 +590,7 @@ class Learner:
 
 # --------------------------------------------------------------------------- queue reconciliation
 def reconcile(fresh: list[Recommendation], existing: dict[str, Recommendation],
-              config: LearnConfig, now: datetime) -> list[Recommendation]:
+              config: LearnConfig, now: datetime, *, view: str = ALL_RUNS) -> list[Recommendation]:
     """Merge one pass into the queue; return the records to persist.
 
     PROPOSED/STALE   -> refreshed with this pass's evidence
@@ -549,6 +598,10 @@ def reconcile(fresh: list[Recommendation], existing: dict[str, Recommendation],
     REJECTED/RETIRED -> stays down unless evidence grew reproposal_growth x, then
                         re-raised with the earlier decision attached
     PROPOSED but not produced this pass -> STALE (the condition no longer holds)
+
+    Reconciliation is scoped to one view: a proposal goes STALE only when its
+    own view stops finding the condition — views never merge or stale each
+    other. Records predating views belong to the all-runs view.
     """
     out: list[Recommendation] = []
     seen: set[str] = set()
@@ -575,7 +628,7 @@ def reconcile(fresh: list[Recommendation], existing: dict[str, Recommendation],
         rec.revision = prev.revision   # the revision this pass read: the write is checked against it
         out.append(rec)
     for key, prev in existing.items():
-        if key not in seen and prev.status == "PROPOSED":
+        if key not in seen and prev.status == "PROPOSED" and prev.view == view:
             prev.status, prev.updated_at = "STALE", now
             out.append(prev)
     return out

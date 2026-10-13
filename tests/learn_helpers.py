@@ -55,7 +55,10 @@ class PxxState:
     def run(self, *, when: datetime, project: str = "svc-a", task: str | None = None,
             model: str = "glm", code: str = "COMPLETED", summary: str = "",
             gates: list[dict[str, Any]] | None = None, contributing: list[str] | None = None,
-            loop: bool = True, round_code: str = "COMPLETED") -> str:
+            loop: bool = True, round_code: str = "COMPLETED",
+            intent: str | None = None, provenance: str | None = None,
+            session_extra: dict[str, Any] | None = None,
+            task_extra: dict[str, Any] | None = None) -> str:
         self.n += 1
         ts = when.timestamp()
         task_id = task or f"task-{self.n}"
@@ -63,6 +66,15 @@ class PxxState:
         start = {"kind": "session_start", "data": {
             "run_id": round_id, "provider": "local", "model": model, "project": project,
             "task_id": task_id, "agent_version_id": "a" * 16, "backend": "native"}}
+        # pxx writes ONE intent value at session construction, identically to
+        # task.json and session_start. The extras let a test diverge them
+        # (hand-edit / torn write) or write only one record.
+        if intent is not None:
+            start["data"]["run_intent"] = intent
+            if provenance is not None:
+                start["data"]["run_intent_provenance"] = provenance
+        if session_extra:
+            start["data"].update(session_extra)
         gate_events = [{"kind": "gate_decision", "data": g} for g in gates or []]
         session_files = {
             "outcome.json": {"run_id": round_id, "code": round_code if loop else code,
@@ -71,13 +83,23 @@ class PxxState:
                              "agent_version_id": "a" * 16},
             "task.json": {"run_id": round_id, "task_id": task_id, "project": project, "ts": ts},
             "manifest.json": {"provider": "local", "model": model}}
+        if intent is not None:
+            session_files["task.json"]["run_intent"] = intent
+            if provenance is not None:
+                session_files["task.json"]["run_intent_provenance"] = provenance
+        if task_extra and not loop:
+            session_files["task.json"].update(task_extra)
         if not loop:
             self._write(self.root / "runs" / round_id, session_files, [start, *gate_events])
             return round_id
         loop_id = f"20261001T000000Z-loop-{self.n:08x}"
+        loop_task: dict[str, Any] = {"mode": "loop", "run_id": loop_id,
+                                     "task_preview": "t", "root": "/w"}
+        if task_extra:   # the loop task.json is the record dx reads for a loop
+            loop_task.update(task_extra)
         self._write(self.root / "runs" / round_id, session_files, [start])
         self._write(self.root / "runs" / loop_id, {
-            "task.json": {"mode": "loop", "run_id": loop_id, "task_preview": "t", "root": "/w"},
+            "task.json": loop_task,
             "outcome.json": {"mode": "loop", "run_id": loop_id, "code": code, "summary": summary,
                              "ts": ts, "contributing_codes": contributing or []}},
             [{"kind": "run_created", "data": {"project": project}}, start, *gate_events])
@@ -246,11 +268,15 @@ class FakeCursor:
         elif sql.startswith("SELECT AuditId"):
             self.rows = list(self.db.audit)
         elif sql.startswith("SELECT RecKey, Revision"):
-            self.rows = []
+            table = self.db.tables[self._table(sql)]
+            self.rows = [[key, row["Revision"], *row["values"]] for key, row in table.items()]
         elif sql.startswith("INSERT dx_learn.DecisionAudit"):
             entry = (len(self.db.audit) + 1, params[4], params[5], params[6])
             self.db.audit.append(entry)
             self.conn.pending.append(lambda: self.db.audit.remove(entry))
+        elif "LearnPass" in sql:
+            # pass snapshot: LearnPass itself, and the Attempt/LedgerEvent facts
+            self.rows = [[7]]
         elif sql.startswith("INSERT dx_learn."):
             table = self._table(sql)
             key = params[0]
@@ -275,8 +301,6 @@ class FakeCursor:
             row.update(Revision=read_rev + 1, values=params[:-2])
             self.conn.pending.append(lambda: self.db.tables[table].__setitem__(key, old))
             self.rows = [[1]] if "SELECT @@ROWCOUNT" in sql else []
-        elif "LearnPass" in sql:
-            self.rows = [[7]]
 
     def executemany(self, sql: str, rows: list[list[Any]]) -> None:
         for r in rows:

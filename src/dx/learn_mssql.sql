@@ -45,6 +45,8 @@ CREATE TABLE dx_learn.Recommendation (
     DecidedAt        DATETIMEOFFSET(3) NULL,
     DecisionNote     NVARCHAR(2000)    NULL,
     WeightAtDecision FLOAT             NULL,
+    -- The detector view that raised the proposal; rows predating views read as 'all-runs'.
+    View             VARCHAR(40)       NOT NULL CONSTRAINT DF_Recommendation_View DEFAULT (N'all-runs'),
     -- A decided recommendation always names who decided it.
     CONSTRAINT CK_Recommendation_Decided CHECK (
         Status NOT IN ('ACCEPTED','REJECTED','RETIRED') OR (DecidedBy IS NOT NULL AND DecidedAt IS NOT NULL))
@@ -65,7 +67,11 @@ CREATE TABLE dx_learn.Adoption (
     Note        NVARCHAR(2000)    NOT NULL CONSTRAINT DF_Adoption_Note DEFAULT (N''),
     TaskId      NVARCHAR(64)      NULL,     -- the dx task implementing it; efficacy starts at its MERGED row
     Active      BIT               NOT NULL CONSTRAINT DF_Adoption_Active DEFAULT (1),
-    RetiredAt   DATETIMEOFFSET(3) NULL
+    RetiredAt   DATETIMEOFFSET(3) NULL,
+    -- The exclusion policy the metric was pre-registered under; rows predating
+    -- views read as the all-runs policy (all-runs + v1).
+    View        VARCHAR(40)       NOT NULL CONSTRAINT DF_Adoption_View DEFAULT (N'all-runs'),
+    PolicyVersion VARCHAR(20)     NOT NULL CONSTRAINT DF_Adoption_Policy DEFAULT (N'v1')
 );
 GO
 
@@ -136,6 +142,9 @@ CREATE TABLE dx_learn.Attempt (
     AgentVersionId VARCHAR(32)       NOT NULL,
     Code           VARCHAR(40)       NOT NULL,
     Success        BIT               NOT NULL,
+    -- Declared run intent as read this pass (default 'unknown'; never rewritten).
+    RunIntent      VARCHAR(20)       NOT NULL CONSTRAINT DF_Attempt_Intent DEFAULT (N'unknown'),
+    RunIntentProvenance VARCHAR(20)  NULL,
     CONSTRAINT PK_Attempt PRIMARY KEY (PassId, RunId)
 );
 GO

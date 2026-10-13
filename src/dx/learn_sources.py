@@ -41,11 +41,13 @@ from typing import Any
 from .learn_model import (
     LANE_RESULTS,
     NEGATIVE_ACTIONS,
+    RUN_INTENTS,
     Attempt,
     Corpus,
     GateObs,
     LaneResult,
     LedgerEvent,
+    Notice,
     OperatorDecision,
     Quarantined,
     TaskRecord,
@@ -216,6 +218,65 @@ def read_pxx_runs(state_dir: Path, corpus: Corpus) -> None:
                              f"{in_flight} without outcome.json (skipped)")
 
 
+def _run_intent(run_id: str, session_starts: list[dict[str, Any]], task: dict[str, Any],
+                *, task_is_session_record: bool, corpus: Corpus) -> tuple[str, str | None]:
+    """The run's declared intent and its trust level, read fail-safe.
+
+    session_start is read first, task.json as cross-check: pxx writes ONE value
+    at session construction, so the session records must agree exactly. Any
+    divergence means hand-edit or torn write — the run reads as ``unknown``
+    and the conflict is surfaced by run id (a notice, never a quarantine).
+    The convenient value is never chosen.
+
+    Provenance is recorded as one of the two trust levels only: a clean
+    ``first-party`` claim — the complete expected record set present, all
+    agreeing — stays ``first-party``; anything else (declared, missing,
+    malformed, or a first-party claim that cannot be cross-checked) is
+    treated as not-first-party and recorded ``declared``. ``first-party``
+    names a code path; it is not cryptographic attestation.
+    """
+    def declares(d: dict[str, Any]) -> bool:
+        return "run_intent" in d or "run_intent_provenance" in d
+
+    decls = [("session_start", s.get("run_intent"), s.get("run_intent_provenance"))
+             for s in session_starts if declares(s)]
+    task_declares = declares(task)
+    if task_declares:
+        decls.append(("task.json", task.get("run_intent"), task.get("run_intent_provenance")))
+    if not decls:
+        return "unknown", None
+    if len({(i, p) for _, i, p in decls}) > 1:
+        detail = "; ".join(f"{w} says run_intent={i!r} provenance={p!r}" for w, i, p in decls)
+        corpus.notices.append(Notice(
+            "intent-conflict", run_id,
+            f"conflicting run-intent records ({detail}); neither value wins, the run reads as unknown"))
+        return "unknown", None
+    intent_raw, prov_raw = decls[0][1], decls[0][2]
+    if not isinstance(intent_raw, str) or intent_raw not in RUN_INTENTS:
+        corpus.notices.append(Notice(
+            "intent-unrecognized", run_id,
+            f"unrecognized run_intent {intent_raw!r}; the run reads as unknown"))
+        return "unknown", None
+    if intent_raw == "unknown":
+        return "unknown", None
+    if prov_raw == "first-party":
+        silent = [w for w, s in (("session_start", any(not declares(x) for x in session_starts)),
+                                 ("task.json", task_is_session_record and not task_declares),
+                                 ("events", task_is_session_record and not session_starts)) if s]
+        if not silent:
+            return intent_raw, "first-party"
+        corpus.notices.append(Notice(
+            "intent-provenance-demoted", run_id,
+            f"first-party claim cannot be cross-checked ({', '.join(silent)} missing or silent); "
+            "treated as declared"))
+        return intent_raw, "declared"
+    if prov_raw is not None and prov_raw != "declared":
+        corpus.notices.append(Notice(
+            "intent-provenance-malformed", run_id,
+            f"malformed run_intent_provenance {prov_raw!r}; treated as declared"))
+    return intent_raw, "declared"
+
+
 def _signatures(code: str, summary: str, new_failures: list[str], corpus: Corpus) -> tuple[str, ...]:
     sigs: list[str] = []
     if code != "COMPLETED":
@@ -250,13 +311,19 @@ def _loop_attempt(run_dir: Path, task: dict[str, Any], ev: _Events, corpus: Corp
     if len(models) != 1:
         raise ValueError(f"loop rounds ran on different models {sorted(models)}; "
                          "no single variant to credit")
+    # The loop task.json is loop metadata, not a session record: it is only
+    # cross-checked when it carries the keys. The rounds' session_start events
+    # are the session records.
+    intent, provenance = _run_intent(run_id, ev.session_starts, task,
+                                     task_is_session_record=False, corpus=corpus)
     return Attempt(
         run_id=run_id, ts=from_epoch(outcome.get("ts"), "outcome.json ts"),
         task_key=_str(first, "task_id", "session_start"),
         task_class=_str(first, "project", "session_start"),
         model=models.pop(), agent_version_id=str(first.get("agent_version_id") or ""),
         code=code, contributing_codes=contributing, gates=tuple(ev.gates),
-        signatures=_signatures(code, str(outcome.get("summary") or ""), ev.new_failures, corpus))
+        signatures=_signatures(code, str(outcome.get("summary") or ""), ev.new_failures, corpus),
+        run_intent=intent, run_intent_provenance=provenance)
 
 
 def _session_attempt(run_dir: Path, corpus: Corpus) -> Attempt:
@@ -265,13 +332,16 @@ def _session_attempt(run_dir: Path, corpus: Corpus) -> Attempt:
     manifest = _json_obj(run_dir / "manifest.json")
     run_id, code, contributing = _outcome_fields(outcome, run_dir)
     ev = _read_events(run_dir)
+    intent, provenance = _run_intent(run_id, ev.session_starts, task,
+                                     task_is_session_record=True, corpus=corpus)
     return Attempt(
         run_id=run_id, ts=from_epoch(outcome.get("ts", task.get("ts")), "outcome.json ts"),
         task_key=_str(task, "task_id", "task.json"), task_class=_str(task, "project", "task.json"),
         model=f"{manifest.get('provider') or '?'}/{_str(manifest, 'model', 'manifest.json')}",
         agent_version_id=str(outcome.get("agent_version_id") or ""),
         code=code, contributing_codes=contributing, gates=tuple(ev.gates),
-        signatures=_signatures(code, str(outcome.get("summary") or ""), ev.new_failures, corpus))
+        signatures=_signatures(code, str(outcome.get("summary") or ""), ev.new_failures, corpus),
+        run_intent=intent, run_intent_provenance=provenance)
 
 
 # --------------------------------------------------------------------------- devswarm ledger
@@ -382,7 +452,8 @@ def link_attempts(corpus: Corpus) -> int:
             task_class=task.scope or a.task_class, model=a.model,
             agent_version_id=a.agent_version_id, code=a.code,
             contributing_codes=a.contributing_codes, gates=a.gates,
-            signatures=a.signatures, dx_task_id=task.task_id)
+            signatures=a.signatures, dx_task_id=task.task_id,
+            run_intent=a.run_intent, run_intent_provenance=a.run_intent_provenance)
         linked += 1
     return linked
 
