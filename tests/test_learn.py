@@ -86,6 +86,75 @@ class TestPxxReader:
         read_pxx_runs(pxx.root, c)
         assert not c.attempts and c.quarantined
 
+    def test_transport_retry_notification_does_not_quarantine_the_run(self, pxx):
+        # Real pxx emits transport_retry gate_decision events with no `allowed`
+        # verdict (pxx backends/native.py): endpoint resilience, not a gate
+        # outcome. On the 2026-10-12 pilot corpus these cost 184 of 875 runs.
+        rid = pxx.run(when=ago(1), loop=False, gates=[
+            {"gate": "transport_retry", "endpoint": "http://127.0.0.1:1",
+             "reason": "ConnectError", "retries_left": 2, "delay_s": 5.0},
+            {"gate": "scope_recheck", "round": 1, "allowed": True}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert [a.run_id for a in c.attempts] == [rid] and not c.quarantined
+        assert [(g.gate, g.allowed) for a in c.attempts for g in a.gates] == [("scope_recheck", True)]
+
+    def test_fallback_notification_does_not_quarantine_the_run(self, pxx):
+        rid = pxx.run(when=ago(1), loop=False, gates=[
+            {"gate": "fallback", "from": "m1", "to": "m2", "reason": "ConnectError"},
+            {"gate": "scope_recheck", "round": 1, "allowed": True}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert [a.run_id for a in c.attempts] == [rid] and not c.quarantined
+        assert [(g.gate, g.allowed) for a in c.attempts for g in a.gates] == [("scope_recheck", True)]
+
+    def test_mixed_notification_and_verdict_stream_observes_only_verdicts(self, pxx):
+        rid = pxx.run(when=ago(1), loop=False, gates=[
+            {"gate": "transport_retry", "endpoint": "http://127.0.0.1:1",
+             "reason": "ConnectError", "retries_left": 2, "delay_s": 5.0},
+            {"gate": "scope_recheck", "round": 1, "allowed": True},
+            {"gate": "fallback", "from": "m1", "to": "m2", "reason": "http_503"},
+            {"gate": "tests", "allowed": False, "new_failures": ["test_x"]}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert [a.run_id for a in c.attempts] == [rid] and not c.quarantined
+        assert [(g.gate, g.allowed) for a in c.attempts for g in a.gates] == [
+            ("scope_recheck", True), ("tests", False)]
+
+    def test_a_verdict_gate_missing_its_verdict_quarantines(self, pxx):
+        # A real verdict gate (tests) without `allowed` is malformed evidence,
+        # not a notification: fail closed.
+        pxx.run(when=ago(1), loop=False, gates=[{"gate": "tests"}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert not c.attempts and c.quarantined
+
+    def test_an_unknown_kind_without_a_verdict_quarantines(self, pxx):
+        # The non-verdict allowance is exactly {transport_retry, fallback};
+        # anything else without a verdict is malformed.
+        pxx.run(when=ago(1), loop=False, gates=[{"gate": "mystery_gate"}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert not c.attempts and c.quarantined
+
+    def test_a_non_dict_gate_payload_quarantines(self, pxx):
+        pxx.run(when=ago(1), loop=False, gates=["not-a-dict"])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert not c.attempts and c.quarantined
+
+    def test_a_non_bool_allowed_still_quarantines(self, pxx):
+        pxx.run(when=ago(1), loop=False, gates=[{"gate": "tests", "allowed": "yes"}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert not c.attempts and c.quarantined
+
+    def test_a_gate_event_with_no_gate_name_still_quarantines(self, pxx):
+        pxx.run(when=ago(1), loop=False, gates=[{"retries_left": 2}])
+        c = Corpus()
+        read_pxx_runs(pxx.root, c)
+        assert not c.attempts and c.quarantined
+
     def test_missing_runs_dir_refuses(self, tmp_path):
         with pytest.raises(LearnSourceError, match="no pxx runs directory"):
             read_pxx_runs(tmp_path / "nowhere", Corpus())
