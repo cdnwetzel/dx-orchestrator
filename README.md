@@ -40,7 +40,7 @@ so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO`, or `ledger.repo` in the manifest, at your own ledger to
 gate real merges.
 
-The test suite is the part built to be evaluated from outside: 1277 tests
+The test suite is the part built to be evaluated from outside: 1283 tests
 collected — 1238 passed, 8 skipped in a full local run; the skips need
 psoperator/Pillow (CI installs them), and the count-claim
 check itself stands down unless the invocation is exactly `pytest tests` —
@@ -119,9 +119,11 @@ before pxx starts, from the single read the manifest was parsed from — the
 manifest's raw digest and its normalized digest (a collision-free canonical
 form of the parsed mapping; comments and key order do not change it, values
 do), the `DX_*` overrides in force (names always; values only when they are
-paths), the CLI flags, and the resolved sections and route dx used, with
-endpoint userinfo, query and fragment removed and the redaction filter applied
-before digesting. It is written verbatim; the digest that verifies it is held
+paths), the CLI flags, the resolved sections and route dx used (endpoint
+userinfo, query and fragment removed), and the digest of the approval
+declaration it read, taken from that one read; sections consumed only on
+some paths are recorded as not-consumed, unavailable, or consumed (empty or
+not). The redaction filter is applied before digesting. It is written verbatim; the digest that verifies it is held
 in the `manifest_digest` check, never in the file. `artifacts/config-observed.json`
 is a separate, informational second read of the manifest at emission: a hash,
 or `unavailable` with the reason, never a failure. `dx merge` bundles carry

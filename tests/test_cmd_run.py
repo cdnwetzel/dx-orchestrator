@@ -349,6 +349,47 @@ class TestEvidenceEmission:
         assert observed["unavailable"].startswith("FileNotFoundError")
         assert manifest["checks"]["manifest_digest"]["ok"] is True
 
+    def test_a_malformed_approval_section_is_still_tolerated_at_run_start(
+        self, monkeypatch, tmp_path, manifest_path
+    ):
+        """Refusal preservation (S3 review point): before S3 a malformed
+        `approval:` section was tolerated at run start (its consumer warns
+        after the run and leaves the tier to the gate). S3 records it; it
+        must not refuse it."""
+        copy = tmp_path / "manifest.yml"
+        copy.write_text(manifest_path.read_text() + "\napproval: [not, a, mapping]\n")
+        monkeypatch.setenv("DX_CONFIG", str(copy))
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--no-commit", "--evidence-dir", str(tmp_path / "ev"))
+        bundle = next((tmp_path / "ev" / "T-EV").iterdir())
+        cfg = json.loads((bundle / "artifacts" / "config.json").read_text())
+        assert cfg["resolved"]["approval"] is None
+
+    def test_the_manifest_digest_check_is_evidence_only_for_the_run(self, monkeypatch, tmp_path):
+        """An unrecorded or failed check changes nothing about the run's
+        outcome: exit code and `result.passed` come from pxx alone."""
+        from dx.effective_config import EffectiveConfig
+        from dx.evidence import Check
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("dx.cmd_run.subprocess.run", lambda *a, **k: Result())
+        monkeypatch.setattr(EffectiveConfig, "check",
+                            lambda self, written: Check(ok=False, detail="unrecorded: forced"))
+        self._no_git(monkeypatch)
+        _run("T-EV", "--required_role", "widget-engineer", "-m", "x",
+             "--no-commit", "--evidence-dir", str(tmp_path))
+        manifest = json.loads((next((tmp_path / "T-EV").iterdir()) / "manifest.json").read_text())
+        assert manifest["result"]["passed"] is True
+        assert manifest["checks"]["manifest_digest"]["ok"] is False
+
     def test_a_failed_run_still_emits_a_bundle(self, monkeypatch, tmp_path):
         """A store that only records successes is a highlight reel."""
         code = self._run_with_evidence(monkeypatch, tmp_path, pxx_code=2)

@@ -13,6 +13,7 @@ from pathlib import Path
 from ._argtypes import SubParsers
 from .approval_tier import (
     CONTROL_PLANE,
+    Declaration,
     DeclarationError,
     chain_changed_paths,
     chain_root_base,
@@ -332,7 +333,9 @@ def _emit_evidence(
     return write_bundle(bundle, _evidence_root(args)), produced
 
 
-def _redline_if_control_plane(task_id: str, scope: Path, candidate: str) -> None:
+def _redline_if_control_plane(
+    task_id: str, scope: Path, candidate: str, declaration: Declaration | None = None
+) -> None:
     """Decision 0020 §3: a candidate whose chain diff touches a control-plane
     path is not signable and gets a REDLINE row — here, the moment EXECUTED
     is recorded, so nobody is asked to review it first. Read-only otherwise;
@@ -340,10 +343,13 @@ def _redline_if_control_plane(task_id: str, scope: Path, candidate: str) -> None
     the work is committed either way, and a decision that cannot be made is
     made two-human at the gate."""
     try:
-        cfg = get_approval_config()
-        declaration = (
-            load_declaration(cfg.declaration, cfg.role, cfg.ai_root) if cfg else None
-        )
+        if declaration is None:
+            # No preloaded declaration (or its preload failed before the run):
+            # load it here exactly as before S3, with the same tolerance.
+            cfg = get_approval_config()
+            declaration = (
+                load_declaration(cfg.declaration, cfg.role, cfg.ai_root) if cfg else None
+            )
         ledger = get_ledger_repo_path()
         root_base, _chain = chain_root_base(task_id, ledger)
         changed = chain_changed_paths(scope, root_base, candidate)
@@ -645,7 +651,6 @@ def cmd_run(args: argparse.Namespace) -> None:
         review_cfg = get_review_config()
         review_flags, review_request = _review_flags(review_cfg)
         branches = get_branches_config()
-        approval_cfg = get_approval_config()
     except ConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
@@ -664,6 +669,25 @@ def cmd_run(args: argparse.Namespace) -> None:
         sys.exit(EXIT_ERROR)
 
     env = _pxx_env(route)
+    # The approval section is read for the record only. Its consumer
+    # (_redline_if_control_plane, after the run) tolerates a malformed section
+    # with a warning and leaves the tier to the gate; S3 must not turn that
+    # tolerance into a refusal here.
+    try:
+        approval_cfg = get_approval_config()
+    except ConfigError:
+        approval_cfg = None
+    # The declaration the control-plane check will consume after the run,
+    # loaded once here so the record's digest is of the bytes consumed. A
+    # failed preload leaves the check to load (and tolerate) as before.
+    declaration: Declaration | None = None
+    declaration_error: str | None = None
+    if approval_cfg is not None:
+        try:
+            declaration = load_declaration(
+                approval_cfg.declaration, approval_cfg.role, approval_cfg.ai_root)
+        except (DeclarationError, OSError) as exc:
+            declaration_error = f"{type(exc).__name__}: {exc}"
     # S3: capture the effective configuration NOW — the manifest snapshot the
     # route came from, the overrides in force, the resolved sections — as one
     # immutable record the bundle writes verbatim after the run.
@@ -678,6 +702,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         route=route, branches=branches, review=review_cfg, approval=approval_cfg,
         ledger_repo=get_ledger_repo_path(), roles_path=get_roles_path(),
         evidence_root=_evidence_root(args),
+        declaration=declaration, declaration_error=declaration_error,
     )
 
     pxx_bin = _resolve_pxx()
@@ -952,7 +977,8 @@ def cmd_run(args: argparse.Namespace) -> None:
                     get_ledger_repo_path(), scope_path, args.task_id,
                     sha=head_after, provenance=_provenance(route, run_started_at))
                 print(f"📒 Ledger: EXECUTED {args.task_id} @ {recorded}", flush=True)
-                _redline_if_control_plane(args.task_id, scope_path, head_after)
+                _redline_if_control_plane(args.task_id, scope_path, head_after,
+                                          declaration=declaration)
             except ExecutedError as exc:
                 # Loud, and NOT fatal. The work is committed in git either way,
                 # and failing the run here would throw away a good result over

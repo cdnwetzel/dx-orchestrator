@@ -158,11 +158,24 @@ def capture_effective_config(
     ledger_repo: Path | None = None,
     roles_path: Path | None = None,
     evidence_root: Path | None = None,
+    consumed_sections: dict[str, Any] | None = None,
+    declaration: Any = None,
+    declaration_error: str | None = None,
 ) -> EffectiveConfig:
     """Build the record at the consumption point. Everything the record
     needs is passed in by the caller that just resolved it; this function
     reads the environment once, here, and the loader's snapshot of the
-    mapping those values came from."""
+    mapping those values came from.
+
+    Three states are kept apart for everything consumed only on some
+    paths: ``not-consumed`` (the command never read it), ``unavailable``
+    (it tried and could not, with a redacted reason) and ``consumed`` (with
+    ``empty`` true when what was read is an empty section). ``declaration``
+    is the loaded `Declaration` object the tier decision will use — the
+    digest is `source_sha256` from the bytes that load read, never a later
+    read of the path — and ``declaration_error`` is the classified reason
+    when loading failed. ``consumed_sections`` carries `gui_verification`
+    and `psoperator` when `dx merge --verify-gui` reads them."""
     unavailable: dict[str, str] | None = None
     try:
         snapshot: ConfigSnapshot | None = get_config_snapshot()
@@ -178,6 +191,26 @@ def capture_effective_config(
         name: _env_value(os.environ[name]) for name in OVERRIDE_ENV if name in os.environ
     }
     endpoint, stripped = strip_endpoint(getattr(route, "endpoint", None))
+    if declaration is not None:
+        decl_state: dict[str, Any] = {
+            "state": "consumed",
+            "sha256": getattr(declaration, "source_sha256", None),
+            "source": str(getattr(declaration, "source", "")),
+            "role": getattr(declaration, "role", None),
+        }
+    elif declaration_error is not None:
+        decl_state = {"state": "unavailable", "reason": redact(declaration_error)[0]}
+    elif approval is None:
+        decl_state = {"state": "not-consumed", "reason": "no approval section"}
+    else:
+        decl_state = {"state": "not-consumed", "reason": "not read on this path"}
+
+    def _consumed(name: str) -> dict[str, Any]:
+        if consumed_sections is None or name not in consumed_sections:
+            return {"state": "not-consumed"}
+        value = consumed_sections[name]
+        return {"state": "consumed", "value": value, "empty": not bool(value)}
+
     resolved: dict[str, Any] = {
         "ledger_repo": str(ledger_repo) if ledger_repo else None,
         "roles_path": str(roles_path) if roles_path else None,
@@ -185,6 +218,9 @@ def capture_effective_config(
         "branches": _section(branches),
         "review": _section(review),
         "approval": _section(approval),
+        "declaration": decl_state,
+        "gui_verification": _consumed("gui_verification"),
+        "psoperator": _consumed("psoperator"),
         "route": None if route is None else {
             "endpoint": endpoint,
             "endpoint_stripped": stripped,

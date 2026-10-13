@@ -38,7 +38,9 @@ from .config_loader import (
     ConfigError,
     get_approval_config,
     get_branches_config,
+    get_gui_config,
     get_ledger_repo_path,
+    get_psoperator_config,
     get_review_config,
 )
 from .effective_config import EffectiveConfig, capture_effective_config
@@ -356,7 +358,9 @@ def _tier_decision(
     args: argparse.Namespace, ledger_repo: Path, task_sha: str, rec: dict[str, object]
 ) -> TierDecision:
     try:
-        declaration = _load_declaration()
+        preloaded = rec.get("declaration")
+        declaration = (preloaded if isinstance(preloaded, Declaration)
+                       else _load_declaration())
     except (ConfigError, DeclarationError) as exc:
         rec["failure"] = "declaration_error"
         _fail(f"approval declaration unusable: {exc}")
@@ -522,6 +526,27 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
             sections = (get_branches_config(), get_review_config(), get_approval_config())
         except (OSError, ConfigError):
             sections = (None, None, None)   # no usable manifest: the record classifies why
+        # The declaration is loaded ONCE here and consumed by the tier
+        # decision below (rec["declaration"]); the record's digest is of the
+        # bytes that load read. If loading fails, the tier decision reloads
+        # and refuses exactly as before S3.
+        declaration: Declaration | None = None
+        declaration_error: str | None = None
+        if sections[2] is not None:
+            try:
+                declaration = load_declaration(
+                    sections[2].declaration, sections[2].role, sections[2].ai_root)
+            except (DeclarationError, OSError) as exc:
+                declaration_error = f"{type(exc).__name__}: {exc}"
+        rec["declaration"] = declaration
+        consumed: dict[str, object] = {}
+        if getattr(args, "verify_gui", None):
+            # verify_gui reads these two sections; record them as consumed.
+            try:
+                consumed = {"gui_verification": get_gui_config(),
+                            "psoperator": get_psoperator_config()}
+            except (OSError, ConfigError):
+                consumed = {}
         try:
             rec["effective"] = capture_effective_config(
                 cli_overrides={
@@ -533,7 +558,8 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
                 },
                 branches=sections[0], review=sections[1],
                 approval=sections[2], ledger_repo=ledger_repo,
-                evidence_root=_evidence_root(args),
+                evidence_root=_evidence_root(args), consumed_sections=consumed,
+                declaration=declaration, declaration_error=declaration_error,
             )
         except ConfigError:
             pass

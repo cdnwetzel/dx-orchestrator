@@ -32,6 +32,7 @@ Fail-closed rules, each one a way the check could otherwise wrongly pass:
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import posixpath
 import subprocess
@@ -150,6 +151,9 @@ class Declaration:
     scopes: tuple[str, ...]
     tiers: dict[str, str]
     default: str | None
+    #: sha256 of the bytes `load_declaration` read — the digest of what was
+    #: consumed, taken from the same read (S3), never from a later path read.
+    source_sha256: str | None = None
 
     def tier_declared_for(self, scope: str) -> str | None:
         return self.tiers.get(scope, self.default)
@@ -170,9 +174,11 @@ def load_declaration(path: Path, role: str, ai_root: Path) -> Declaration:
     role's ``scope`` entries: a declaration for a scope that does not exist is
     a typo that would otherwise do nothing, silently."""
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        data = path.read_bytes()
+        loaded = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DeclarationError(f"cannot read declaration {path}: {exc}") from exc
+    source_sha256 = hashlib.sha256(data).hexdigest()
     if not isinstance(loaded, dict) or not isinstance(loaded.get(role), dict):
         raise DeclarationError(f"{path}: no role {role!r}")
     entry = loaded[role]
@@ -203,7 +209,8 @@ def load_declaration(path: Path, role: str, ai_root: Path) -> Declaration:
                 f"of the role's scope entries — declare a scope that exists"
             )
         tiers[resolved] = str(value)
-    return Declaration(source=path, role=role, scopes=scopes, tiers=tiers, default=default)
+    return Declaration(source=path, role=role, scopes=scopes, tiers=tiers, default=default,
+                       source_sha256=source_sha256)
 
 
 @dataclass(frozen=True)

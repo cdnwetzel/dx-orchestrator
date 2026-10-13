@@ -208,7 +208,10 @@ def test_the_record_holds_digests_and_no_manifest_values(tmp_path, monkeypatch):
                         "resolved", "captured_utc"}
     assert rec["manifest_unavailable"] is None
     assert set(rec["resolved"]) == {"ledger_repo", "roles_path", "evidence_root", "branches",
-                                    "review", "approval", "route"}
+                                    "review", "approval", "declaration", "gui_verification",
+                                    "psoperator", "route"}
+    assert rec["resolved"]["gui_verification"] == {"state": "not-consumed"}
+    assert rec["resolved"]["declaration"] == {"state": "not-consumed", "reason": "no approval section"}
     assert eff.sha256 == hashlib.sha256(eff.json_text.encode()).hexdigest()
 
 
@@ -321,3 +324,50 @@ def test_an_unreadable_manifest_is_classified_unreadable(tmp_path, monkeypatch):
     finally:
         path.chmod(0o600)
     assert json.loads(eff.json_text)["manifest_unavailable"]["kind"] == "requested-unreadable"
+
+
+def test_the_declaration_digest_is_of_the_bytes_load_declaration_read(tmp_path, monkeypatch):
+    """One read: `load_declaration` reads the file once and stamps the digest
+    of those bytes on the Declaration; the record takes it from the object,
+    never from a later read of the path."""
+    from dx.approval_tier import load_declaration
+    from dx.config_loader import ApprovalConfig
+    decl = tmp_path / "roles.json"
+    decl.write_text('{"pxx": {"scope": ["/secret/path"]}}')
+    reads = []
+    real = Path.read_bytes
+
+    def counting(self):
+        if self == decl:
+            reads.append(1)
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    loaded = load_declaration(decl, "pxx", tmp_path)
+    assert loaded.source_sha256 == hashlib.sha256(decl.read_text().encode()).hexdigest()
+    approval = ApprovalConfig(declaration=decl, role="pxx", ai_root=tmp_path)
+    decl.write_text("tampered after the load")      # a later path read would see this
+    eff = _capture(tmp_path, monkeypatch, approval=approval, declaration=loaded)
+    rec = json.loads(eff.json_text)["resolved"]["declaration"]
+    assert rec["state"] == "consumed" and rec["sha256"] == loaded.source_sha256
+    assert len(reads) == 1, "the declaration was read exactly once, by load_declaration"
+    assert "/secret/path" not in eff.json_text
+
+
+def test_declaration_unavailable_and_not_consumed_are_distinct(tmp_path, monkeypatch):
+    from dx.config_loader import ApprovalConfig
+    approval = ApprovalConfig(declaration=tmp_path / "missing.json", role="pxx", ai_root=tmp_path)
+    eff = _capture(tmp_path, monkeypatch, approval=approval,
+                   declaration_error="DeclarationError: cannot read declaration")
+    assert json.loads(eff.json_text)["resolved"]["declaration"] == {
+        "state": "unavailable", "reason": "DeclarationError: cannot read declaration"}
+    eff2 = _capture(tmp_path, monkeypatch, approval=approval)   # section present, not read on this path
+    assert json.loads(eff2.json_text)["resolved"]["declaration"]["state"] == "not-consumed"
+
+
+def test_consumed_sections_distinguish_not_consumed_consumed_and_consumed_empty(tmp_path, monkeypatch):
+    eff = _capture(tmp_path, monkeypatch, consumed_sections={"gui_verification": {"k": 1}, "psoperator": {}})
+    rec = json.loads(eff.json_text)["resolved"]
+    assert rec["gui_verification"] == {"state": "consumed", "value": {"k": 1}, "empty": False}
+    assert rec["psoperator"] == {"state": "consumed", "value": {}, "empty": True}
+    eff2 = _capture(tmp_path, monkeypatch)
+    assert json.loads(eff2.json_text)["resolved"]["psoperator"] == {"state": "not-consumed"}

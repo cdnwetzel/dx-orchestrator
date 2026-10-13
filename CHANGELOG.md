@@ -18,7 +18,10 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   effective configuration at the moment they resolve it — snapshot
   digests, `DX_*` overrides (names; values only when paths), CLI flags, the
   resolved sections and the route with endpoint userinfo/query/fragment
-  removed — redact it, digest it, and write it verbatim as
+  removed, and the approval declaration's digest from the one read the
+  tier decision consumes (sometimes-consumed sections are recorded as
+  not-consumed, unavailable or consumed) — redact it, digest it, and write
+  it verbatim as
   `artifacts/config.json`; the `manifest_digest` check verifies the written
   bytes against the digest held in the check, which the artifact does not
   contain. A separate `artifacts/config-observed.json` records a post-run
