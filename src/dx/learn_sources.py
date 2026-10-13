@@ -75,6 +75,11 @@ _HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
 # The published reference ledger's genesis says this of itself (SCHEMA.md).
 _REFERENCE_GENESIS_MARK = "no real work is attested"
 
+# pxx gate_decision events that are endpoint-resilience notifications, not gate
+# verdicts (pxx backends/native.py): they never carry `allowed`. Exactly these
+# kinds may lack a verdict; any other gate_decision without one is malformed.
+_NON_VERDICT_GATES = frozenset({"transport_retry", "fallback"})
+
 
 class LearnSourceError(Exception):
     """A record dx learn may not learn from. Names the record and the fix."""
@@ -121,9 +126,10 @@ def _read_events(run_dir: Path) -> _Events:
         if not isinstance(data, dict) or not isinstance(data.get("gate"), str):
             raise ValueError(f"events.jsonl line {n}: malformed gate_decision")
         if "allowed" not in data:
-            # A non-verdict notification (pxx's transport_retry / fallback):
-            # endpoint resilience, not a gate outcome. It carries no verdict,
-            # so it contributes no gate observation — and must not cost the run.
+            if data["gate"] not in _NON_VERDICT_GATES:
+                raise ValueError(f"events.jsonl line {n}: gate_decision without a verdict")
+            # A known endpoint-resilience notification: no verdict, so no gate
+            # observation — and it must not cost the run (see _NON_VERDICT_GATES).
             continue
         if not isinstance(data["allowed"], bool):
             raise ValueError(f"events.jsonl line {n}: malformed gate_decision")
