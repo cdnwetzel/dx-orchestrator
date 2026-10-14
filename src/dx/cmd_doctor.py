@@ -19,6 +19,7 @@ from .config_loader import (
     get_approval_config,
     get_branches_config,
     get_config_path,
+    get_config_snapshot,
     get_gui_config,
     get_ledger_repo_path,
     get_psoperator_config,
@@ -362,6 +363,16 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         try:
             validate_manifest()
             print("   (parses, and every section has the expected shape)")
+            # S3: the digests of doctor's own read, in full, so a D-11
+            # read-back can quote them and compare with a run bundle's
+            # config.json. Doctor's read, not any run's record.
+            snap = get_config_snapshot()
+            print(
+                f"   digest: normalized={snap.normalized_sha256 or 'null'} "
+                f"raw={snap.raw_sha256} bytes={snap.size_bytes} read={snap.read_utc}"
+            )
+            if snap.normalization_error:
+                print(f"   normalization: {snap.normalization_error}")
             for warning in endpoint_warnings():
                 # Not fatal — the endpoint may be unusual on purpose — but this
                 # is the mistake that actually gets made, so say it loudly.

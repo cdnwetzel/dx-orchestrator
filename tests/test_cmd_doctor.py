@@ -298,3 +298,18 @@ class TestDeepPingSanity:
     def test_a_healthy_fast_ping_is_green(self, all_green, monkeypatch, capsys):
         lines = self._deep(monkeypatch, capsys, sane=True)
         assert lines and all("✅" in ln for ln in lines), lines
+
+
+def test_prints_full_manifest_digests_matching_the_loader(all_green, manifest_path, capsys):
+    """S3: doctor's digest line carries full digests of doctor's own read."""
+    import hashlib
+
+    from dx.config_loader import get_config_snapshot
+    with pytest.raises(SystemExit):
+        _doctor("--no-network")
+    out = capsys.readouterr().out
+    snap = get_config_snapshot()
+    line = next(ln for ln in out.splitlines() if ln.strip().startswith("digest:"))
+    assert f"raw={hashlib.sha256(manifest_path.read_bytes()).hexdigest()}" in line
+    assert f"normalized={snap.normalized_sha256}" in line
+    assert f"bytes={manifest_path.stat().st_size}" in line

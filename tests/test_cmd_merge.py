@@ -430,6 +430,54 @@ def test_a_second_person_on_a_single_reviewer_scope_records_no_exception(tiered,
     assert tier["tier"] == "single-reviewer" and tier["sod_exception"] is None
 
 
+def test_the_merge_bundle_carries_the_captured_configuration_and_its_check(tiered, tmp_path):
+    """S3: the gate's bundle records the configuration it consumed, verbatim,
+    with the verifying digest in the check and the observation beside it."""
+    import hashlib
+    ev = tmp_path / "ev"
+    assert tiered(["src/app.py"], signer=AUTHOR, argv=["--evidence-dir", str(ev)]) == 0
+    bundle = sorted(ev.glob("T-TEST/*/manifest.json"))[-1].parent
+    cfg_text = (bundle / "artifacts" / "config.json").read_text()
+    cfg = json.loads(cfg_text)
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    check = manifest["checks"]["manifest_digest"]
+    assert check["ok"] is True
+    assert f"effective={hashlib.sha256(cfg_text.encode()).hexdigest()}" in check["detail"]
+    assert "effective_sha256" not in cfg_text
+    assert cfg["resolved"]["approval"]["role"] == "pxx"      # the section the gate reads
+    assert "branches" in cfg["resolved"] and "review" in cfg["resolved"]
+    import pathlib as _pl
+    decl = cfg["resolved"]["declaration"]
+    assert decl["state"] == "consumed"
+    assert decl["sha256"] == hashlib.sha256(
+        _pl.Path(cfg["resolved"]["approval"]["declaration"]).read_bytes()).hexdigest()
+    assert cfg["resolved"]["gui_verification"] == {"state": "not-consumed"}
+    assert cfg["overrides_cli"]["repo"]
+    observed = json.loads((bundle / "artifacts" / "config-observed.json").read_text())
+    assert observed["post_run_raw_sha256"] == cfg["manifest"]["raw_sha256"]
+    assert "artifacts/config.json" in (bundle / "SHA256SUMS").read_text()
+
+
+def test_an_unrecorded_manifest_check_does_not_change_merge_eligibility(tiered, tmp_path, monkeypatch):
+    """Evidence-only (S3 review point): with no manifest binding the gate
+    still decides on its own facts; the bundle says `unrecorded`."""
+    from dx import effective_config as ec
+    real = ec.capture_effective_config
+
+    def unavailable(**kw):
+        eff = real(**kw)
+        return ec.EffectiveConfig(snapshot=None, json_text=eff.json_text, sha256=eff.sha256,
+                                  captured_utc=eff.captured_utc,
+                                  unavailable_kind="default-absent", unavailable_detail="forced")
+    monkeypatch.setattr("dx.cmd_merge.capture_effective_config", unavailable)
+    ev = tmp_path / "ev"
+    assert tiered(["src/app.py"], signer=AUTHOR, argv=["--evidence-dir", str(ev)]) == 0
+    manifest = json.loads(sorted(ev.glob("T-TEST/*/manifest.json"))[-1].read_text())
+    assert manifest["result"]["passed"] is True
+    check = manifest["checks"]["manifest_digest"]
+    assert check["ok"] is False and check["detail"].startswith("unrecorded:")
+
+
 def test_the_bundle_carries_the_exception_when_the_author_signed(tiered, tmp_path):
     ev = tmp_path / "ev"
     assert tiered(["src/app.py"], signer=AUTHOR, argv=["--evidence-dir", str(ev)]) == 0

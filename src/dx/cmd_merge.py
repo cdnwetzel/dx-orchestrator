@@ -38,8 +38,12 @@ from .config_loader import (
     ConfigError,
     get_approval_config,
     get_branches_config,
+    get_gui_config,
     get_ledger_repo_path,
+    get_psoperator_config,
+    get_review_config,
 )
+from .effective_config import EffectiveConfig, capture_effective_config
 from .evidence import (
     Check,
     EvidenceError,
@@ -219,10 +223,20 @@ def _emit_merge_evidence(
         )
     if rec.get("merged") is not None:
         checks["git_merged"] = Check(ok=True, detail=str(_d("merged").get("merge_commit"))[:12])
+    effective = rec.get("effective")
+    artifacts: dict[str, str] = {}
+    if isinstance(effective, EffectiveConfig):
+        artifacts["config.json"] = effective.json_text
+        artifacts["config-observed.json"] = effective.observe()
+        checks["manifest_digest"] = effective.check(effective.json_text)
+    else:
+        checks["manifest_digest"] = Check(
+            ok=False, detail="no configuration record was captured before the gate")
     bundle = MergeGateBundle(
         task_id=args.task_id,
         title=f"Merge gate — {args.task_id}",
         passed=passed,
+        artifacts=artifacts,
         ledger_repo=str(rec.get("ledger_repo") or ""),
         role=rec.get("role"),  # type: ignore[arg-type]
         head_before=rec.get("head_before"),  # type: ignore[arg-type]
@@ -344,7 +358,9 @@ def _tier_decision(
     args: argparse.Namespace, ledger_repo: Path, task_sha: str, rec: dict[str, object]
 ) -> TierDecision:
     try:
-        declaration = _load_declaration()
+        preloaded = rec.get("declaration")
+        declaration = (preloaded if isinstance(preloaded, Declaration)
+                       else _load_declaration())
     except (ConfigError, DeclarationError) as exc:
         rec["failure"] = "declaration_error"
         _fail(f"approval declaration unusable: {exc}")
@@ -501,6 +517,52 @@ def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
     try:
         ledger_repo = get_ledger_repo_path()
         rec["ledger_repo"] = str(ledger_repo)
+        # S3: capture the configuration the gate consumes, here, before any
+        # row is read or written; the bundle writes it verbatim on the way
+        # out. A section the loader refuses is reported by the precheck with
+        # its own failure; the record is then simply absent and the check
+        # says so.
+        try:
+            sections = (get_branches_config(), get_review_config(), get_approval_config())
+        except (OSError, ConfigError):
+            sections = (None, None, None)   # no usable manifest: the record classifies why
+        # The declaration is loaded ONCE here and consumed by the tier
+        # decision below (rec["declaration"]); the record's digest is of the
+        # bytes that load read. If loading fails, the tier decision reloads
+        # and refuses exactly as before S3.
+        declaration: Declaration | None = None
+        declaration_error: str | None = None
+        if sections[2] is not None:
+            try:
+                declaration = load_declaration(
+                    sections[2].declaration, sections[2].role, sections[2].ai_root)
+            except (DeclarationError, OSError) as exc:
+                declaration_error = f"{type(exc).__name__}: {exc}"
+        rec["declaration"] = declaration
+        consumed: dict[str, object] = {}
+        if getattr(args, "verify_gui", None):
+            # verify_gui reads these two sections; record them as consumed.
+            try:
+                consumed = {"gui_verification": get_gui_config(),
+                            "psoperator": get_psoperator_config()}
+            except (OSError, ConfigError):
+                consumed = {}
+        try:
+            rec["effective"] = capture_effective_config(
+                cli_overrides={
+                    "force": bool(getattr(args, "force", False)),
+                    "allow_already_on_branch": bool(getattr(args, "allow_already_on_branch", False)),
+                    "allow_reference_ledger": bool(getattr(args, "allow_reference_ledger", False)),
+                    "no_evidence": bool(getattr(args, "no_evidence", False)),
+                    "repo": str(args.repo) if getattr(args, "repo", None) else None,
+                },
+                branches=sections[0], review=sections[1],
+                approval=sections[2], ledger_repo=ledger_repo,
+                evidence_root=_evidence_root(args), consumed_sections=consumed,
+                declaration=declaration, declaration_error=declaration_error,
+            )
+        except ConfigError:
+            pass
         if not ledger_repo.exists():
             rec["failure"] = "ledger_not_found"
             _fail(

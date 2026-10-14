@@ -308,6 +308,9 @@ class MergeGateBundle:
     merged: dict[str, str | None] | None = None
     failure: str | None = None
     checks: dict[str, Check] = field(default_factory=dict)
+    #: relative-path -> text content, written under ``artifacts/`` (S3: the
+    #: captured configuration record and the post-run observation).
+    artifacts: dict[str, str] = field(default_factory=dict)
     source_head: str | None = None
     boundary: tuple[str, ...] = MERGE_DEFAULT_BOUNDARY
 
@@ -801,7 +804,9 @@ def write_merge_bundle(
         },
         "boundary": list(bundle.boundary),
     }
-    return _finalize(out, manifest, _render_merge_readme(bundle, generated_utc), {}, {})
+    return _finalize(
+        out, manifest, _render_merge_readme(bundle, generated_utc), dict(bundle.artifacts), {}
+    )
 
 
 _STAGED_STATES = ("STAGED", "APPROVED", "EXECUTED", "REJECTED", "STALE")

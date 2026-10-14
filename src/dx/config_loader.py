@@ -1,3 +1,6 @@
+import datetime as _dt
+import hashlib
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -57,13 +60,154 @@ def get_config_path() -> Path:
 
 
 # Cache is keyed on the resolved path: changing DX_CONFIG mid-process must not
-# silently return the previously loaded manifest.
+# silently return the previously loaded manifest. The snapshot (the digests of
+# the bytes the mapping was parsed from) is cached WITH the mapping and
+# replaced with it, never one without the other.
 _config: dict[str, Any] | None = None
 _config_source: Path | None = None
+_config_snapshot: "ConfigSnapshot | None" = None
+
+
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    """What `load_config` consumed: the digests of the single read the
+    mapping in use was parsed from (S3, 2026-10-13).
+
+    `raw_sha256` is over the file bytes as read. `normalized_sha256` is over
+    the canonical tagged form of the parsed mapping (`canonical_manifest_json`)
+    and is None, with `normalization_error` saying why, when the manifest
+    holds a value the canonical form does not support; loading never fails
+    on that. Neither digest stores any manifest content: they fingerprint
+    the file, they do not reproduce it.
+    """
+
+    path: Path
+    raw_sha256: str
+    normalized_sha256: str | None
+    normalization_error: str | None
+    size_bytes: int
+    read_utc: str
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "path": str(self.path),
+            "raw_sha256": self.raw_sha256,
+            "normalized_sha256": self.normalized_sha256,
+            "normalization_error": self.normalization_error,
+            "size_bytes": self.size_bytes,
+            "read_utc": self.read_utc,
+        }
+
+
+class CanonicalizationError(ValueError):
+    """The parsed manifest holds a value the canonical form does not cover."""
+
+
+def _tag(node: object, path: str, seen: set[int]) -> object:
+    """The collision-free tagged tree the normalized digest hashes.
+
+    Every genuine mapping key is emitted as ``k:<key>``; every value JSON
+    cannot carry becomes a one-key object whose key starts with ``t:``. A
+    manifest whose own key is literally ``t:timestamp`` therefore serialises
+    as ``k:t:timestamp`` and can never be read as a tag.
+    """
+    if isinstance(node, dict):
+        if id(node) in seen:
+            raise CanonicalizationError(f"cycle at {path or '<root>'}")
+        seen.add(id(node))
+        out: dict[str, object] = {}
+        for key, value in node.items():
+            if not isinstance(key, str):
+                raise CanonicalizationError(
+                    f"non-string key {key!r} at {path or '<root>'}"
+                )
+            out[f"k:{key}"] = _tag(value, f"{path}.{key}" if path else key, seen)
+        seen.discard(id(node))
+        return out
+    if isinstance(node, list):
+        if id(node) in seen:
+            raise CanonicalizationError(f"cycle at {path or '<root>'}")
+        seen.add(id(node))
+        items = [_tag(v, f"{path}[{i}]", seen) for i, v in enumerate(node)]
+        seen.discard(id(node))
+        return items
+    if node is None or isinstance(node, (bool, str)):
+        return node
+    if isinstance(node, int):
+        return node
+    if isinstance(node, float):
+        if math.isnan(node):
+            return {"t:float": "nan"}
+        if math.isinf(node):
+            return {"t:float": "inf" if node > 0 else "-inf"}
+        return node
+    if isinstance(node, _dt.datetime):
+        return {"t:timestamp": node.isoformat()}
+    if isinstance(node, _dt.date):
+        return {"t:timestamp": node.isoformat()}
+    if isinstance(node, (bytes, bytearray)):
+        return {"t:binary": {"sha256": hashlib.sha256(bytes(node)).hexdigest(),
+                             "len": len(node)}}
+    raise CanonicalizationError(
+        f"unsupported type {type(node).__name__} at {path or '<root>'}"
+    )
+
+
+def canonical_manifest_json(mapping: dict[str, Any]) -> bytes:
+    """Canonical JSON (sorted keys, no spaces, UTF-8, no NaN) of the tagged
+    tree of ``mapping``. Raises CanonicalizationError for non-string keys,
+    cycles and unsupported types; loading never calls this in a way that
+    fails the load."""
+    tagged = _tag(mapping, "", set())
+    return json.dumps(
+        tagged, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+
+
+def untag_canonical(tagged: object) -> object:
+    """Inverse of the tagged form for the round-trip types: mappings, lists,
+    str, bool, int, None, finite float and timestamp. Binary and non-finite
+    floats are content-addressed, not reversible, and come back as their
+    tag objects unchanged."""
+    if isinstance(tagged, dict):
+        if len(tagged) == 1:
+            (key, value), = tagged.items()
+            if key == "t:timestamp" and isinstance(value, str):
+                try:
+                    return _dt.datetime.fromisoformat(value) if "T" in value else _dt.date.fromisoformat(value)
+                except ValueError:
+                    return tagged
+            if key.startswith("t:"):
+                return tagged
+        out: dict[str, object] = {}
+        for key, value in tagged.items():
+            if not key.startswith("k:"):
+                raise CanonicalizationError(f"not a tagged mapping key: {key!r}")
+            out[key[2:]] = untag_canonical(value)
+        return out
+    if isinstance(tagged, list):
+        return [untag_canonical(v) for v in tagged]
+    return tagged
+
+
+def _snapshot_of(path: Path, data: bytes, mapping: dict[str, Any]) -> ConfigSnapshot:
+    try:
+        normalized: str | None = hashlib.sha256(canonical_manifest_json(mapping)).hexdigest()
+        error: str | None = None
+    except CanonicalizationError as exc:
+        normalized, error = None, str(exc)
+    return ConfigSnapshot(
+        path=path,
+        raw_sha256=hashlib.sha256(data).hexdigest(),
+        normalized_sha256=normalized,
+        normalization_error=error,
+        size_bytes=len(data),
+        read_utc=_dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
 
 
 def load_config(force: bool = False) -> dict[str, Any]:
-    global _config, _config_source
+    global _config, _config_source, _config_snapshot
 
     path = get_config_path()
     if _config is not None and _config_source == path and not force:
@@ -75,15 +219,26 @@ def load_config(force: bool = False) -> dict[str, Any]:
             "Run scripts/setup_dependencies.sh or set DX_CONFIG."
         )
 
-    with path.open("r", encoding="utf-8") as f:
-        try:
-            loaded = yaml.safe_load(f) or {}
-        except yaml.YAMLError as exc:
-            raise ConfigError(f"{path}: invalid YAML — {exc}") from exc
+    # One read. The digests and the mapping come from the same bytes, so a
+    # snapshot can never describe a different file than the one in use.
+    data = path.read_bytes()
+    try:
+        loaded = yaml.safe_load(data) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{path}: invalid YAML — {exc}") from exc
 
-    _config = _as_mapping(loaded, "the manifest", path)
-    _config_source = path
+    mapping = _as_mapping(loaded, "the manifest", path)
+    snapshot = _snapshot_of(path, data, mapping)
+    _config, _config_source, _config_snapshot = mapping, path, snapshot
     return _config
+
+
+def get_config_snapshot() -> ConfigSnapshot:
+    """The snapshot of the mapping currently in use; loads if nothing is
+    cached. Never re-reads the file to answer."""
+    load_config()
+    assert _config_snapshot is not None  # set together with _config
+    return _config_snapshot
 
 
 def normalize_endpoint(endpoint: str) -> tuple[str, bool]:
