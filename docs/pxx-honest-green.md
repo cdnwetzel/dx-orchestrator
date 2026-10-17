@@ -4,8 +4,8 @@
 **Written from:** dx-orchestrator, which runs `pxx edit` as its code-generation
 engine. Grounded in the 2.5.4 source (`origin/v2`), confirmed line-for-line
 against the installed `pxx-orchestrator==2.5.4`.
-**Status:** proposal. dx 0.16.0 already addresses the *symptom* on its side; this
-is the upstream fix that would remove the need.
+**Status:** historical — shipped (see the update below). Written as a proposal; dx
+0.16.0 addressed the *symptom* on its side, and this was the upstream fix.
 
 > **Update 2026-10-17.** #1/#2 shipped in pxx 2.5.5 (honest exit codes). #3 lands
 > in pxx 2.9 as `shell_unguarded = "abort" | "refuse_tool"` — but with
