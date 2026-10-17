@@ -40,8 +40,9 @@ That is the whole loop. Everything below is detail.
 non-zero). A non-zero exit does **not** always mean the code is wrong: some models
 try to run a shell command mid-task, and with **pxx < 2.9** the generator fails
 closed when no shell safeguard is configured — after the file was already written
-correctly. (pxx 2.9+ refuses that command back to the model instead and the task
-can finish normally; the command still never runs.) When that
+correctly. (pxx 2.9+ by default — `shell_unguarded = "refuse_tool"` — refuses that
+command back to the model instead and the task can finish normally; the command
+still never runs.) When that
 happens, dx tells you: instead of a flat "task failed" it prints **"pxx exited N,
 but the scope changed — a non-zero exit is not proof the work is wrong"** and
 points at the receipt. The exit code stays `3` (the tool did not cleanly finish),
