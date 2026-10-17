@@ -229,7 +229,7 @@ Runs six mechanical checks per card (fit/anchored consistency, seat present, non
 
 ## 6. Live code generation: `dx run`
 
-**Prerequisite**: pxx gates `run_shell` in write-capable modes: a model that tries to run a shell command (often to check its own edit) needs a shell safeguard. With **pxx < 2.9** and no safeguard, that attempt ends the session and pxx exits non-zero *even when the file was written correctly*; with **pxx 2.9+** the command is refused back to the model and the task can finish (the command still never runs). To let the model's commands actually run:
+**Prerequisite**: pxx gates `run_shell` in write-capable modes: a model that tries to run a shell command (often to check its own edit) needs a shell safeguard. With **pxx < 2.9** and no safeguard, that attempt ends the session and pxx exits non-zero *even when the file was written correctly*; with **pxx 2.9+** and its default `shell_unguarded = "refuse_tool"` the command is refused back to the model and the task can finish (`"abort"` restores the old ending) (the command still never runs). To let the model's commands actually run:
 
 - **Permissive** (tutorial-friendly): `export PXX_ALLOW_UNGATED_SHELL=1`
 - **Correct** (production): configure a PreToolUse hook per `~/ai/pxx/docs/CONFIG.md §hooks`
@@ -293,7 +293,7 @@ Exit code: `0`.
 
 **If you skipped the export on pxx < 2.9**, you get this instead (captured with pxx
 2.5.4; from 2.5.5 pxx exits `3` for this) — worth recognising, because the task
-actually succeeded. On pxx 2.9+ the same run completes and the model reports that
+actually succeeded. On pxx 2.9+ (default `shell_unguarded = "refuse_tool"`) the same run completes and the model reports that
 it could not run its check:
 
 ```
@@ -542,7 +542,7 @@ Not yet exercised end-to-end:
 | `dx: command not found` | venv not activated in this shell | `source .venv/bin/activate` or run `.venv/bin/dx` directly |
 | `[MODEL_UNAVAILABLE] ... /v1 returned HTTP 404` | manifest endpoint has trailing `/v1` | strip it — pxx appends its own `/v1/models` (see §3) |
 | `[MODEL_UNAVAILABLE]` on vLLM but Ollama works | `provider` field missing → defaults to `ollama` → probes `/api/tags` which vLLM lacks | add `provider: "vllm"` in the manifest |
-| `[HOOKS_MISSING] run_shell in permission mode 'edit' requires a shell safeguard` (pxx < 2.9) | the model tried to run a shell command with no shell safeguard configured; fail-closed | `export PXX_ALLOW_UNGATED_SHELL=1` OR configure a PreToolUse hook; or upgrade to pxx 2.9+, which refuses the command and continues |
+| `[HOOKS_MISSING] run_shell in permission mode 'edit' requires a shell safeguard` (pxx < 2.9) | the model tried to run a shell command with no shell safeguard configured; fail-closed | `export PXX_ALLOW_UNGATED_SHELL=1` OR configure a PreToolUse hook; or upgrade to pxx 2.9+, which by default (`shell_unguarded = "refuse_tool"`) refuses the command and continues |
 | `dx merge` says "Stale signature (RL-003)" | ledger head advanced after the signature was made | expected behavior; re-sign against current head |
 | `dx doctor` red ⚠️ on network probe | manifest host/port unreachable — expected until you replace the placeholder seed | verify with `curl -s http://<host>:<port>/v1/models` or ping |
 | `ERROR: role cards not found at …` | role cards are not where dx looked | set `DX_ROLES_PATH`, or add `roles_path:` to the manifest |

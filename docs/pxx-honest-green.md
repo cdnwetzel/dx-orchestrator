@@ -87,6 +87,10 @@ caller like dx actually reads.
 
 ## Recommendations, smallest first
 
+> *Historical (2026-09-09 proposal).* All three shipped — #1/#2 in pxx 2.5.5, #3 in
+> pxx 2.9 as `shell_unguarded` with `"refuse_tool"` as the default (see the update at
+> the top). The option names and defaults below are the proposal's, not pxx's.
+
 ### 1. Make the returned outcome carry the true `files_changed` on every path
 
 Attach the projected `files_changed` to the early-exit `RunOutcome`s in
@@ -162,6 +166,8 @@ and the only one that needs a policy decision before shipping.
   code shape does not match.
 
 ## Recommendation
+
+> *Historical (2026-09-09).* Superseded by what shipped — see the update at the top.
 
 Ship **1 + 2** together as the honest-green fix. They are small, contained, and
 preserve pxx's security stance — they just stop pxx from discarding, at the exit
