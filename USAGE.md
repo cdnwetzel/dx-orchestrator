@@ -38,8 +38,10 @@ That is the whole loop. Everything below is detail.
 
 `dx run` reports the code generator's own exit code (`3` means the tool exited
 non-zero). A non-zero exit does **not** always mean the code is wrong: some models
-try to run a shell command mid-task, and the generator fails closed when no shell
-safeguard is configured — after the file was already written correctly. When that
+try to run a shell command mid-task, and with **pxx < 2.9** the generator fails
+closed when no shell safeguard is configured — after the file was already written
+correctly. (pxx 2.9+ refuses that command back to the model instead and the task
+can finish normally; the command still never runs.) When that
 happens, dx tells you: instead of a flat "task failed" it prints **"pxx exited N,
 but the scope changed — a non-zero exit is not proof the work is wrong"** and
 points at the receipt. The exit code stays `3` (the tool did not cleanly finish),
@@ -48,10 +50,12 @@ before you trust or discard the result. This is why your spec lists **acceptance
 criteria** and why every run leaves an evidence bundle whose `produced_changes`
 check records that files were written even when the exit code was non-zero.
 
-If you want a clean exit when a model reaches for the shell, configure the
-generator's shell handling once (a `PreToolUse` hook, a sandbox, or an explicit
-`PXX_ALLOW_UNGATED_SHELL=1`) — see pxx's `docs/CONFIG.md § hooks`. It changes the
-exit code, not the code.
+If you want the model's shell commands (often its own test run) to actually
+execute, configure the generator's shell handling once (a `PreToolUse` hook, a
+sandbox, or an explicit `PXX_ALLOW_UNGATED_SHELL=1`) — see pxx's
+`docs/CONFIG.md § hooks`. On pxx < 2.9 this is also what gives you a clean exit;
+it changes the exit code, not the code. Either way, a clean exit is not proof the
+tests ran — your acceptance criteria are.
 
 ## Why a structured spec gives a consistent result
 

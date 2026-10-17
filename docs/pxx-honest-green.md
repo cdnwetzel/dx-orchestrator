@@ -7,6 +7,15 @@ against the installed `pxx-orchestrator==2.5.4`.
 **Status:** proposal. dx 0.16.0 already addresses the *symptom* on its side; this
 is the upstream fix that would remove the need.
 
+> **Update 2026-10-17.** #1/#2 shipped in pxx 2.5.5 (honest exit codes). #3 lands
+> in pxx 2.9 as `shell_unguarded = "abort" | "refuse_tool"` — but with
+> **`"refuse_tool"` as the default**, not opt-in as proposed below. Rationale: the
+> command never runs either way, and "abort" only ever stopped the runs whose model
+> *tried* to verify — a model that never tries finishes `COMPLETED` unverified under
+> both defaults — while it made capable models fail pxx's own tutorial. Callers
+> detect a refusal from the `tool_denied` event (`reason: "shell_unguarded"`) and can
+> restore the abort with `shell_unguarded = "abort"` in the user config.
+
 ## The problem, concretely
 
 Run `dx run` (which shells out to `pxx edit`) against a task whose model reaches
