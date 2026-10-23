@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Nothing private belongs in this public repository: not in a file, and not
+  # in a commit message, PR title or PR body, which are published just the same.
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tracked files
+        run: python scripts/privacy_scan.py files
+      - name: PR title and body
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s\n\n%s\n' "$TITLE" "$BODY" | python scripts/privacy_scan.py text --name pr
+      - name: Commit messages in this PR
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status=0
+          for c in $(git rev-list "$BASE..$HEAD"); do
+            git log -1 --format=%B "$c" | python scripts/privacy_scan.py text --name "commit ${c:0:7}" || status=1
+          done
+          exit $status
+      - name: Commit messages pushed to main
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          range="$BEFORE..$AFTER"
+          git cat-file -e "$BEFORE^{commit}" 2>/dev/null || range="$AFTER"
+          status=0
+          for c in $(git rev-list "$range"); do
+            git log -1 --format=%B "$c" | python scripts/privacy_scan.py text --name "commit ${c:0:7}" || status=1
+          done
+          exit $status
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff>=0.6"
+      - run: ruff check .
+
+  types:
+    name: mypy --strict
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: mypy src/dx --strict
+
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      # gpg is present on ubuntu-latest, so the real-key integration tests in
+      # tests/test_gpg_integration.py run rather than skip. Fail loudly if that
+      # ever stops being true — those tests are the proof that the RL-003
+      # signature gate rejects revoked and expired keys.
+      - name: gpg must be available
+        run: gpg --version
+      # The suite is otherwise hermetic: synthetic fixtures, no sibling clones
+      # (sdlc-agent-roles, devswarm-ledger-reference), no network.
+      - name: Test
+        run: pytest --cov=dx --cov-report=term --cov-fail-under=88
+      - name: Integration tests must not have been skipped
+        run: pytest tests/test_gpg_integration.py -q -rs 2>&1 | tee /tmp/gpg.log; ! grep -q SKIPPED /tmp/gpg.log
+      # The suite above proves the hermetic claim: it passed with nothing but
+      # this repository. Now clone the real deck and prove the parser handles
+      # the actual 38 cards, not only the synthetic fixtures. Both properties
+      # matter, so they are asserted in that order and never merged into one run.
+      - name: Clone the real role deck
+        run: git clone --depth 1 https://github.com/cdnwetzel/sdlc-agent-roles.git "$HOME/ai/sdlc-agent-roles"
+      # The tutorial's merge transcripts are only checkable against a real
+      # ledger. Without this clone those guards skip, which is how §7 stayed
+      # broken through several releases.
+      - name: Clone the reference ledger
+        run: git clone --depth 1 https://github.com/cdnwetzel/devswarm-ledger-reference.git "$HOME/ai/devswarm-ledger-reference"
+      # psoperator + Pillow back the observer-attestation tests (dx.observer).
+      # Installed here, after the hermetic run above proved dx needs neither, so
+      # the no-skip full suite exercises the observer binding rather than skipping it.
+      - name: Install psoperator for the observer tests
+        run: |
+          git clone --depth 1 https://github.com/cdnwetzel/psoperator.git "$HOME/ai/psoperator"
+          pip install -e "$HOME/ai/psoperator"
+      - name: Full suite with the real deck — nothing may skip
+        run: |
+          pytest -q -rs 2>&1 | tee /tmp/cards.log
+          ! grep -q SKIPPED /tmp/cards.log
+      - name: CLI smoke test
+        run: |
+          dx --version
+          dx roles list --path tests/fixtures/roles
+          dx roles list --path tests/fixtures/roles --json > /dev/null
+
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: LICENSE must ship in the wheel
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          if not any(n.endswith("LICENSE") for n in names):
+              sys.exit(f"LICENSE missing from {wheel}")
+          print(f"LICENSE ships in {wheel}")
+          PY

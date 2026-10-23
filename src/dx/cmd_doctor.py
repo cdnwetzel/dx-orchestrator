@@ -1,0 +1,512 @@
+from __future__ import annotations
+
+import argparse
+import importlib
+import os
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+from ._argtypes import SubParsers
+from .approval_tier import DeclarationError, load_declaration
+from .config_loader import (
+    BranchesConfig,
+    ConfigError,
+    endpoint_warnings,
+    get_approval_config,
+    get_branches_config,
+    get_config_path,
+    get_gui_config,
+    get_ledger_repo_path,
+    get_psoperator_config,
+    get_psoperator_repo,
+    get_review_config,
+    get_roles_path,
+    get_route_for_role,
+    load_config,
+    validate_manifest,
+)
+from .evidence import MERGE_SCHEMA, default_evidence_root, summarize_store
+from .model_probe import (
+    NOT_SERVED,
+    measure_latency,
+    measure_latency_autodetect,
+    probe_model,
+    probe_model_autodetect,
+)
+from .role_registry import get_parse_failures, load_registry
+
+# doctor asks tools for their version; none of them should take longer.
+PROBE_TIMEOUT_S = 15
+
+
+def _observer_health(host: str, port: int) -> str:
+    """One-line health summary from a running PSOperator observer, or raise.
+
+    Split out so `dx doctor` can be tested without psoperator installed — the
+    psoperator import lives here, behind the seam the test patches.
+    """
+    from psoperator.services.observer_client import ObserverClient
+
+    health = ObserverClient(host, port).health()
+    return f"epoch {health.observer_epoch[:8]}…, key {health.attestation_key_id}"
+
+
+def _find_on_path(name: str) -> str | None:
+    """Look for `name` first alongside the current Python (venv/bin), then PATH."""
+    venv_candidate = Path(sys.executable).parent / name
+    if venv_candidate.exists():
+        return str(venv_candidate)
+    return shutil.which(name)
+
+
+def register_doctor_subcommand(subparsers: SubParsers) -> None:
+    parser = subparsers.add_parser(
+        "doctor", help="Self-test the dx environment"
+    )
+    parser.add_argument(
+        "--no-network",
+        action="store_true",
+        help="Skip network reachability probes",
+    )
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Also time a 1-token call to each serving model — catches a resident "
+        "but degraded node (slow), which residency checks cannot see. Costs a real call.",
+    )
+    parser.add_argument(
+        "--latency-warn-ms",
+        type=float,
+        default=5000.0,
+        help="With --deep, warn when a model's 1-token call takes at least this "
+        "many ms (default 5000).",
+    )
+    parser.set_defaults(func=cmd_doctor)
+
+
+def _check_cmd(cmd: list[str], label: str) -> bool:
+    resolved = _find_on_path(cmd[0])
+    if resolved is None:
+        print(f"❌ {label}")
+        return False
+    try:
+        subprocess.run(
+            [resolved, *cmd[1:]], check=True, capture_output=True, timeout=PROBE_TIMEOUT_S
+        )
+        print(f"✅ {label} ({resolved})")
+        return True
+    except subprocess.CalledProcessError:
+        print(f"❌ {label} (found at {resolved} but returned non-zero)")
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"❌ {label} (found at {resolved} but hung for {PROBE_TIMEOUT_S}s)")
+        return False
+
+
+def _check_import(module: str, label: str) -> bool:
+    try:
+        importlib.import_module(module)
+        print(f"✅ {label}")
+        return True
+    except ImportError:
+        print(f"❌ {label}")
+        return False
+
+
+def _reviewer_posture() -> list[str]:
+    """The reviewer leg as the manifest and pxx would resolve it — derived,
+    never restated. Non-core: a wrong posture is reported, not a failed doctor.
+
+    One line for the switch, then one per distinct writer route: the reviewer
+    pxx resolves under that role's environment against the role's own model.
+    Printed even with the reviewer off, so a box can be checked before the
+    switch is thrown. A reviewer that cannot be determined (pxx not importable
+    here) is ⚠️, never ✅.
+    """
+    from .cmd_run import _pxx_env, _reviewer_route, _reviewer_route_why
+
+    lines: list[str] = []
+    try:
+        review = get_review_config()
+    except ConfigError as exc:
+        return [f"❌ reviewer leg: {exc}"]
+    if review is None:
+        lines.append("🧪 reviewer leg: off (manifest has no review section) — "
+                     "F-001: the reviewer never runs")
+    elif not review.enabled:
+        lines.append("🧪 reviewer leg: off (manifest review: enabled false) — "
+                     "F-001: the reviewer never runs")
+    else:
+        lines.append(f"🧪 reviewer leg: on, {review.mode} (manifest review:)")
+
+    # Doctor has no task scope: pxx's settings are resolved from the directory
+    # doctor runs in, where `dx run` resolves them from the task's scope. Same
+    # answer wherever the reviewer is set in user config or the environment;
+    # said out loud so the per-writer lines are not read as per-scope facts.
+    lines.append(f"   (pxx settings resolved in {Path.cwd()}; `dx run` resolves "
+                 f"them in each task's scope)")
+
+    cfg = load_config()
+    roles = cfg.get("roles") or {}
+    # Grouped by everything _pxx_env hands pxx for the route, so every role in
+    # a group is resolved under exactly its own environment, not the first
+    # slug's. Model and endpoint alone would merge routes that differ only in
+    # provider or timeout.
+    by_writer: dict[tuple[str | None, str, str | None, float | None], list[str]] = {}
+    for slug in sorted(roles):
+        if slug == "default":
+            continue
+        route = get_route_for_role(slug)
+        key = (route.model, route.endpoint, route.provider, route.timeout_s)
+        by_writer.setdefault(key, []).append(slug)
+    for (writer_model, endpoint, _provider, _timeout), slugs in by_writer.items():
+        route = get_route_for_role(slugs[0])
+        reviewer = _reviewer_route(Path.cwd(), _pxx_env(route))
+        who = f"writer {writer_model or '(pxx default)'} @ {endpoint} ({', '.join(slugs)})"
+        if reviewer is None:
+            # pxx's own reason (e.g. a ConfigError), not a guess at one.
+            why = (_reviewer_route_why(Path.cwd(), _pxx_env(route))[1]
+                   or "pxx not importable here, or its settings did not load")
+            lines.append(f"   ⚠️  reviewer not determined for {who}: {why}")
+            continue
+        r_model, r_url, r_prov = reviewer["model"], reviewer["base_url"], reviewer["provider"]
+        if not writer_model:
+            # pxx's own default decides the writer, and that default may be the
+            # very model the reviewer resolved to: not knowable here, so never ✅.
+            lines.append(f"   ⚠️  writer model unset for {who}: pxx's default decides it, "
+                         f"so whether reviewer {r_model} differs cannot be said here")
+        elif r_model == writer_model:
+            lines.append(f"   ❌ reviewer is the writer's model ({r_model}) for {who} — "
+                         f"decorrelation broken (pxx-role-binding)")
+        else:
+            lines.append(f"   ✅ reviewer {r_model} @ {r_url or '(pxx default)'} "
+                         f"({r_prov or 'provider unset'}) differs from {who}")
+    return lines
+
+
+def _branch_posture() -> tuple[list[str], bool]:
+    """Task branches (plan D-3): the manifest's switch, then the state of
+    each checkout the executor role declares — on its base or not, clean or
+    not, stray task branches (each a run that did not return, with the two
+    commands that return it), candidate tags. Derived, never restated.
+
+    ❌ (a failed doctor) only when branch mode is on and a checkout is not
+    on its base or holds a stray branch: that is a pilot no run can be
+    admitted to. With branch mode off the same facts are ⚠️, since nothing
+    reads them yet."""
+    from .task_branch import (
+        BranchError,
+        candidate_tags,
+        current_branch,
+        status_porcelain,
+        stray_task_branches,
+    )
+
+    lines: list[str] = []
+    ok = True
+    try:
+        cfg = get_branches_config()
+    except ConfigError as exc:
+        return [f"❌ task branches: {exc}"], False
+    if cfg is None:
+        lines.append("🌿 task branches: off (manifest has no branches section) — inline "
+                     "mode: pxx commits on the checked-out branch, before sign-off (F-003)")
+    elif not cfg.enabled:
+        lines.append("🌿 task branches: off (manifest branches: enabled false) — inline "
+                     "mode: pxx commits on the checked-out branch, before sign-off (F-003)")
+    else:
+        lines.append(f"🌿 task branches: on — each run on {cfg.prefix}<task id> from "
+                     f"{cfg.base}; sign-off merges for real (plan D-3)")
+    enabled = cfg is not None and cfg.enabled
+    eff = cfg or BranchesConfig(enabled=False)
+
+    try:
+        approval = get_approval_config()
+        scopes = (list(load_declaration(approval.declaration, approval.role,
+                                        approval.ai_root).scopes)
+                  if approval is not None else [])
+    except (ConfigError, DeclarationError, OSError) as exc:
+        lines.append(f"   ⚠️  the executor's declared scopes could not be read: {exc}")
+        return lines, ok
+    if not scopes:
+        lines.append("   (no approval declaration in the manifest, so no checkout to "
+                     "inspect; the posture is read from the executor role's declared scopes)")
+        return lines, ok
+    for scope in scopes:
+        repo = Path(scope)
+        if not (repo / ".git").exists():
+            lines.append(f"   ⚠️  {repo}: not a git repository (or not present here)")
+            continue
+        try:
+            on = current_branch(repo)
+            dirty = status_porcelain(repo)
+            stray = stray_task_branches(repo, eff)
+            tags = candidate_tags(repo)
+        except BranchError as exc:
+            lines.append(f"   ⚠️  {repo}: {exc}")
+            if enabled:
+                ok = False
+            continue
+        on_base = on == eff.base
+        clean = not dirty.strip()
+        healthy = on_base and clean and not stray
+        icon = "✅" if healthy else ("❌" if enabled else "⚠️")
+        if not healthy and enabled:
+            ok = False
+        lines.append(
+            f"   {icon} {repo}: on {on or 'a detached HEAD'}"
+            + ("" if on_base else f" (base is {eff.base})")
+            + (", clean" if clean else f", {len(dirty.strip().splitlines())} uncommitted path(s)")
+            + f", {len(stray)} stray task branch(es), {len(tags)} candidate tag(s)"
+        )
+        for name in stray:
+            lines.append(f"      {name}: a run did not return the checkout. Look at it, then:")
+            lines.append(f"         git -C {repo} switch {eff.base}")
+            lines.append(f"         git -C {repo} branch -D {name}")
+    return lines, ok
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    print("🔍 dx doctor — self-test\n")
+    all_ok = True
+
+    # 1. Python version
+    #
+    # ruff flags this as unreachable given requires-python >= 3.11, but doctor
+    # is exactly the command someone runs from a source checkout with the wrong
+    # interpreter (`python3.9 -m dx.cli doctor`), where the package metadata was
+    # never consulted. Reporting the version is the check, so keep the branch.
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if sys.version_info >= (3, 11):  # noqa: UP036
+        print(f"✅ Python {py_ver} (>= 3.11)")
+    else:
+        print(f"❌ Python {py_ver} (need >= 3.11)")
+        all_ok = False
+
+    # 2. pxx CLI
+    if not _check_cmd(["pxx", "--version"], "pxx installed"):
+        all_ok = False
+
+    # 3. PSOperator importable (indicates pip install -e ~/ai/psoperator ran)
+    if not _check_import("psoperator", "PSOperator importable"):
+        print(
+            "   hint: clone and install with "
+            "`gh repo clone cdnwetzel/psoperator ~/ai/psoperator "
+            "&& pip install -e ~/ai/psoperator`"
+        )
+        all_ok = False
+
+    # 3b. PSOperator examples/run_agent.py script present
+    psop_agent = get_psoperator_repo() / "examples" / "run_agent.py"
+    if psop_agent.exists():
+        print(f"✅ PSOperator run_agent script at {psop_agent}")
+    else:
+        print(f"❌ PSOperator run_agent script missing at {psop_agent}")
+        print("   hint: set PSOPERATOR_REPO or run scripts/setup_dependencies.sh")
+        all_ok = False
+
+    # 4. Role cards
+    roles_path = get_roles_path()
+    if roles_path.exists():
+        count = len(list(roles_path.glob("*.md")))
+        # Parse them, don't just count files. A card that cannot be parsed is
+        # dropped from the registry, which for an Anchored role silently removes
+        # its hard-block from dx run.
+        load_registry(roles_path, force=True)
+        parse_failures = get_parse_failures()
+        if parse_failures:
+            print(f"❌ Role cards at {roles_path}: {len(parse_failures)} of {count} failed to parse")
+            for filename, reason in sorted(parse_failures.items()):
+                print(f"   - {filename}: {reason}")
+            print("   hint: dx roles validate")
+            all_ok = False
+        elif count == 0:
+            # An install with no constitution is not a working install, and
+            # dx roles validate already treats this as a failure.
+            print(f"❌ No role cards at {roles_path}")
+            print("   hint: set DX_ROLES_PATH or run scripts/setup_dependencies.sh")
+            all_ok = False
+        else:
+            print(f"✅ Role cards parse cleanly ({count} files at {roles_path})")
+    else:
+        print(f"❌ Role cards missing at {roles_path}")
+        print("   hint: set DX_ROLES_PATH or run scripts/setup_dependencies.sh")
+        all_ok = False
+
+    # 4b. devswarm-ledger clone (needed by dx merge)
+    ledger_repo = get_ledger_repo_path()
+    verify_chain = ledger_repo / "tools" / "verify_chain.py"
+    if verify_chain.exists():
+        print(f"✅ devswarm-ledger at {ledger_repo}")
+    else:
+        print(f"⚠️  devswarm-ledger not found at {ledger_repo} (needed for dx merge)")
+        # Not marking as failure — dx run and dx roles still work without it.
+
+    # 4c. gpg binary (needed by dx merge)
+    if not _check_cmd(["gpg", "--version"], "gpg installed"):
+        print("   hint: apt install gnupg (needed for dx merge signature check)")
+        # Not marking all_ok=False — same reason as above.
+
+    # 5. Hardware manifest
+    #
+    # Checked by loading it exactly the way dx run and dx verify-gui do, not by
+    # parsing the YAML and calling it a day. A manifest can be syntactically
+    # perfect and still be the wrong shape — `roles:` written as a list, say —
+    # and doctor used to report that install as healthy right up until the
+    # first `dx run` failed. A green doctor has to mean the config is usable.
+    cfg_path = get_config_path()
+    if cfg_path.exists():
+        print(f"✅ Hardware manifest at {cfg_path}")
+        try:
+            validate_manifest()
+            print("   (parses, and every section has the expected shape)")
+            for warning in endpoint_warnings():
+                # Not fatal — the endpoint may be unusual on purpose — but this
+                # is the mistake that actually gets made, so say it loudly.
+                print(f"   ⚠️  {warning}")
+        except ConfigError as exc:
+            print(f"   ❌ {exc}")
+            all_ok = False
+        # 5b. The reviewer leg: derived from the manifest and pxx's own
+        # resolution, printed with or without the network. Non-core.
+        try:
+            for line in _reviewer_posture():
+                print(line)
+        except Exception as exc:  # noqa: BLE001 — posture is a report, never a crash
+            print(f"⚠️  could not derive the reviewer posture: {exc}")
+        # 5c. Task branches: the switch and the checkout(s). Core when on.
+        try:
+            branch_lines, branch_ok = _branch_posture()
+            for line in branch_lines:
+                print(line)
+            if not branch_ok:
+                all_ok = False
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️  could not derive the branch posture: {exc}")
+    else:
+        print(f"❌ Hardware manifest missing at {cfg_path}")
+        all_ok = False
+
+    # 6. Network probes (optional) — derived from the manifest so they stay
+    #    in sync with routing config. We only test TCP reachability (a live
+    #    vLLM will happily 404 on /, which shouldn't count as failure).
+    if not args.no_network:
+        print("\n🌐 Network checks (non-critical):")
+        try:
+            cfg = load_config()
+            targets: dict[str, str] = {}
+            for slug, role in (cfg.get("roles") or {}).items():
+                ep = (role or {}).get("endpoint")
+                if ep:
+                    targets[f"role:{slug}"] = ep
+            gui = get_gui_config()
+            if gui.get("vlm_endpoint"):
+                targets["gui.vlm_endpoint"] = gui["vlm_endpoint"]
+
+            seen: set[str] = set()
+            for label, url in targets.items():
+                parsed = urlparse(url)
+                host = parsed.hostname
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                key = f"{host}:{port}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    with socket.create_connection((host, port), timeout=2):
+                        print(f"✅ {label} → {key} reachable")
+                except OSError:
+                    print(f"⚠️  {label} → {key} not reachable")
+        except Exception as exc:
+            print(f"⚠️  could not derive probes from manifest: {exc}")
+
+        # Model availability (non-critical). TCP "reachable" above says nothing
+        # about whether the bound MODEL can serve: a node answers the port while
+        # its model is on disk but not resident, and every task on that tier fails
+        # MODEL_UNAVAILABLE. Ask each node what it actually serves so a green
+        # doctor cannot coexist with an unusable tier.
+        try:
+            cfg = load_config()
+            probed: set[tuple[str, str]] = set()
+            for _slug, role in (cfg.get("roles") or {}).items():
+                role = role or {}
+                ep, provider, model = role.get("endpoint"), role.get("provider"), role.get("model")
+                if not (ep and provider and model):
+                    continue
+                if (ep, model) in probed:
+                    continue
+                probed.add((ep, model))
+                avail = probe_model(ep, provider, model)
+                icon = "✅" if avail.ok else ("❌" if avail.status == NOT_SERVED else "⚠️")
+                print(f"{icon} model {model} @ {ep}: {avail.detail}")
+                # --deep: a model that can serve may still be slow. Time a 1-token
+                # call. Slow means slow *now* (degraded node or concurrent load) —
+                # a fact residency can't see, not a diagnosis of the cause.
+                if args.deep and avail.ok:
+                    lat = measure_latency(ep, provider, model, warn_ms=args.latency_warn_ms)
+                    print(f"   {'⚠️' if (lat.slow or not lat.ok or not lat.sane) else '✅'} latency: {lat.detail}")
+        except Exception as exc:
+            print(f"⚠️  could not probe model availability: {exc}")
+
+        # The psoperator planner endpoint is not a role route, so the loop above
+        # never sees it — yet it is the one endpoint that can be a latent landmine
+        # (a model that will not load, surfacing only when the desktop agent first
+        # runs). Probe it explicitly, provider-autodetected so an ollama-backed
+        # endpoint is checked for residency (on-disk-cold), not just listing.
+        try:
+            psop = get_psoperator_config()
+            ep, model = psop.get("model_endpoint"), psop.get("model_name")
+            if ep and model:
+                avail = probe_model_autodetect(str(ep), str(model))
+                icon = "✅" if avail.ok else ("❌" if avail.status == NOT_SERVED else "⚠️")
+                print(f"{icon} psoperator model {model} @ {ep}: {avail.detail}")
+                if args.deep and avail.ok:
+                    lat = measure_latency_autodetect(str(ep), str(model), warn_ms=args.latency_warn_ms)
+                    print(f"   {'⚠️' if (lat.slow or not lat.ok or not lat.sane) else '✅'} latency: {lat.detail}")
+        except Exception as exc:
+            print(f"⚠️  could not probe the psoperator model endpoint: {exc}")
+
+        # Observer health (non-critical). Probed only when the observer is
+        # configured for use — the attestation key path is the intent signal —
+        # so an install that never uses `--observer` sees no warning about it.
+        obs_key = os.environ.get("PSOPERATOR_OBSERVER_ATTESTATION_KEY_PATH")
+        if obs_key:
+            obs_host = os.environ.get("PSOPERATOR_OBSERVER_HOST", "127.0.0.1")
+            obs_port = int(os.environ.get("PSOPERATOR_OBSERVER_PORT", "8764"))
+            try:
+                summary = _observer_health(obs_host, obs_port)
+                print(f"✅ observer → {obs_host}:{obs_port} healthy ({summary})")
+            except Exception as exc:
+                print(f"⚠️  observer → {obs_host}:{obs_port} not healthy: {exc}")
+
+    # Evidence store (non-critical, always — it is a filesystem read, not network).
+    # Report what has accumulated in the default store so it is never an unwatched
+    # pile. merge_gate bundles are the one family a ledger row can bind, so they are
+    # flagged: never prune one a ledger row names.
+    try:
+        store = summarize_store(default_evidence_root())
+        if store.total == 0:
+            print(f"\n📂 Evidence store empty ({store.root})")
+        else:
+            families = ", ".join(f"{fam}×{n}" for fam, n in sorted(store.by_family.items()))
+            print(f"\n📂 Evidence store: {store.total} bundle(s) at {store.root}")
+            print(f"   {families}")
+            if store.referenceable:
+                print(
+                    f"   ⚠️  {store.referenceable} {MERGE_SCHEMA} bundle(s) are ledger-referenceable "
+                    "— check the ledger before pruning (role_task/gui_verification prune freely)"
+                )
+    except Exception as exc:
+        print(f"⚠️  could not read the evidence store: {exc}")
+
+    print("")
+    if all_ok:
+        print("✅ All core checks passed. dx is ready to use.")
+        sys.exit(0)
+    else:
+        print("❌ Some core checks failed. See messages above.")
+        sys.exit(1)

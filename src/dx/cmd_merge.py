@@ -1,0 +1,813 @@
+"""dx merge — pre-merge gate.
+
+Wires the RL-003 signature validity checks from devswarm-ledger/SCHEMA.md
+§ approvals/, then the named ``approval_tier`` check from charter Decision
+0020: the chain diff decides whether the signer may be the author
+(single-reviewer, recorded as an ``sod_exception``), must be someone else
+(two-human), or may not sign at all (control-plane contact → REDLINE). Every
+SIGNED and MERGED row records ``mechanism=`` from the ledger's key registry.
+
+Output discipline: every gate verdict is flushed as it is decided. A merge
+gate's transcript is evidence, and evidence gets piped into logs — verdicts
+must appear in the order they were reached whether stdout is a tty or a pipe.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+from ._argtypes import SubParsers
+from .approval_tier import (
+    CONTROL_PLANE,
+    TWO_HUMAN,
+    Declaration,
+    DeclarationError,
+    TierDecision,
+    chain_changed_paths,
+    chain_root_base,
+    decide,
+    load_declaration,
+)
+from .cmd_verify import Verdict, verify_gui
+from .config_loader import (
+    ConfigError,
+    get_approval_config,
+    get_branches_config,
+    get_ledger_repo_path,
+)
+from .evidence import (
+    Check,
+    EvidenceError,
+    MergeGateBundle,
+    bundle_digest,
+    write_merge_bundle,
+)
+from .executed import ExecutedError, record_control_plane_redline
+from .ledger_state import (
+    LedgerStateError,
+    candidate_for_merge,
+    current_state,
+    is_reference_ledger,
+    task_rows,
+)
+from .ledger_utils import (
+    LedgerError,
+    canonical_approval_message,
+    get_ledger_head,
+    get_task_author_human,
+    get_task_queue,
+    verify_detached_signature,
+)
+from .ledger_writer import (
+    AlreadyOnBranch,
+    LedgerWriteError,
+    MergeLock,
+    append_row,
+    build_row,
+    git_merge_no_ff,
+    read_head,
+)
+from .task_branch import (
+    BranchError,
+    current_branch,
+    is_ancestor,
+    merge_conflicts,
+    status_porcelain,
+)
+from .task_branch import git as _branch_git
+
+
+def _ok(msg: str) -> None:
+    print(f"✅ {msg}", flush=True)
+
+
+def _info(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def _warn(msg: str) -> None:
+    sys.stdout.flush()
+    print(f"⚠️  {msg}", file=sys.stderr, flush=True)
+
+
+def _fail(msg: str, code: int = 1) -> None:
+    sys.stdout.flush()
+    print(f"❌ {msg}", file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+def register_merge_subcommand(subparsers: SubParsers) -> None:
+    parser = subparsers.add_parser(
+        "merge",
+        help="Merge gate: RL-003 signature check + optional GUI verification",
+    )
+    parser.add_argument("task_id", help="Task ID (e.g. T-0007)")
+    parser.add_argument(
+        "--repo",
+        help="Work repository to merge in. Without it dx records the approval "
+        "but performs no git merge, and says so.",
+    )
+    parser.add_argument(
+        "--signature", "-s",
+        help="Path to GPG detached signature (.asc). "
+        "Default: <ledger>/approvals/<task_id>.<role>.asc",
+    )
+    parser.add_argument(
+        "--message", "-M",
+        help="Path to the signed message file (.msg). "
+        "Default: <ledger>/approvals/<task_id>.<role>.msg",
+    )
+    parser.add_argument(
+        "--verify-gui",
+        action="store_true",
+        help="Run GUI verification before merging",
+    )
+    parser.add_argument(
+        "--expected", help="Expected GUI state (used with --verify-gui)"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Bypass ALL merge gates — the RL-003 signature check AND GUI "
+            "verification. Audit-visible; use only for emergency rollback."
+        ),
+    )
+    parser.add_argument(
+        "--allow-already-on-branch",
+        action="store_true",
+        help=(
+            "Record a candidate that is already reachable from the target "
+            "checkout (committed inline, before task branches — plan D-3, "
+            "2026-10-08). No merge commit can be made for it; refused without "
+            "this flag so a sign-off is never recorded over a merge that did "
+            "not happen. Audit-visible: the MERGED row says the flag was used."
+        ),
+    )
+    parser.add_argument(
+        "--allow-reference-ledger",
+        action="store_true",
+        help=(
+            "Run the gate against devswarm-ledger-reference. Its rows are "
+            "synthetic, so a green merge there attests to nothing; refused "
+            "without this flag because dx falls back to it when no ledger is "
+            "configured."
+        ),
+    )
+    parser.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="Skip the dx.merge_gate.v1 bundle (the gate still runs)",
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        help="Where to write the bundle (default: DX_EVIDENCE_DIR, "
+        "else ~/.local/state/dx/evidence)",
+    )
+    parser.set_defaults(func=cmd_merge)
+
+
+# Kept in sync with cmd_run/cmd_verify — receipts live outside any repo under edit.
+DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+
+
+def _evidence_root(args: argparse.Namespace) -> Path:
+    if getattr(args, "evidence_dir", None):
+        return Path(args.evidence_dir).expanduser()
+    env = os.environ.get("DX_EVIDENCE_DIR")
+    return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
+
+
+def _emit_merge_evidence(
+    args: argparse.Namespace, rec: dict[str, object], passed: bool
+) -> Path | None:
+    """Write a dx.merge_gate.v1 bundle from the accumulated gate record and
+    announce it on stderr — stdout is the pinned RL-003 transcript. Returns the
+    bundle directory, or None if it could not be written."""
+    def _d(key: str) -> dict[str, object]:
+        val = rec.get(key)
+        return val if isinstance(val, dict) else {}
+
+    checks: dict[str, Check] = {}
+    if rec.get("head_before") is not None:
+        checks["ledger_chain_verifies"] = Check(ok=True, detail=str(rec.get("head_before"))[:16])
+    if rec.get("signer") is not None:
+        checks["signature_verified"] = Check(
+            ok=rec.get("failure") != "signed_message_mismatch",
+            detail=str(_d("signer").get("name")),
+        )
+    if rec.get("approval_tier") is not None:
+        tier = _d("approval_tier")
+        checks["approval_tier"] = Check(
+            ok=tier.get("tier") != CONTROL_PLANE,
+            detail=str(tier.get("tier")),
+        )
+    if rec.get("separation_of_duties") is not None:
+        checks["separation_of_duties"] = Check(
+            ok=bool(rec.get("separation_of_duties")),
+            detail=str(rec.get("sod_exception") or "signer ≠ author"),
+        )
+    if rec.get("gui") is not None:
+        checks["gui_verification"] = Check(
+            ok=bool(_d("gui").get("verified")),
+            detail=str(_d("gui").get("answer"))[:120],
+        )
+    if rec.get("merged") is not None:
+        checks["git_merged"] = Check(ok=True, detail=str(_d("merged").get("merge_commit"))[:12])
+    bundle = MergeGateBundle(
+        task_id=args.task_id,
+        title=f"Merge gate — {args.task_id}",
+        passed=passed,
+        ledger_repo=str(rec.get("ledger_repo") or ""),
+        role=rec.get("role"),  # type: ignore[arg-type]
+        head_before=rec.get("head_before"),  # type: ignore[arg-type]
+        head_after=rec.get("head_after"),  # type: ignore[arg-type]
+        signer=rec.get("signer"),  # type: ignore[arg-type]
+        author_human=rec.get("author_human"),  # type: ignore[arg-type]
+        separation_of_duties=rec.get("separation_of_duties"),  # type: ignore[arg-type]
+        approval_tier=rec.get("approval_tier"),  # type: ignore[arg-type]
+        gui=rec.get("gui"),  # type: ignore[arg-type]
+        merged=rec.get("merged"),  # type: ignore[arg-type]
+        failure=rec.get("failure"),  # type: ignore[arg-type]
+        source_head=rec.get("head_before"),  # type: ignore[arg-type]
+        checks=checks,
+    )
+    try:
+        path = write_merge_bundle(bundle, _evidence_root(args))
+        print(f"🧾 Evidence: {path}", file=sys.stderr, flush=True)
+        return path
+    except EvidenceError as exc:
+        print(f"⚠️  merge-gate evidence bundle could not be written: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def _bind_bundle_into_ledger(
+    args: argparse.Namespace, rec: dict[str, object], bundle_path: Path
+) -> None:
+    """Append an EVIDENCE row binding the merge-gate bundle's digest into the
+    chain, so the append-only ledger — and the RL-003 signature over its head —
+    transitively commit to the evidence, not just to the fact a merge happened.
+
+    Rides the existing action enum (EVIDENCE); the digest is a hash, not a secret
+    (RL-011). Announced on stderr, so the pinned RL-003 transcript on stdout is
+    unchanged. Best-effort: a receipt that cannot be bound warns, it does not undo
+    a completed merge."""
+    ledger_repo_raw = rec.get("ledger_repo")
+    if not isinstance(ledger_repo_raw, str):
+        return
+    ledger_repo = Path(ledger_repo_raw)
+    role = rec.get("role")
+    try:
+        digest = bundle_digest(bundle_path)
+        head = read_head(ledger_repo / "ledger.jsonl")
+        row = build_row(
+            action="EVIDENCE",
+            task_id=args.task_id,
+            evidence=f"dx.merge_gate.v1 sha256:{digest}",
+            prev_hash=head,
+            reviewer_seat=role if isinstance(role, str) else None,
+        )
+        new_head = append_row(ledger_repo, row)
+        print(
+            f"🔗 EVIDENCE row binds the merge-gate bundle (sha256:{digest[:16]}…). "
+            f"Head: {new_head[:16]}…",
+            file=sys.stderr,
+            flush=True,
+        )
+    except (EvidenceError, LedgerWriteError, LedgerError, OSError) as exc:
+        print(
+            f"⚠️  could not bind the merge-gate bundle into the ledger: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def cmd_merge(args: argparse.Namespace) -> None:
+    """Run the gate, then emit a dx.merge_gate.v1 bundle from what it decided.
+
+    The gate exits via SystemExit at each verdict (0 pass, 1 fail); the bundle
+    is written on the way out, from the record the gate accumulated, unless the
+    gate never really started (a --force bypass, which writes nothing) or
+    --no-evidence was given."""
+    rec: dict[str, object] = {}
+    try:
+        _run_merge(args, rec)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        if rec.get("started") and not args.no_evidence:
+            bundle_path = _emit_merge_evidence(args, rec, passed=(code == 0))
+            # A successful merge appended rows; bind the bundle digest into the
+            # chain so the ledger commits to the evidence, not just the event.
+            if code == 0 and bundle_path is not None:
+                _bind_bundle_into_ledger(args, rec, bundle_path)
+        raise
+
+
+_HEAD_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _looks_like_head(value: str) -> bool:
+    """A ledger head is a 64-character lowercase hex SHA-256 digest."""
+    return bool(_HEAD_RE.match(value))
+
+
+def _norm(name: str | None) -> str:
+    """Case- and whitespace-insensitive compare for author vs signer names."""
+    return (name or "").strip().lower()
+
+
+def _tier_evidence(decision: TierDecision, sod_exception: str | None, mechanism: str | None) -> str:
+    """The `key=value` tail every SIGNED/MERGED row carries (SCHEMA.md
+    evidence conventions): the tier, the mechanism, and the exception when
+    the author signed."""
+    parts = [f"approval_tier={decision.tier}", f"mechanism={mechanism}"]
+    if sod_exception:
+        parts.append(f"sod_exception={sod_exception}")
+    return "; " + " ".join(parts)
+
+
+def _load_declaration() -> Declaration | None:
+    """The executor's scope declaration named by the manifest, or None when
+    the manifest has no `approval:` section (→ two-human, fail closed)."""
+    cfg = get_approval_config()
+    if cfg is None:
+        return None
+    return load_declaration(cfg.declaration, cfg.role, cfg.ai_root)
+
+
+def _tier_decision(
+    args: argparse.Namespace, ledger_repo: Path, task_sha: str, rec: dict[str, object]
+) -> TierDecision:
+    try:
+        declaration = _load_declaration()
+    except (ConfigError, DeclarationError) as exc:
+        rec["failure"] = "declaration_error"
+        _fail(f"approval declaration unusable: {exc}")
+    repo = Path(args.repo).expanduser() if args.repo else None
+    changed: list[str] | None = None
+    if repo is not None:
+        root_base, chain = chain_root_base(args.task_id, ledger_repo)
+        changed = chain_changed_paths(repo, root_base, task_sha)
+        rec["chain"] = {"root_base": root_base, "tasks": chain,
+                        "paths": None if changed is None else len(changed)}
+    return decide(repo, changed, declaration)
+
+
+def _redline_control_plane(
+    ledger_repo: Path, task_id: str, task_sha: str, decision: TierDecision,
+) -> None:
+    """The gate's backstop: `dx run` already appends this row when it records
+    EXECUTED, so reaching here means the candidate was recorded another way.
+    Written before any SIGNED row; a second `dx merge` is refused at the state
+    check, so the row is not duplicated."""
+    try:
+        new_head = record_control_plane_redline(
+            ledger_repo, task_id, task_sha, decision.touched, by="dx.merge_gate")
+        _warn(f"REDLINE row appended for {task_id}. Head: {new_head[:16]}…")
+    except (ExecutedError, LedgerWriteError, LedgerError, OSError) as exc:
+        _warn(f"could not append the REDLINE row for {task_id}: {exc}")
+
+
+def _note_queue(
+    ledger_repo: Path, task_id: str, decision: TierDecision, sod_exception: str | None
+) -> None:
+    """Mirror the tier and the exception into queue/<task>.json. The ledger is
+    the record; the queue is a convenience view of it, so a queue that cannot
+    be updated is said out loud and is not worth failing a completed merge."""
+    qf = ledger_repo / "queue" / f"{task_id}.json"
+    if not qf.is_file():
+        return
+    try:
+        q = json.loads(qf.read_text(encoding="utf-8"))
+        q["approval_tier"] = decision.tier
+        q["sod_exception"] = sod_exception
+        q["state"] = "MERGED"
+        qf.write_text(json.dumps(q, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        _warn(f"{qf.name} could not be updated after the merge: {exc}")
+
+
+def _precheck_merge(
+    args: argparse.Namespace, target: Path, task_sha: str, rec: dict[str, object]
+) -> None:
+    """(0c) Before any row: the target checkout is where a merge may land
+    (on the base branch in branch mode; clean in either mode), the candidate
+    is not already reachable from it (or the legacy flag was given), and the
+    merge is conflict-free by `git merge-tree --write-tree`. Every refusal
+    here leaves the ledger and the checkout untouched."""
+    try:
+        branches = get_branches_config()
+    except ConfigError as exc:
+        rec["failure"] = "branches_config"
+        _fail(f"manifest `branches:` section unusable: {exc}")
+    try:
+        on = current_branch(target)
+        rec["target_branch"] = on
+        if branches is not None and branches.enabled and on != branches.base:
+            rec["failure"] = "target_not_on_base"
+            _fail(
+                f"{target} is on {on!r}, not on the base branch {branches.base!r}; "
+                f"the merge would land on the wrong branch. Return the checkout "
+                f"to {branches.base} first (`dx doctor` prints how)."
+            )
+        dirty = status_porcelain(target)
+        if dirty:
+            rec["failure"] = "target_dirty"
+            _fail(
+                f"{target} has {len(dirty.splitlines())} uncommitted path(s); a "
+                f"merge into a dirty checkout would sweep them into the merge "
+                f"commit. Commit or discard them first."
+            )
+        head = _branch_git(target, "rev-parse", "HEAD")
+        rec["target_head"] = head
+        if is_ancestor(target, task_sha, head):
+            if not args.allow_already_on_branch:
+                rec["failure"] = "already_on_branch"
+                _fail(
+                    f"candidate {task_sha[:12]} is already reachable from "
+                    f"{on or head[:12]}; it was committed inline, not on a task "
+                    f"branch (plan D-3, 2026-10-08), so no merge commit can be "
+                    f"made and nothing is recorded. To record a legacy inline "
+                    f"candidate anyway, re-run with --allow-already-on-branch."
+                )
+            # Audit-visible, like --force: the flag has to say something.
+            _warn(
+                f"--allow-already-on-branch in effect for {args.task_id}: "
+                f"candidate {task_sha[:12]} is already reachable from "
+                f"{on or head[:12]}; the MERGED row will record no merge commit "
+                f"(legacy inline candidate, plan D-3)."
+            )
+            rec["already_on_branch"] = True
+            return
+        conflicts = merge_conflicts(target, head, task_sha)
+        if conflicts is not None:
+            rec["failure"] = "merge_conflict"
+            rec["conflicts"] = conflicts
+            _fail(
+                f"candidate {task_sha[:12]} does not merge cleanly into "
+                f"{on or 'HEAD'} at {head[:12]}: conflicts in "
+                f"{', '.join(conflicts) or '(paths not named by git)'}. Nothing "
+                f"was written and the signature stays valid. Remedy: re-admit a "
+                f"rework based at the current {on or 'head'}, seeded from this "
+                f"candidate's recorded diff, and review that. dx never rebases "
+                f"and never resolves a merge under its own name."
+            )
+        _ok(f"Candidate {task_sha[:12]} merges cleanly into {on or 'HEAD'} at "
+            f"{head[:12]} (git merge-tree).")
+    except BranchError as exc:
+        rec["failure"] = "merge_precheck_error"
+        _fail(f"merge pre-check failed: {exc}")
+
+
+def _run_merge(args: argparse.Namespace, rec: dict[str, object]) -> None:
+    if args.force:
+        _warn(
+            f"--force in effect for {args.task_id}: bypassing the RL-003 "
+            "signature check and the approval_tier check"
+            + (" AND GUI verification." if args.verify_gui else ".")
+        )
+        _info(
+            f"🔄 {args.task_id}: gates bypassed, so nothing was written. dx does "
+            f"not append SIGNED or MERGED rows for an ungated merge — the ledger "
+            f"would then attest to a check that did not happen."
+        )
+        sys.exit(0)
+
+    rec["started"] = True
+
+    # 1. Optional GUI verification
+    if args.verify_gui:
+        _info("📷 Running GUI verification...")
+        expected = args.expected or "The GUI shows the correct result."
+        verdict, output = verify_gui(expected)
+        passed = verdict is Verdict.MET
+        rec["gui"] = {"verified": passed, "verdict": verdict.value, "answer": output}
+        if verdict is Verdict.NO_VERDICT:
+            # Not a NO: the model did not answer. The advisory check still
+            # fails the merge, and the record says the screen was not judged.
+            rec["failure"] = "gui_verification_no_verdict"
+            _fail(f"GUI verification reached no verdict: {output}")
+        if not passed:
+            rec["failure"] = "gui_verification_failed"
+            _fail(f"GUI verification failed: {output}")
+        _ok(f"GUI verification passed: {output}")
+
+    # 2. Ledger-based signature check (RL-003)
+    try:
+        ledger_repo = get_ledger_repo_path()
+        rec["ledger_repo"] = str(ledger_repo)
+        if not ledger_repo.exists():
+            rec["failure"] = "ledger_not_found"
+            _fail(
+                f"devswarm-ledger not found at {ledger_repo}. "
+                "Clone it or set DX_LEDGER_REPO."
+            )
+
+        if is_reference_ledger(ledger_repo) and not args.allow_reference_ledger:
+            rec["failure"] = "reference_ledger"
+            _fail(
+                f"{ledger_repo} is the public reference ledger. Its rows are "
+                f"synthetic and attest to no real work; a merge gated against "
+                f"it is green over nothing. Point DX_LEDGER_REPO or the "
+                f"manifest's ledger.repo at the real ledger, or pass "
+                f"--allow-reference-ledger to exercise the gate deliberately."
+            )
+
+        queue = get_task_queue(args.task_id, ledger_repo)
+        role = queue.get("approve_role")
+        rec["role"] = role
+        if not role:
+            raise LedgerError(
+                f"queue file for {args.task_id} has no 'approve_role' field"
+            )
+
+        # Resolve signature + message paths (default to ledger conventions)
+        sig_path = (
+            Path(args.signature).expanduser()
+            if args.signature
+            else ledger_repo / "approvals" / f"{args.task_id}.{role}.asc"
+        )
+        msg_path = (
+            Path(args.message).expanduser()
+            if args.message
+            else ledger_repo / "approvals" / f"{args.task_id}.{role}.msg"
+        )
+
+        # (0) Verify the ledger chain itself and get the current head hash
+        current_head = get_ledger_head(ledger_repo)
+        rec["head_before"] = current_head
+        _ok(f"Ledger chain verifies. Head: {current_head[:16]}…")
+
+        # (0b) The task is approvable and names one candidate. RL-003 binds a
+        # signature to a head; it assumes the thing under that head is fit to
+        # approve. Until 2026-09-21 nothing checked that: a signature over a
+        # redlined task merged, and the candidate commit was read from the
+        # queue alone, under a field name the bridge path never wrote, AFTER
+        # the SIGNED row had been appended. Every refusal here happens before
+        # any row is written.
+        try:
+            state = current_state(task_rows(ledger_repo, args.task_id), args.task_id)
+            rec["task_state"] = state.action
+            task_sha = candidate_for_merge(queue, state)
+        except LedgerStateError as exc:
+            rec["failure"] = "task_not_mergeable"
+            _fail(f"{args.task_id} cannot be merged: {exc}")
+        rec["candidate_sha"] = task_sha
+        _ok(f"Task is {state.action}; candidate {task_sha[:12]} matches its "
+            f"EXECUTED row.")
+        if args.repo:
+            target = Path(args.repo).expanduser()
+            kind = subprocess.run(
+                ["git", "-C", str(target), "cat-file", "-t", task_sha],
+                capture_output=True, text=True, timeout=60,
+            )
+            if kind.returncode != 0 or kind.stdout.strip() != "commit":
+                rec["failure"] = "candidate_not_in_repo"
+                _fail(
+                    f"candidate {task_sha[:12]} is not a commit in {target} — "
+                    f"the approved work is not where the merge would happen"
+                )
+            _ok(f"Candidate {task_sha[:12]} is a commit in {target}.")
+            # (0c) The merge would land, and where it would land. Tested with
+            # `merge-tree`, which touches no file: a conflict here refuses the
+            # gate with NO row written, so the signature (bound to the head)
+            # stays valid and the remedy is a rework, never a hand-merge under
+            # dx's name. Through 0.22.0 a conflict surfaced only after SIGNED
+            # was appended, leaving SIGNED without MERGED and the checkout
+            # mid-merge (AskPS WP-3 design §1).
+            _precheck_merge(args, target, task_sha, rec)
+
+        # (1) Signature verifies against a currently-valid key in docs/keys/
+        signer = verify_detached_signature(sig_path, msg_path, ledger_repo)
+        rec["signer"] = {"name": signer.name, "email": signer.email}
+        _ok(f"Signature verified. Signer: {signer.name} <{signer.email or 'no-email'}>")
+
+        # (2) Signed message payload must be exactly `task_id + head + role`
+        expected_msg = canonical_approval_message(args.task_id, current_head, role)
+        actual_msg = msg_path.read_text(encoding="utf-8")
+        if actual_msg != expected_msg:
+            rec["failure"] = "signed_message_mismatch"
+            # Stale and tampered are different failures with different
+            # remedies. "Stale" tells the operator to re-sign against the
+            # current head — the wrong and actively unsafe advice if the
+            # payload has been altered. Only claim staleness when the middle
+            # section actually looks like a ledger head.
+            if actual_msg.startswith(args.task_id) and actual_msg.endswith(role):
+                signed_head = actual_msg[len(args.task_id):-len(role)]
+                if _looks_like_head(signed_head) and signed_head != current_head:
+                    _fail(
+                        f"Stale signature (RL-003). Signed head "
+                        f"{signed_head[:16]}… but current head is "
+                        f"{current_head[:16]}…. Re-sign after re-verifying the "
+                        f"chain."
+                    )
+                if not _looks_like_head(signed_head):
+                    _fail(
+                        f"Malformed approval payload in {msg_path.name}: the "
+                        f"section between the task id and the role is not a "
+                        f"64-character hex ledger head "
+                        f"(found {len(signed_head)} chars). Do not re-sign this "
+                        f"— establish where it came from."
+                    )
+            _fail(
+                f"Signed message payload does not match "
+                f"'{args.task_id} + head + {role}'. Expected "
+                f"{len(expected_msg)} bytes, found {len(actual_msg)}."
+            )
+        _ok("Signed message binds task_id + current head + role.")
+
+        # (3) approval_tier — the named check from Decision 0020. What the
+        # signer may do depends on what the candidate touches, read from the
+        # chain diff (root base .. candidate, the same span the review packet
+        # shows), never on what anyone declared about this task.
+        author_human = get_task_author_human(args.task_id, ledger_repo)
+        rec["author_human"] = author_human
+        if not author_human:
+            # Until 0.20.0 this warned and proceeded — a merge with nobody to
+            # be separate FROM passed the separation check vacuously.
+            rec["failure"] = "no_author"
+            _fail(
+                f"{args.task_id} names no author_human in the ledger, so no "
+                f"separation of duties can be checked. Record the author "
+                f"(a CORRECTION row, RL-009) before merging."
+            )
+        decision = _tier_decision(args, ledger_repo, task_sha, rec)
+        rec["approval_tier"] = decision.as_json()
+        _ok(f"Approval tier: {decision.tier} — {'; '.join(decision.reasons)}")
+
+        if decision.tier == CONTROL_PLANE:
+            rec["separation_of_duties"] = None
+            rec["failure"] = "control_plane_contact"
+            _redline_control_plane(ledger_repo, args.task_id, task_sha, decision)
+            _fail(
+                f"{args.task_id} touches control-plane path(s) and is not "
+                f"signable: {', '.join(decision.touched)}. A REDLINE row was "
+                f"appended; humans change those paths on the record (RL-008)."
+            )
+
+        same_person = _norm(author_human) == _norm(signer.name)
+        if decision.tier == TWO_HUMAN and same_person:
+            rec["separation_of_duties"] = False
+            rec["failure"] = "separation_of_duties"
+            _fail(
+                f"Separation-of-duties violation: author '{author_human}' "
+                f"and signer '{signer.name}' are the same person, and this "
+                f"candidate is two-human ({'; '.join(decision.reasons)})."
+            )
+        sod_exception: str | None = None
+        if same_person:
+            # single-reviewer: allowed, and said so on the record
+            sod_exception = decision.sod_exception
+            rec["separation_of_duties"] = True
+            rec["sod_exception"] = sod_exception
+            _ok(
+                f"Separation of duties: author '{author_human}' signed their "
+                f"own candidate on a single-reviewer scope; recorded as "
+                f"sod_exception={sod_exception}"
+            )
+        else:
+            rec["separation_of_duties"] = True
+            _ok(
+                f"Separation of duties: author '{author_human}' ≠ "
+                f"signer '{signer.name}'."
+            )
+        # The bundle records the exception that WAS written, not the one the
+        # tier would allow: a second keyholder signing on a single-reviewer
+        # scope leaves no exception on the rows, and the bundle must agree.
+        tier_rec = rec["approval_tier"]
+        if isinstance(tier_rec, dict):
+            tier_rec["sod_exception"] = sod_exception
+
+        # (4) mechanism — from the registry, via the verified identity. An
+        # identity without one did not come through the registry path, and a
+        # mechanism the gate cannot derive is not one it may assume.
+        if not signer.mechanism:
+            rec["failure"] = "mechanism_unknown"
+            _fail(
+                f"the signer's key {signer.fingerprint} carries no registry "
+                f"mechanism; a SIGNED row must record how the key is held "
+                f"(Decision 0020 §7)."
+            )
+        rec["mechanism"] = signer.mechanism
+        _ok(f"Mechanism: {signer.mechanism}")
+
+    except LedgerError as exc:
+        rec.setdefault("failure", "pre_merge_check_error")
+        _fail(f"Pre-merge check failed: {exc}")
+
+    _ok(f"All RL-003 checks passed for {args.task_id}.")
+
+    # The head moves as soon as anything is appended, and the signature above
+    # was verified against `current_head`. So: verify first (done), then append,
+    # and never re-check that signature afterwards. The SIGNED row records the
+    # head it was actually checked against, so the sequence stays auditable once
+    # the head has moved on.
+    try:
+        with MergeLock(ledger_repo, args.task_id):
+            signed_head = append_row(
+                ledger_repo,
+                build_row(
+                    action="SIGNED",
+                    task_id=args.task_id,
+                    prev_hash=current_head,
+                    author_human="(reviewer)",
+                    author_seat=queue.get("author_seat"),
+                    reviewer_seat=queue.get("reviewer_seat"),
+                    sha=task_sha,
+                    evidence=(
+                        f"detached signature over task_id+{current_head}+{role} "
+                        f"at {sig_path.name}, verified against that head; "
+                        f"signer {signer.name}"
+                        + _tier_evidence(decision, sod_exception, signer.mechanism)
+                    ),
+                ),
+            )
+            _ok(f"SIGNED row appended. Head: {signed_head[:16]}…")
+
+            merged_sha = None
+            if args.repo:
+                # task_sha was established and checked against this repo in
+                # (0b), before SIGNED was written. Nothing is re-read here.
+                try:
+                    merged_sha = git_merge_no_ff(target, task_sha, task_id=args.task_id)
+                    merge_note = f"git merge --no-ff into {args.repo} at {merged_sha}"
+                    _ok(f"Merged {str(task_sha)[:12]} into {target} — {merged_sha[:12]}")
+                except AlreadyOnBranch as already:
+                    if not args.allow_already_on_branch:
+                        # (0c) saw the candidate as not yet reachable, so the
+                        # checkout changed under the gate. SIGNED stands with
+                        # no MERGED row: the truthful state, corrected on the
+                        # record (RL-009), never papered over here.
+                        rec["failure"] = "already_on_branch_after_signed"
+                        _fail(
+                            f"candidate {str(task_sha)[:12]} became reachable from "
+                            f"{target} between the pre-check and the merge; no "
+                            f"merge commit was made and no MERGED row is written. "
+                            f"SIGNED was recorded; correct on the record (RL-009)."
+                        )
+                    merged_sha = already.head
+                    merge_note = (
+                        f"candidate {str(task_sha)[:12]} was already reachable from "
+                        f"{args.repo} ({already.head[:12]}); git merge --no-ff created "
+                        f"no merge commit (--allow-already-on-branch: legacy inline "
+                        f"candidate, plan D-3)"
+                    )
+                    _ok(f"{str(task_sha)[:12]} is already reachable from {target}; "
+                        f"no merge commit created (--allow-already-on-branch)")
+                except LedgerWriteError as exc:
+                    # The merge failed after SIGNED (an I/O error, or the tree
+                    # changed since the pre-check). git_merge_no_ff aborted it,
+                    # so the checkout is as found. SIGNED without MERGED is the
+                    # truthful state.
+                    rec["failure"] = "merge_failed_after_signed"
+                    _fail(
+                        f"merge failed after SIGNED was recorded: {exc} The "
+                        f"checkout was left as found. SIGNED stands with no "
+                        f"MERGED row; correct on the record (RL-009)."
+                    )
+                rec["merged"] = {
+                    "repo": str(target),
+                    "task_sha": str(task_sha),
+                    "merge_commit": merged_sha,
+                    "note": merge_note,
+                }
+
+            # Re-read: the SIGNED append moved the head. Reusing current_head
+            # here would append a row whose prev_hash is two rows stale, and
+            # break the chain this gate exists to protect.
+            head_after_signed = read_head(ledger_repo / "ledger.jsonl")
+            merged_head = append_row(
+                ledger_repo,
+                build_row(
+                    action="MERGED",
+                    task_id=args.task_id,
+                    prev_hash=head_after_signed,
+                    author_seat=queue.get("author_seat"),
+                    reviewer_seat=queue.get("reviewer_seat"),
+                    sha=merged_sha or task_sha,
+                    evidence=(
+                        merge_note
+                        if merged_sha
+                        else "no --repo given: approval recorded, no git merge performed"
+                    ) + _tier_evidence(decision, sod_exception, signer.mechanism),
+                ),
+            )
+            rec["head_after"] = merged_head
+            _ok(f"MERGED row appended. Head: {merged_head[:16]}…")
+            _note_queue(ledger_repo, args.task_id, decision, sod_exception)
+    except LedgerWriteError as exc:
+        rec["failure"] = "ledger_write_failed"
+        _fail(f"Ledger write failed: {exc}")
+
+    if not args.repo:
+        _warn(
+            "No --repo given, so no git merge was performed. The ledger records "
+            "the approval only."
+        )
+    print(f"✅ {args.task_id} merged and recorded.", flush=True)
+    sys.exit(0)

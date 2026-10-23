@@ -1,0 +1,1073 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from ._argtypes import SubParsers
+from .approval_tier import (
+    CONTROL_PLANE,
+    DeclarationError,
+    chain_changed_paths,
+    chain_root_base,
+    decide,
+    load_declaration,
+)
+from .config_loader import (
+    BranchesConfig,
+    ConfigError,
+    ReviewConfig,
+    RoleRoute,
+    get_approval_config,
+    get_branches_config,
+    get_ledger_repo_path,
+    get_review_config,
+    get_roles_path,
+    get_route_for_role,
+)
+from .evidence import Check, EvidenceError, RoleTaskBundle, write_bundle
+from .executed import ExecutedError, record_control_plane_redline, record_executed
+from .ledger_utils import LedgerError, get_task_queue
+from .ledger_writer import LedgerWriteError
+from .psoperator_client import PSOperatorClient
+from .role_models import FitLevel
+from .role_registry import failed_slug, get_parse_failures, get_role, load_registry
+from .role_validate import validate_card
+from .run_facts import ReviewRequest, settle_fact
+from .run_facts import collect as collect_run_facts
+from .salvage import find_run_dir, report, salvage_discarded_work
+from .seed import Seed, SeedError, seed_from_patch
+from .task_branch import (
+    BranchError,
+    BranchRun,
+    create_task_branch,
+    preflight,
+    return_to_base,
+    status_porcelain,
+    tag_candidate,
+)
+
+#: Evidence lands outside the repository under edit. Writing it inside would
+#: put receipts in the tree pxx is committing, which is how an evidence store
+#: ends up attesting to itself.
+DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+
+
+def _evidence_root(args: argparse.Namespace) -> Path:
+    if getattr(args, "evidence_dir", None):
+        return Path(args.evidence_dir).expanduser()
+    env = os.environ.get("DX_EVIDENCE_DIR")
+    return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
+
+
+def _git(scope: str, *args: str) -> str | None:
+    """Best-effort git read. Returns None when scope is not a repo or git fails.
+
+    Evidence collection must never be able to fail the task it is recording.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", scope, *args], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _pxx_env(route: RoleRoute) -> dict[str, str]:
+    """The environment a run under ``route`` hands pxx: the process env plus
+    the writer's routing. One function, so doctor resolves the reviewer under
+    exactly the environment a run would."""
+    env = os.environ.copy()
+    env["PXX_BASE_URL"] = route.endpoint
+    if route.model:
+        env["PXX_MODEL"] = route.model
+    if route.provider:
+        env["PXX_PROVIDER"] = route.provider
+    if route.timeout_s:
+        # PXX_NATIVE_TIMEOUT is the base knob; pxx's review_timeout() falls back
+        # to it when PXX_REVIEW_TIMEOUT is unset, so one manifest value covers
+        # the agent round and the review round. Set only when the manifest asks,
+        # so pxx's own default stays in force otherwise.
+        env["PXX_NATIVE_TIMEOUT"] = str(route.timeout_s)
+    return env
+
+
+def _reviewer_route(scope: Path, env: dict[str, str]) -> dict[str, str | None] | None:
+    return _reviewer_route_why(scope, env)[0]
+
+
+def _reviewer_route_why(
+    scope: Path, env: dict[str, str],
+) -> tuple[dict[str, str | None] | None, str | None]:
+    """The reviewer pxx WOULD resolve for a run in ``scope`` under ``env`` —
+    `Settings.effective_review_model` from pxx's own `load_settings`, read the
+    way pxx reads it (user config, repo pxx.toml, environment).
+
+    A labelled claim, not a run fact: pxx's gate event does not name the
+    reviewer (its `ReviewPacket.reviewer` is the literal "reviewer"), so this
+    is "the reviewer configured at launch", recorded beside the routing. None
+    when pxx is not importable here or its settings cannot be loaded; a
+    caller must print that as "not determined", never as a green line. The
+    second value says why it is None (pxx's own error, e.g. a ConfigError for
+    a malformed variable), so `dx doctor` can show it instead of a guess.
+    """
+    try:
+        from pxx.config import load_settings
+    except ImportError:
+        return None, "pxx is not importable here"
+    saved = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        settings = load_settings(cwd=scope)
+        ref = settings.effective_review_model
+    except Exception as exc:  # noqa: BLE001 — a claim that cannot be made is None, not a crash
+        return None, f"pxx settings did not load: {type(exc).__name__}: {exc}"
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    model = getattr(ref, "model", None)
+    return {
+        "model": str(model) if model else None,
+        "provider": str(getattr(ref, "provider", None) or "") or None,
+        "base_url": str(getattr(ref, "base_url", None) or "") or None,
+    }, None
+
+
+def _review_flags(review: ReviewConfig | None) -> tuple[list[str], ReviewRequest]:
+    """Both flags or ``--no-review``, never a mix, on every run.
+
+    pxx's own `loop_review` default (and a `PXX_LOOP_REVIEW` in some unit)
+    never decides: the explicit flag wins in pxx, so the manifest is the one
+    place the choice lives. The request object is what the bundle records as
+    "what dx sent", built from the same decision."""
+    if review is not None and review.enabled:
+        return (["--review", "--review-mode", review.mode],
+                ReviewRequest(requested=True, mode=review.mode))
+    why = "manifest review: off" if review is not None else "no review section"
+    return ["--no-review"], ReviewRequest(requested=False, why_not=why)
+
+
+def _emit_evidence(
+    args: argparse.Namespace,
+    card_fit: str,
+    route: object,
+    prompt: str,
+    cmd: list[str],
+    source_head: str | None,
+    returncode: int,
+    run_started_at: float | None = None,
+    seed: Seed | None = None,
+    review: ReviewRequest | None = None,
+    reviewer_configured: dict[str, str | None] | None = None,
+    branch: BranchRun | None = None,
+    snapshot: tuple[str | None, str | None] | None = None,
+) -> tuple[Path, bool]:
+    """Build and write the `dx.role_task.v1` bundle for this run.
+
+    Returns the bundle path and whether the scope actually changed — the caller
+    uses the latter so a non-zero pxx exit that still wrote code is not reported
+    as a flat failure. Raises EvidenceError; the caller decides what a missing
+    receipt is worth.
+
+    ``snapshot`` is (diff against source_head, status --porcelain) taken by
+    the caller right after pxx returned; without it both are read here. In
+    branch mode the checkout has already returned to the base branch by the
+    time the bundle is written, so reading the tree here would show a clean
+    base and no diff — the snapshot is what the run looked like.
+    """
+    produced = False
+    endpoint = getattr(route, "endpoint", None)
+    model = getattr(route, "model", None)
+    provider = getattr(route, "provider", None)
+
+    if snapshot is not None:
+        diff, status = snapshot
+    else:
+        diff = _git(args.scope, "diff", source_head) if source_head else None
+        status = _git(args.scope, "status", "--porcelain")
+
+    artifacts: dict[str, str] = {
+        "prompt.txt": prompt,
+        "command.txt": " ".join(cmd) + f"\n\nexit: {returncode}\n",
+        "routing.json": json.dumps(
+            {
+                "endpoint": endpoint,
+                "model": model,
+                "provider": provider,
+                "endpoint_raw": getattr(route, "endpoint_raw", None),
+                # The reviewer pxx resolved at launch (dx._reviewer_route): a
+                # labelled claim, since pxx's run record does not name it.
+                "reviewer_configured": reviewer_configured,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    }
+    checks: dict[str, Check] = {
+        "role_card_valid": Check(ok=True, detail=f"fit={card_fit}"),
+        "routing_resolved": Check(ok=bool(endpoint), path="artifacts/routing.json"),
+        "pxx_exit_zero": Check(ok=returncode == 0, path="artifacts/command.txt",
+                               detail=f"exit={returncode}"),
+    }
+    if diff is not None:
+        artifacts["changes.patch"] = diff
+        checks["scope_diff_captured"] = Check(ok=True, path="artifacts/changes.patch")
+        # A run can exit zero having changed nothing — a model that reports
+        # COMPLETED without writing a file does exactly that, and the first
+        # dogfood run of this feature produced one. pxx's exit code cannot see
+        # it, so the receipt has to. This is recorded, not failed: a legitimately
+        # no-op task exists. What must not happen is an empty run reading as an
+        # accomplishment.
+        # Derived from `git status`, not from the patch. `git diff <base>` shows
+        # tracked changes only, so a brand-new file — the most common shape of a
+        # successful task — is invisible to it. Deriving "did anything happen"
+        # from the patch reported a real run that created a file as 0 changes.
+        untracked = [ln for ln in (status or "").splitlines() if ln.startswith("??")]
+        produced = bool(diff.strip()) or bool((status or "").strip())
+        checks["produced_changes"] = Check(
+            ok=bool(diff.strip()) or bool((status or "").strip()),
+            path="artifacts/git-status.txt",
+            detail=(
+                f"{len(diff.splitlines())} tracked diff lines, "
+                f"{len(untracked)} untracked path(s)"
+            ),
+        )
+    else:
+        checks["scope_diff_captured"] = Check(
+            ok=False, detail="scope is not a git repository, or git failed"
+        )
+    if status is not None:
+        artifacts["git-status.txt"] = status
+    # Which mode the run was in, always stated; the facts of a task branch
+    # when there was one (plan D-3), including whether the launcher asserted
+    # the mode with --task-branch. `base_branch_restored` is the check a
+    # person reads first: not ok means the pilot is parked on the task branch
+    # and no new run can be admitted until someone returns it.
+    artifacts["branch.json"] = json.dumps(
+        branch.as_json() if branch is not None else {"mode": "inline"},
+        indent=2, sort_keys=True) + "\n"
+    if branch is not None:
+        checks["candidate_tagged"] = Check(
+            ok=branch.candidate_tag is not None, path="artifacts/branch.json",
+            detail=(f"{branch.candidate_tag} -> {str(branch.head_after)[:12]}"
+                    if branch.candidate_tag else "no commit to pin"))
+        checks["base_branch_restored"] = Check(
+            ok=branch.restored, path="artifacts/branch.json",
+            detail=(f"back on {branch.base_branch}; {branch.branch} deleted"
+                    if branch.restored else f"parked on {branch.branch}: {branch.parked}"))
+
+    # The executor's own test record, read from pxx's run directory. A bundle
+    # whose only test fact was "the model said so" is what let T-0046 reach
+    # review reporting "10 passed" over a suite that failed 4 of 16.
+    facts = collect_run_facts(
+        find_run_dir(run_started_at) if run_started_at is not None else None,
+        review,
+    )
+    artifacts.update(facts.artifacts)
+    # What pxx did with the tree at the end, in its own words (pxx >= 2.9.1
+    # can refuse a restore; >= 2.9.3 says why --commit committed nothing).
+    settle = facts.settle or {}
+    net = settle.get("safety_net")
+    if net is not None:
+        checks["safety_net_restored"] = Check(
+            ok=net["restored"], path="artifacts/pxx-settle.json",
+            detail=("restored" if net["restored"]
+                    else f"not restored: {net['reason'] or 'no reason recorded'}"))
+    if "commit_skipped" in settle:
+        checks["committed"] = Check(
+            ok=False, path="artifacts/pxx-settle.json",
+            detail=f"pxx committed nothing: {settle['commit_skipped']}")
+    if seed is not None:
+        # The seed commit is inside source_head..HEAD, so changes.patch already
+        # shows its lines; the check names where they came from.
+        try:
+            artifacts["seed.patch"] = Path(args.seed_patch).read_text(errors="replace")
+        except OSError:
+            pass
+        checks["seeded_from"] = Check(
+            ok=True, path="artifacts/seed.patch",
+            detail=f"{args.seed_from} -> commit {seed.sha[:12]}, unverified"
+                   + (f"; left as found: {', '.join(seed.excluded)}" if seed.excluded else ""),
+        )
+    checks["tests_recorded"] = Check(
+        ok=facts.tests is not None,
+        path="artifacts/pxx-outcome.json" if "pxx-outcome.json" in facts.artifacts else None,
+        detail=(
+            f"pxx ran the test command {facts.tests['runs']}x, "
+            f"last: {'passed' if facts.tests['passed'] else str(facts.tests['failing']) + ' failing'}"
+            if facts.tests is not None else "no test gate in the run record"
+        ),
+    )
+
+    if facts.review is not None:
+        # Recorded, not a gate on `passed`: `passed` is pxx's exit, and a loop
+        # that never reached its review gate already exited non-zero. A second
+        # signal for the same fact would make an advisory reviewer a gate by
+        # the back door (D-4).
+        requested = bool(facts.review.get("requested"))
+        ran = bool(facts.review.get("ran"))
+        checks["review_recorded"] = Check(
+            ok=(not requested) or ran,
+            path=("artifacts/pxx-review-gates.jsonl"
+                  if "pxx-review-gates.jsonl" in facts.artifacts else None),
+            detail=(
+                f"reviewer ran {facts.review.get('runs')}x, last verdict "
+                f"{facts.review.get('verdict')}" if ran
+                else str(facts.review.get("why"))
+            ),
+        )
+
+    bundle = RoleTaskBundle(
+        task_id=args.task_id,
+        title=f"{args.task_id} — {args.required_role}",
+        passed=returncode == 0,
+        source_head=source_head,
+        role=args.required_role,
+        routing={"endpoint": endpoint, "model": model, "provider": provider},
+        checks=checks,
+        artifacts=artifacts,
+        tests=facts.tests,
+        review=facts.review,
+    )
+    return write_bundle(bundle, _evidence_root(args)), produced
+
+
+def _redline_if_control_plane(task_id: str, scope: Path, candidate: str) -> None:
+    """Decision 0020 §3: a candidate whose chain diff touches a control-plane
+    path is not signable and gets a REDLINE row — here, the moment EXECUTED
+    is recorded, so nobody is asked to review it first. Read-only otherwise;
+    the merge gate re-decides the tier and keeps its own backstop. Never fatal:
+    the work is committed either way, and a decision that cannot be made is
+    made two-human at the gate."""
+    try:
+        cfg = get_approval_config()
+        declaration = (
+            load_declaration(cfg.declaration, cfg.role, cfg.ai_root) if cfg else None
+        )
+        ledger = get_ledger_repo_path()
+        root_base, _chain = chain_root_base(task_id, ledger)
+        changed = chain_changed_paths(scope, root_base, candidate)
+        decision = decide(scope, changed, declaration)
+    except (ConfigError, DeclarationError, OSError) as exc:
+        print(f"⚠️  approval tier not decided for {task_id}: {exc}",
+              file=sys.stderr, flush=True)
+        return
+    if decision.tier != CONTROL_PLANE:
+        return
+    try:
+        head = record_control_plane_redline(
+            ledger, task_id, candidate, decision.touched, by="dx.run")
+        print(
+            f"🛑 REDLINE {task_id}: the candidate touches control-plane path(s) "
+            f"{', '.join(decision.touched)} (RL-008) and is not signable. "
+            f"Head: {head[:16]}…",
+            file=sys.stderr, flush=True,
+        )
+    except (ExecutedError, LedgerWriteError) as exc:
+        print(f"⚠️  could not append the REDLINE row for {task_id}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def _provenance(route: object, run_started_at: float | None) -> dict[str, str]:
+    """What the agent WAS, for the EXECUTED row: the pxx run id, the routed
+    model, and the pxx version. The author stays the human who launched the
+    run (PLAN.md); this is the executor's provenance beside it. Each value is
+    written only when known — a guess in an append-only record is permanent.
+    The psguard identity is minted inside pxx's hook and is not visible here."""
+    prov: dict[str, str] = {}
+    run_dir = find_run_dir(run_started_at) if run_started_at is not None else None
+    if run_dir is not None:
+        prov["run"] = run_dir.name
+    model = getattr(route, "model", None)
+    if isinstance(model, str) and model:
+        prov["model"] = model.replace(" ", "_")
+    try:
+        from importlib.metadata import version
+
+        prov["pxx"] = version("pxx-orchestrator")
+    except Exception:  # noqa: BLE001 — an uninstalled pxx is reported by _resolve_pxx
+        pass
+    return prov
+
+
+def _resolve_pxx() -> str | None:
+    """Prefer pxx alongside sys.executable (same venv), fall back to PATH."""
+    venv_candidate = Path(sys.executable).parent / "pxx"
+    if venv_candidate.exists():
+        return str(venv_candidate)
+    return shutil.which("pxx")
+
+def register_run_subcommand(subparsers: SubParsers) -> None:
+    parser = subparsers.add_parser(
+        "run", help="Dispatch a task with role injection and hardware routing"
+    )
+    parser.add_argument("task_id", help="Task ID (e.g., T-001)")
+    parser.add_argument(
+        "--required_role", default="backend-engineer", help="Role slug"
+    )
+    parser.add_argument("--scope", default=".", help="Path scope for edits")
+    parser.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="Skip evidence-bundle emission (the run still happens; the receipt does not)",
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        help="Where to write evidence bundles (default: DX_EVIDENCE_DIR, "
+        "else ~/.local/state/dx/evidence)",
+    )
+    parser.add_argument("--message", "-m", required=True, help="Instruction")
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="After code generation, launch GUI via PSOperator",
+    )
+    parser.add_argument(
+        "--real-input",
+        action="store_true",
+        help="Allow real mouse/keyboard (PSOperator opt-in)",
+    )
+    parser.add_argument(
+        "--no-commit",
+        action="store_true",
+        help="Do not auto-commit pxx changes",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the pxx command without executing",
+    )
+    parser.add_argument(
+        "--seed-patch",
+        help=(
+            "A predecessor run's recorded diff (a bundle's artifacts/run-diff.patch) "
+            "to apply and commit on the task line, as dx, before the run starts. "
+            "Refuses to run if it does not apply. Requires --seed-from."
+        ),
+    )
+    parser.add_argument(
+        "--seed-from",
+        help="The task id the seed patch came from (recorded in the commit and the bundle)",
+    )
+    parser.add_argument(
+        "--task-branch",
+        action="store_true",
+        help=(
+            "Assert that this run is in branch mode (the manifest's `branches:` "
+            "section decides; this flag does not enable it). Refused when the "
+            "manifest says inline, so a launcher that expects a task branch "
+            "never gets a silent inline run."
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Bypass the Anchored-role hard-block. Use only when you understand "
+            "you are stepping past a separation-of-duties invariant; this is "
+            "audit-visible."
+        ),
+    )
+    parser.set_defaults(func=cmd_run)
+
+
+# Exit codes are dx's own contract, not a downstream tool's.
+#
+# EXIT_ANCHORED_REFUSED is a governance decision: dx looked at the role card and
+# refused. It must never be producible by a tool dx shells out to, or a caller
+# cannot tell "policy refused this role" from "the task tried and failed" —
+# and pxx does exit 2 in the wild (a missing shell safeguard does it). So a
+# downstream failure gets its own code and pxx's real code is printed, not
+# returned.
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_ANCHORED_REFUSED = 2
+EXIT_TASK_FAILED = 3
+#: Branch mode: the run finished but the checkout is still on the task branch
+#: (the tree was dirty, or the candidate could not be tagged). Distinct from
+#: EXIT_TASK_FAILED because the work may be good — an EXECUTED row may even
+#: have been written — and what is needed is a person at the checkout, not a
+#: rework. The next admission is refused until then.
+EXIT_BRANCH_NOT_RESTORED = 4
+
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _recorded_base(task_id: str) -> str:
+    """The task's `base_sha` from its queue file: the one place the branch
+    point comes from. `dx run` reads the ledger only to write EXECUTED
+    otherwise; this read is new with branch mode and refuses when the base
+    is missing or not a commit sha."""
+    try:
+        queue = get_task_queue(task_id, get_ledger_repo_path())
+    except (LedgerError, ConfigError, OSError) as exc:
+        raise BranchError(f"the task's queue file could not be read: {exc}") from exc
+    base = str(queue.get("base_sha") or "").strip()
+    if not _SHA_RE.match(base):
+        raise BranchError(
+            f"the queue file for {task_id} names no base_sha (found {base!r}); "
+            f"a branch-mode run needs the base recorded at admission")
+    return base
+
+
+def _note_queue_branch(task_id: str, run: BranchRun) -> None:
+    """The queue file (a convenience view of the ledger) gains the branch
+    facts. Best-effort and said out loud: the ledger row is the record."""
+    try:
+        qf = get_ledger_repo_path() / "queue" / f"{task_id}.json"
+        if not qf.is_file():
+            return
+        q = json.loads(qf.read_text())
+        q["branch"] = run.branch
+        q["candidate_tag"] = run.candidate_tag
+        qf.write_text(json.dumps(q, indent=2, sort_keys=True) + "\n")
+    except (OSError, ValueError, ConfigError) as exc:
+        print(f"⚠️  queue file for {task_id} not updated with the branch facts: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    roles_path = get_roles_path()
+    if not roles_path.exists():
+        print(f"ERROR: role cards not found at {roles_path}", file=sys.stderr)
+        print("Set DX_ROLES_PATH or run scripts/setup_dependencies.sh", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
+
+    load_registry(roles_path)
+    card = get_role(args.required_role)
+    if not card:
+        broken = failed_slug(args.required_role)
+        if broken:
+            # Distinguishing these matters: "not found" reads like a typo, and
+            # would send an operator looking in the wrong place while their
+            # governance file is the thing that is broken.
+            print(
+                f"ERROR: the card for role '{args.required_role}' exists but "
+                f"could not be parsed ({broken}).",
+                file=sys.stderr,
+            )
+            print(
+                f"       {get_parse_failures()[broken]}",
+                file=sys.stderr,
+            )
+            print("Run: dx roles validate", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+        print(f"ERROR: role '{args.required_role}' not found.", file=sys.stderr)
+        print("Run: dx roles list", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
+
+    # Anchored roles require a named accountable human. dx run refuses to
+    # execute autonomously; --force is the audit-visible escape hatch.
+    if card.fit == FitLevel.ANCHORED and args.force:
+        # --force claims to be audit-visible, so it has to actually say
+        # something. Matches the banner dx merge --force prints.
+        print(
+            f"⚠️  --force in effect: running Anchored role '{card.slug}' "
+            f"(seat: {card.seat}) autonomously, past a separation-of-duties "
+            f"invariant.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    if card.fit == FitLevel.ANCHORED and not args.force:
+        print(
+            f"🔒 Role '{card.slug}' is Anchored (seat: {card.seat}).",
+            file=sys.stderr,
+        )
+        print(
+            "   A named accountable human must issue this decision. "
+            "dx will not run it autonomously.",
+            file=sys.stderr,
+        )
+        if card.handoff:
+            print("\n   Handoff instructions from the card:", file=sys.stderr)
+            for line in card.handoff.splitlines():
+                print(f"   {line}", file=sys.stderr)
+        print(
+            "\n   To proceed anyway (audit-visible), re-run with --force.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_ANCHORED_REFUSED)
+
+    # A card that fails structural validation cannot govern a run. Without this
+    # dx would inject an empty MANDATE and an empty MUST NOT into the prompt and
+    # report success — the governance text meant to constrain the agent silently
+    # blank, while `dx roles validate` said the card was invalid all along.
+    card_ok, card_errors = validate_card(card)
+    if not card_ok:
+        if not args.force:
+            print(
+                f"ERROR: role card '{card.slug}' fails validation and cannot "
+                f"govern a task:",
+                file=sys.stderr,
+            )
+            for error in card_errors:
+                print(f"  - {error}", file=sys.stderr)
+            print("Run: dx roles validate", file=sys.stderr)
+            print(
+                "To proceed anyway (audit-visible), re-run with --force.",
+                file=sys.stderr,
+            )
+            sys.exit(EXIT_ERROR)
+        print(
+            f"⚠️  --force in effect: running under invalid role card "
+            f"'{card.slug}' ({'; '.join(card_errors)}).",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    enhanced_prompt = (
+        f"[ROLE: {card.slug} (Fit: {card.fit.value}, Seat: {card.seat})]\n"
+        f"MANDATE:\n{card.mandate}\n\n"
+        f"MUST NOT (Separation of Duties):\n{card.must_not}\n\n"
+        f"USER INSTRUCTION:\n{args.message}\n"
+    )
+
+    try:
+        route = get_route_for_role(args.required_role)
+        if route.endpoint_raw is not None:
+            # Corrected, never silent: dx changed what the operator wrote.
+            print(
+                f"ℹ️  endpoint {route.endpoint_raw} → {route.endpoint} "
+                f"(pxx appends its own /v1; the manifest's trailing /v1 would "
+                f"be probed as /v1/v1/models and 404). Fix it in the manifest "
+                f"to silence this.",
+                file=sys.stderr,
+                flush=True,
+            )
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
+
+    # Read ONCE, here, and never again after the run: the bundle records what
+    # dx sent, not what the manifest says afterwards.
+    try:
+        review_flags, review_request = _review_flags(get_review_config())
+        branches = get_branches_config()
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
+    # The manifest decides the mode; --task-branch only asserts it. A launcher
+    # that passes the flag against a manifest that drifted to inline gets a
+    # refusal, never a silent inline run (plan D-3).
+    branch_mode = branches is not None and branches.enabled
+    if args.task_branch and not branch_mode:
+        print(
+            f"ERROR: --task-branch given, but the manifest says inline "
+            f"({'branches.enabled: false' if branches is not None else 'no branches section'}); "
+            f"this run was launched expecting a task branch. Add `branches:` "
+            f"with `enabled: true` to the manifest, or launch without the flag.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_ERROR)
+
+    env = _pxx_env(route)
+
+    pxx_bin = _resolve_pxx()
+    if pxx_bin is None:
+        print(
+            "ERROR: pxx not found. Install with `pip install pxx-orchestrator` "
+            "in this venv.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_ERROR)
+
+    # `pxx loop`, not `pxx edit`: the loop runs the repository's test_command
+    # ITSELF between rounds, feeds the failing set back into a fresh context,
+    # and stops on NO_TEST_PROGRESS / TEST_REGRESSION. `edit` is one session
+    # that runs no tests, so the only test evidence it left was whatever the
+    # model chose to run and say; on 2026-09-22 four reworks of one task each
+    # ended a step short that way. --sandbox confines the loop's own test run
+    # to the scope (pxx 2.5.5+ps2; fails closed without a sandboxer).
+    #
+    # No --budget-rounds: in pxx 2.5.5 that one flag is BOTH the loop's
+    # edit->test round cap and a tighten-only override of the session's
+    # model-turn budget. T-0050 (2026-09-22) was run with `--budget-rounds 4`
+    # and ended after four model turns -- list, read, read, read -- before a
+    # single edit. The loop's round cap stays pxx's default; every budget
+    # comes from the repository's pxx.toml, where it is reviewed.
+    #
+    # The reviewer leg is always stated: `--review --review-mode advisory`
+    # when the manifest's `review:` section says so, `--no-review` otherwise,
+    # so pxx's own default never decides (see _review_flags).
+    cmd = [
+        pxx_bin, "loop", "--scope", args.scope, "--message", enhanced_prompt,
+        "--sandbox", *review_flags,
+    ]
+    if not args.no_commit:
+        cmd.append("--commit")
+
+    if args.dry_run:
+        print("DRY RUN")
+        print(f"  task_id:       {args.task_id}")
+        print(f"  required_role: {args.required_role}")
+        print(f"  fit:           {card.fit.value}")
+        print(f"  PXX_BASE_URL:  {route.endpoint}")
+        if route.endpoint_raw is not None:
+            print(f"                 (corrected from {route.endpoint_raw})")
+        print(f"  PXX_MODEL:     {route.model or '(unset, pxx default)'}")
+        print(f"  PXX_PROVIDER:  {route.provider or '(unset, pxx default: ollama)'}")
+        print(f"  pxx:           {pxx_bin}")
+        print(f"  reviewer leg:  {' '.join(review_flags)}"
+              + (f" ({review_request.why_not})" if review_request.why_not else ""))
+        print("  branch mode:   "
+              + (f"on — {branches.branch_for(args.task_id)} from {branches.base}"
+                 if branches is not None and branch_mode
+                 else "off (inline; pxx commits on the checked-out branch)"))
+        print(f"  command:       {pxx_bin} loop --scope {args.scope} --sandbox "
+              f"{' '.join(review_flags)} [--commit] <prompt>")
+        return
+
+    # Flushed before handing stdout to the subprocess. pxx writes straight to
+    # the inherited fd, so an unflushed status line here surfaces *after* the
+    # output of the command it announces — the same defect fixed in dx merge in
+    # 0.3.0. A run transcript is evidence too.
+    print(
+        f"🚀 Running task {args.task_id} with role {args.required_role} "
+        f"on {route.endpoint} (model: {route.model or 'default'})...",
+        flush=True,
+    )
+    scope_path = Path(args.scope)
+    # Branch mode, before anything is written (§3.3 steps 1-3): the checkout
+    # is on the base branch and clean, the task's recorded base is a commit
+    # here, and the task branch is created at it. Each refusal leaves the
+    # checkout exactly as found.
+    run: BranchRun | None = None
+    if branch_mode:
+        assert branches is not None
+        try:
+            preflight(scope_path, branches)
+            base_sha = _recorded_base(args.task_id)
+            branch = create_task_branch(scope_path, branches, args.task_id, base_sha)
+        except BranchError as exc:
+            print(f"❌ task branch refused for {args.task_id}: {exc}",
+                  file=sys.stderr, flush=True)
+            sys.exit(EXIT_ERROR)
+        run = BranchRun(base_branch=branches.base, base_sha=base_sha, branch=branch,
+                        asserted=bool(args.task_branch))
+        print(f"🌿 {args.task_id} on {branch} at {base_sha[:12]} (base {branches.base})",
+              flush=True)
+    # Captured before the run so the bundle's source_head is the base the diff
+    # is taken against, not whatever pxx committed.
+    source_head = (
+        None
+        if args.no_evidence
+        else ((_git(args.scope, "rev-parse", "HEAD") or "").strip() or None)
+    )
+    # A rework starts from its predecessor's recorded work, committed here as
+    # dx BEFORE pxx ties its safety net, so the run's HEAD includes it and the
+    # task's base (recorded at ADMITTED, before this) to candidate covers it.
+    seed = None
+    if args.seed_patch or args.seed_from:
+        if not (args.seed_patch and args.seed_from):
+            print("ERROR: --seed-patch and --seed-from go together", file=sys.stderr)
+            _leave_empty_branch(run, scope_path, branches)
+            sys.exit(EXIT_ERROR)
+        try:
+            seed = seed_from_patch(
+                scope_path, Path(args.seed_patch),
+                task_id=args.task_id, from_task=args.seed_from,
+                run_id=Path(args.seed_patch).parent.parent.name,
+            )
+        except SeedError as exc:
+            # Fail closed: a rework told to start from its predecessor must not
+            # silently start from scratch and be reviewed as if it had. In
+            # branch mode the empty branch goes and the checkout returns.
+            print(f"❌ seed from {args.seed_from} refused: {exc}", file=sys.stderr)
+            _leave_empty_branch(run, scope_path, branches)
+            sys.exit(EXIT_ERROR)
+        print(
+            f"🌱 seeded {args.task_id} from {args.seed_from}: commit {seed.sha[:12]}, "
+            f"{len(seed.files)} file(s)"
+            + (f", left as found: {', '.join(seed.excluded)}" if seed.excluded else ""),
+            flush=True,
+        )
+    # Git is read after the run for the receipt and for the branch posture;
+    # with --no-evidence in inline mode there is nothing to read it for, and
+    # the run is left exactly as 0.22.0 left it.
+    reads_git = not args.no_evidence or run is not None
+    # The commit pxx starts from (after any seed). In branch mode a run that
+    # leaves HEAD here committed nothing, and its branch holds nothing that
+    # is not reproducible — so it is deleted on return.
+    pre_run_head = (
+        ((_git(args.scope, "rev-parse", "HEAD") or "").strip() or None)
+        if run is not None else None
+    )
+    # Noted BEFORE the run so a discarded run's artifact can be found again by
+    # mtime. pxx resets the scope to its pxx-pre tag on a non-COMPLETED
+    # outcome (a governance refusal is one) unless the reset is unsafe; its
+    # record says which — see dx.salvage.
+    run_started_at = time.time()
+    # The reviewer pxx will resolve for this run, read before the run under
+    # the run's own environment: a launch-time claim for routing.json.
+    reviewer_configured = (
+        None if args.no_evidence else _reviewer_route(scope_path, env)
+    )
+    # unbounded: this is the model doing the work. A large refactor on a slow
+    # local endpoint legitimately runs for minutes, and cutting it off at an
+    # arbitrary deadline would destroy in-flight edits. Ctrl-C is the control.
+    result = subprocess.run(cmd, env=env)
+
+    # What the run looked like, read now — before salvage writes into the tree
+    # and before a branch-mode checkout returns to its base.
+    snapshot: tuple[str | None, str | None] = (
+        _git(args.scope, "diff", source_head) if source_head else None,
+        _git(args.scope, "status", "--porcelain") if reads_git else None,
+    )
+    produced_changes = bool((snapshot[0] or "").strip()) or bool((snapshot[1] or "").strip())
+    head_after = (
+        ((_git(args.scope, "rev-parse", "HEAD") or "").strip() or None)
+        if reads_git else None
+    )
+
+    # pxx's own account of the end of the run (best-effort, never fatal).
+    try:
+        settle = settle_fact(find_run_dir(run_started_at)) or {}
+    except Exception:  # noqa: BLE001
+        settle = {}
+    net = settle.get("safety_net")
+    if result.returncode != 0 and net is not None and not net["restored"]:
+        if net["reason"] == "stash_not_restored":
+            # pxx resets only to a tag; a stash-only net (tagging failed) is
+            # never reset, so then the run's work is still in the tree.
+            done = ("reset the tree" if net["tag"]
+                    else "had no tag to reset to, so the tree is as the run left it,")
+            print(f"⚠️  pxx {done} but could not pop its stash "
+                  f"(stash_not_restored): your pre-run changes are still in "
+                  f"`git stash list`.", file=sys.stderr, flush=True)
+        else:
+            print(f"⚠️  pxx did not restore its safety net "
+                  f"({net['reason'] or 'no reason recorded'}): the tree is as the run "
+                  f"left it" + (f"; the start is tagged {net['tag']}" if net["tag"] else "")
+                  + ".", file=sys.stderr, flush=True)
+
+    if result.returncode != 0 and not produced_changes:
+        # "The scope did not change" can mean the model wrote nothing, or
+        # that it wrote something good and pxx reset it away because one
+        # later action was refused. Those look identical from here and are
+        # not the same thing, so look in the run artifact before accepting
+        # the first reading. T-0022 lost 156 correct lines to that
+        # ambiguity on 2026-09-21. Done here, on the task branch when there
+        # is one: recovered work must land where the run was, never on the
+        # base branch — a recovery leaves the tree dirty, and a dirty branch
+        # is parked for a person (§3.3 step 8).
+        try:
+            sal = salvage_discarded_work(scope_path, run_started_at)
+            # Always: a refusal's reason is worth as much as a recovery.
+            # T-0048/T-0052 salvages were refused silently and the work
+            # looked lost; it was in the run directory the whole time.
+            print(report(sal), file=sys.stderr, flush=True)
+        except Exception as exc:  # noqa: BLE001
+            # Best-effort by design: a failed salvage must never turn a
+            # failed run into a crashed one, or mask the real exit code.
+            print(f"   (could not check for discarded work: "
+                  f"{type(exc).__name__}: {exc})", file=sys.stderr,
+                  flush=True)
+
+    if run is not None:
+        assert branches is not None
+        _settle_branch(run, scope_path, branches, args.task_id, head_after, pre_run_head)
+        _note_queue_branch(args.task_id, run)
+
+    # Emitted for failed runs too. A failed run's evidence is worth more, not
+    # less, and a store that only records successes is a highlight reel.
+    if not args.no_evidence:
+        try:
+            bundle_path, produced_changes = _emit_evidence(
+                args, card.fit.value, route, enhanced_prompt, cmd,
+                source_head, result.returncode, run_started_at, seed,
+                review_request, reviewer_configured, run, snapshot,
+            )
+        except EvidenceError as exc:
+            print(
+                f"❌ The task itself finished (pxx exit {result.returncode}), but its "
+                f"evidence bundle could not be written: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            _exit(run, EXIT_ERROR)
+        print(f"🧾 Evidence: {bundle_path}", flush=True)
+
+    if result.returncode != 0:
+        if produced_changes:
+            # A non-zero exit is not proof the work is wrong: a model that
+            # reaches for a shell pxx fail-closes on (no safeguard configured)
+            # can exit non-zero after writing correct code. Say so, and point at
+            # the receipt — the exit code is the tool's, the judgement is yours.
+            print(
+                f"⚠️  pxx exited {result.returncode}, but the scope changed. A "
+                f"non-zero exit is not proof the work is wrong — inspect the "
+                f"result and the evidence bundle against your acceptance "
+                f"criteria before discarding it. pxx exit {result.returncode}.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"❌ pxx task failed (pxx exit {result.returncode}).",
+                file=sys.stderr,
+                flush=True,
+            )
+        _exit(run, EXIT_TASK_FAILED)
+
+    # The run succeeded. Say so in the ledger, now, while the executor still
+    # knows: ADMITTED used to be the last row a task ever got, so "work was
+    # done, awaiting review" and "nothing happened" were indistinguishable.
+    # Fourteen tasks sat in that ambiguity on 2026-09-21 and were classified by
+    # hand afterwards, from memory and git archaeology.
+    if produced_changes and not args.no_evidence:
+        # Only a commit is a candidate. Changes that exist only in the
+        # worktree (--no-commit, or a commit pxx did not make) leave HEAD where
+        # the run found it; recording EXECUTED then would bind the PRE-run
+        # commit as the candidate and close the task to re-execution.
+        if not head_after or head_after == source_head:
+            print(
+                f"⚠️  Not recording EXECUTED for {args.task_id}: the scope "
+                f"changed but HEAD did not move past {str(source_head)[:12]} — "
+                f"the work is not committed, so there is no candidate to bind."
+                + (f" pxx: not committed ({settle['commit_skipped']})."
+                   if "commit_skipped" in settle else ""),
+                file=sys.stderr, flush=True,
+            )
+        elif run is not None and head_after == pre_run_head:
+            # HEAD moved past source_head only by the seed commit: pxx
+            # committed nothing, so there is no candidate. (Inline mode
+            # records the seed commit here, as 0.22.0 did; branch mode is
+            # stricter, since the seed is reproducible from the predecessor's
+            # bundle and was never the run's work.)
+            print(
+                f"⚠️  Not recording EXECUTED for {args.task_id}: pxx committed "
+                f"nothing; HEAD {head_after[:12]} is the seed commit, not a "
+                f"candidate.",
+                file=sys.stderr, flush=True,
+            )
+        elif run is not None and run.candidate_tag is None:
+            # §3.3 step 6, fail-closed: the ledger never names a sha that
+            # nothing pins. The branch is kept (the checkout is parked on it).
+            print(
+                f"⚠️  Not recording EXECUTED for {args.task_id}: the candidate "
+                f"{head_after[:12]} could not be tagged ({run.parked}); the "
+                f"commit is on {run.branch}, which is kept.",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            try:
+                # The sha is passed, not read from the checkout: in branch mode
+                # the checkout is back on the base by now and HEAD is the base.
+                recorded = record_executed(
+                    get_ledger_repo_path(), scope_path, args.task_id,
+                    sha=head_after, provenance=_provenance(route, run_started_at))
+                print(f"📒 Ledger: EXECUTED {args.task_id} @ {recorded}", flush=True)
+                _redline_if_control_plane(args.task_id, scope_path, head_after)
+            except ExecutedError as exc:
+                # Loud, and NOT fatal. The work is committed in git either way,
+                # and failing the run here would throw away a good result over
+                # a bookkeeping problem — the same trade pxx gets wrong by
+                # resetting.
+                print(f"⚠️  Could not record EXECUTED for {args.task_id}: {exc}",
+                      file=sys.stderr, flush=True)
+
+    if args.gui:
+        print("🖥️  Launching GUI via PSOperator...", flush=True)
+        client = PSOperatorClient()
+        if not client.observer_health():
+            print(
+                "⚠️  PSOperator Observer not healthy. On the target machine, run:\n"
+                "     psoperator observer --backend mss"
+            )
+        success = client.launch_gui_task(
+            task_description=args.message, real_input=args.real_input
+        )
+        if not success:
+            print("❌ GUI task failed.", file=sys.stderr, flush=True)
+            sys.exit(EXIT_ERROR)
+        print("✅ GUI task completed.", flush=True)
+        if client.verify_audit_log():
+            print("✅ PSOperator audit log verified.")
+        else:
+            print("⚠️  Audit log verification failed — check manually.")
+
+    print(f"✅ Task {args.task_id} completed.", flush=True)
+    _exit(run, EXIT_OK)
+
+
+def _leave_empty_branch(run: BranchRun | None, scope: Path, cfg: BranchesConfig | None) -> None:
+    """A refusal after the task branch was created and before pxx ran: the
+    branch holds nothing, so it goes and the checkout returns (§3.3 step 4).
+    A seed that applied partially leaves the tree dirty, and then the branch
+    is kept and said so — a person looks, nothing is reset by dx."""
+    if run is None or cfg is None:
+        return
+    try:
+        return_to_base(scope, cfg, run.branch)
+        print(f"↩️  back on {cfg.base}; {run.branch} removed (it held nothing)",
+              file=sys.stderr, flush=True)
+    except BranchError as exc:
+        print(f"⚠️  the checkout is still on {run.branch}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def _settle_branch(run: BranchRun, scope: Path, cfg: BranchesConfig, task_id: str,
+                   head_after: str | None, pre_run_head: str | None) -> None:
+    """§3.3 steps 6-8 after pxx returned. Pins whatever was committed, then
+    returns the checkout to the base when the tree is clean, or parks it.
+
+    The tag comes first and is fail-closed: a commit that cannot be pinned
+    keeps its branch, and the caller writes no EXECUTED for it. Tagging is
+    not conditioned on pxx's exit code — a commit made before a non-zero
+    exit is still work somebody may want, and deleting its branch would
+    orphan it."""
+    run.head_after = head_after
+    moved = bool(head_after) and head_after != pre_run_head
+    if moved:
+        assert head_after is not None
+        try:
+            run.candidate_tag = tag_candidate(scope, task_id, head_after)
+            print(f"🏷️  {run.candidate_tag} -> {head_after[:12]}", flush=True)
+        except BranchError as exc:
+            run.parked = f"candidate tag failed: {exc}"
+    if run.parked is None:
+        try:
+            dirty = status_porcelain(scope)
+        except BranchError as exc:
+            dirty = f"?? (git status failed: {exc})"
+        if dirty.strip():
+            n = len(dirty.strip().splitlines())
+            run.parked = f"{n} uncommitted path(s) after the run"
+    if run.parked is None:
+        try:
+            return_to_base(scope, cfg, run.branch)
+            run.restored = True
+            print(f"↩️  back on {cfg.base}; {run.branch} deleted"
+                  + (f" (the candidate is held by {run.candidate_tag})"
+                     if run.candidate_tag else " (it held nothing)"), flush=True)
+        except BranchError as exc:
+            run.parked = f"could not return to {cfg.base}: {exc}"
+    if not run.restored:
+        print(
+            f"🅿️  {scope} is parked on {run.branch}: {run.parked}. Nothing was "
+            f"reset. Look at it, commit or discard, then return it:\n"
+            f"     git -C {scope} switch {cfg.base}\n"
+            f"     git -C {scope} branch -D {run.branch}\n"
+            f"   No new run is admitted until the checkout is back on {cfg.base}.",
+            file=sys.stderr, flush=True,
+        )
+
+
+def _exit(run: BranchRun | None, code: int) -> None:
+    """The exit code, with the branch posture on top: a checkout that did not
+    return is reported as such whatever else happened, because that is what
+    needs a person next."""
+    if run is not None and not run.restored:
+        sys.exit(EXIT_BRANCH_NOT_RESTORED)
+    if code != EXIT_OK:
+        sys.exit(code)

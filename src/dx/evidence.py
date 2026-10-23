@@ -1,0 +1,995 @@
+"""Evidence bundles — `dx.role_task.v1`.
+
+Shape is fixed by ``VISION.md § Reference formats``, drawn from surveying 111
+real bundles in ``cdnwetzel/camelid``. The four decisions worth restating,
+because each was learned the expensive way somewhere else:
+
+**A bundle is a directory, not a file.** ``README.md`` for a human,
+``manifest.json`` for a machine, ``SHA256SUMS`` for tamper-evidence, and the raw
+artifacts beside them. Verification is ``sha256sum -c SHA256SUMS`` — no PKI, no
+Python, no network. A receipt nobody can check on a bare box is not a receipt.
+
+**Schema per family, not one shape for everything.** ``dx.role_task.v1`` here;
+``dx.gui_verification.v1`` and ``dx.merge_gate.v1`` are separate families with
+separate tails. The camelid archive has 40+ schema names for exactly this reason:
+a universal shape ends up describing nothing precisely.
+
+**A stable core with a family-specific tail.** ``schema``, ``title``,
+``source_head``, ``generated_utc``, ``result.passed``, ``checks{}``. Everything
+else belongs to the family.
+
+**``boundary`` is not optional.** Every serious bundle states what it does *not*
+prove. A bundle without one is a claim wearing a receipt's clothing, so
+:func:`write_bundle` refuses to emit one and there is a test that it refuses.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from collections import Counter
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
+
+from dx.approval_key import (
+    MECHANISM_FALLBACK,
+    MECHANISM_STANDARD,
+    MECHANISM_TEST_DOUBLE,
+)
+from dx.redact import PATTERN_SET, redact, redact_artifacts
+
+SCHEMA = "dx.role_task.v1"
+
+#: Written into every bundle. This is policy text, not a docstring: what a
+#: bundle claims — and what it declines to claim — is a `compliance-privacy`
+#: judgement, and that card is Anchored to a named accountable human. Changing
+#: these lines is a policy change, not a refactor.
+DEFAULT_BOUNDARY: tuple[str, ...] = (
+    "This bundle records that a task ran and what changed. It does not assert "
+    "that the generated code is correct.",
+    "It is not a review and not an approval. No human has attested to this "
+    "content by its existence.",
+    "It does not contain the model's transcript. dx hands pxx the inherited "
+    "stdout on purpose; interposing a pipe to capture it would change what pxx "
+    "sees, and evidence must not perturb what it observes.",
+    "A passing `result` means pxx exited zero, not that any test of the "
+    "generated behaviour was written or run.",
+    "`result.passed` does not mean anything changed. Check "
+    "`checks.produced_changes`: a run can exit zero having written nothing.",
+    "The diff is of the scope directory only, and covers tracked changes only. "
+    "New files not yet added to git appear in `artifacts/git-status.txt`, not in "
+    "the patch. Changes made outside the scope are not captured at all.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
+)
+
+
+GUI_SCHEMA = "dx.gui_verification.v1"
+
+#: Policy text for the GUI-verification family. RL-007: a vision model's answer
+#: is advisory evidence, never a gate. Same standing as DEFAULT_BOUNDARY — a
+#: `compliance-privacy` judgement, so changing it is a policy change.
+GUI_DEFAULT_BOUNDARY: tuple[str, ...] = (
+    "This bundle records that a vision-language model was shown one screenshot "
+    "and asked for a YES/NO verdict. Its reply is advisory evidence, never a "
+    "proof.",
+    "`result.passed` true means the reply opened with the word YES for the stated "
+    "expectation. It does not mean the GUI is correct — only that one model said "
+    "so, about one frame.",
+    "The prompt asks the model to answer with YES or NO as its first word. dx "
+    "reads that word and nothing else; it does not interpret prose.",
+    "A `verdict` of `no_verdict` means the reply did not open with YES or NO — it "
+    "was empty, an error, a refusal, or prose. This bundle then asserts nothing "
+    "about the screen, and `result.passed` is false.",
+    "The screenshot under `artifacts/` is the exact bytes the model was shown. "
+    "The model's reasoning beyond its short reply is not recorded.",
+    "This is not a merge gate. `dx merge` requires a GPG signature regardless of "
+    "what this bundle says (RL-007).",
+    "The frame is one moment. It attests to nothing before or after it, and to "
+    "nothing off-screen or scrolled out of view.",
+    "An `observer` block means an independent PSOperator observer signed a "
+    "perception snapshot whose frame hash matches this screenshot — provenance "
+    "for the pixels, not a judgement of them. Its absence means the frame's only "
+    "provenance is the `capture` command that produced it.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
+)
+
+
+MERGE_SCHEMA = "dx.merge_gate.v1"
+
+#: Policy text for the merge-gate family. RL-003 is the binding gate; a GUI
+#: check, if present, is advisory (RL-007). Same standing as DEFAULT_BOUNDARY.
+MERGE_DEFAULT_BOUNDARY: tuple[str, ...] = (
+    "This bundle records that dx merge's RL-003 gate ran and what it decided. A "
+    "passing result means the checks passed at the ledger head recorded here — "
+    "not that the merge is correct or wise.",
+    "The signature was verified against the ledger head at the time. The head "
+    "moves as rows are appended, so the SIGNED row records the head it was "
+    "checked against; a stale signature is refused, never recorded as passing.",
+    "Separation of duties compares names, and is only as good as the "
+    "`author_human` the ledger records. A missing author_human is noted, not "
+    "fabricated, and the check is reported as unenforced.",
+    "A GUI check, when present, is advisory (RL-007): its NO or its silence "
+    "stops the merge, but its YES grants nothing. The signature is what admits "
+    "the merge, not the vision model.",
+    "Without `--repo`, no git merge happened — the ledger records the approval "
+    "only, and `merge_gate.merged` is null.",
+    "This receipt is tamper-evident (`SHA256SUMS`), not signed. It proves "
+    "nothing was altered after the fact, not who produced it.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
+)
+
+
+STAGED_SCHEMA = "dx.staged_action.v1"
+
+#: Policy text for the staged-action family. A stage is a *proposal*, bound to a
+#: perceived world-state; it is never an act, and the model's part of it is
+#: advisory. Same standing as the other boundaries — a `compliance-privacy`
+#: judgement, so changing it is a policy change.
+STAGED_DEFAULT_BOUNDARY: tuple[str, ...] = (
+    "This bundle records that a multi-step action was assembled and bound to a "
+    "perceived world-state. It does not prove the proposal is correct, safe, or "
+    "desirable.",
+    "It does not prove anything executed. Execution is a separate, separately "
+    "receipted step that requires a human approval bound to the current head and "
+    "frame.",
+    "The model's extraction and any element targeting are advisory evidence, "
+    "never a proof. A stage is a draft for a human to approve, not an act.",
+    "`result.passed` here means the bundle is well-formed and bound — not that it "
+    "was approved. An approval is a signed row against the current world-state; "
+    "absent that, this is a proposal and nothing more.",
+    "The bundle holds hashes and redacted references, not live screen content or "
+    "extracted secrets (RL-011). What the payload actually is lives only where the "
+    "operator controls it.",
+    "An approval binds exactly one world-state: `stage_id + bundle_hash + "
+    "payload_hash + frame_hash + head + role`. If any of those moved, the approval "
+    "is stale and the stage must be re-presented, never auto-retried.",
+    "Text artifacts, manifest fields and this README passed a capture-time "
+    "redaction filter (RL-011). A `[REDACTED:<label>]` marker means a "
+    "credential-shaped string was removed before the write; the unredacted "
+    "content was never stored.",
+)
+
+#: Deterministic bundle-level risk escalation (T0–T3). Per-action classes are a
+#: floor; the bundle is at least as risky as its worst action, and reasons push it
+#: up. This is the dx-side, testable expression of the gatekeeper's aggregate rule:
+#: a hundred small edits at one form is not a small change.
+_RISK_ORDER = ("T0", "T1", "T2", "T3")
+
+
+def classify_bundle_risk(
+    per_action: list[str],
+    *,
+    cross_application: bool = False,
+    aggregate_diff_pct: float = 0.0,
+    action_count: int = 0,
+    sensitive_targets: int = 0,
+) -> tuple[str, list[str], bool]:
+    """Return (bundle_class, reasons, any_T3).
+
+    Rules (a floor, never a ceiling): any T3 → hard-block; cross-application reach
+    → at least T2; aggregate diff over 80% → at least T2; more than 25 actions →
+    at least T2; any sensitive target → at least T2. The class is the max of the
+    per-action floor and every reason's floor.
+    """
+    reasons: list[str] = []
+    floor_idx = max((_RISK_ORDER.index(a) for a in per_action), default=0)
+    any_t3 = "T3" in per_action
+    if any_t3:
+        reasons.append("action_class_T3")
+    at_least_t2 = _RISK_ORDER.index("T2")
+    if cross_application:
+        reasons.append("cross_application_reach")
+        floor_idx = max(floor_idx, at_least_t2)
+    if aggregate_diff_pct > 80.0:
+        reasons.append(f"aggregate_diff_cap:{aggregate_diff_pct:.0f}%")
+        floor_idx = max(floor_idx, at_least_t2)
+    if action_count > 25:
+        reasons.append(f"action_count:{action_count}")
+        floor_idx = max(floor_idx, at_least_t2)
+    if sensitive_targets > 0:
+        reasons.append(f"sensitive_targets:{sensitive_targets}")
+        floor_idx = max(floor_idx, at_least_t2)
+    if any_t3:
+        floor_idx = _RISK_ORDER.index("T3")
+    return _RISK_ORDER[floor_idx], reasons, any_t3
+
+
+class EvidenceError(RuntimeError):
+    """A bundle could not be written, or would have been misleading if it were."""
+
+
+@dataclass(frozen=True)
+class Check:
+    """One named check and where its supporting artifact lives."""
+
+    ok: bool
+    path: str | None = None
+    detail: str | None = None
+
+    def as_json(self) -> dict[str, object]:
+        out: dict[str, object] = {"ok": self.ok}
+        if self.path is not None:
+            out["path"] = self.path
+        if self.detail is not None:
+            out["detail"] = self.detail
+        return out
+
+
+@dataclass
+class RoleTaskBundle:
+    """The inputs a `dx.role_task.v1` bundle is built from."""
+
+    task_id: str
+    title: str
+    passed: bool
+    source_head: str | None = None
+    role: str | None = None
+    routing: dict[str, str | None] = field(default_factory=dict)
+    checks: dict[str, Check] = field(default_factory=dict)
+    #: relative-path -> text content, written under ``artifacts/``
+    artifacts: dict[str, str] = field(default_factory=dict)
+    boundary: tuple[str, ...] = DEFAULT_BOUNDARY
+    #: what the executor's OWN test run recorded (dx.run_facts), or None when
+    #: it recorded none. Never derived from anything the model said.
+    tests: dict[str, Any] | None = None
+    #: the reviewer leg, from the run record only (dx.run_facts.review_fact):
+    #: ran / requested-but-did-not-run / not-requested, each stated. None when
+    #: the writer of the bundle said nothing about it (older callers).
+    review: dict[str, Any] | None = None
+
+
+@dataclass
+class GuiVerificationBundle:
+    """The inputs a ``dx.gui_verification.v1`` bundle is built from.
+
+    The screenshot is the load-bearing artifact: the exact bytes handed to the
+    model, stored so a later reader can look at what was actually judged rather
+    than trust the one-line verdict.
+    """
+
+    task_id: str
+    title: str
+    passed: bool
+    expected: str
+    vlm_answer: str
+    vlm_model: str
+    vlm_endpoint: str
+    screenshot: bytes
+    #: "met" | "not_met" | "no_verdict" — what the reply asserted. ``passed``
+    #: is true only for "met"; the third value is why this is not a boolean.
+    verdict: str = "no_verdict"
+    screenshot_name: str = "screenshot.png"
+    #: how the frame was obtained (ssh host, --screenshot <path>, psoperator)
+    capture: str | None = None
+    #: a verified PSOperator observer attestation bound to this frame, if any
+    observer: dict[str, object] | None = None
+    source_head: str | None = None
+    checks: dict[str, Check] = field(default_factory=dict)
+    boundary: tuple[str, ...] = GUI_DEFAULT_BOUNDARY
+
+
+@dataclass
+class MergeGateBundle:
+    """The inputs a ``dx.merge_gate.v1`` bundle is built from.
+
+    Records the RL-003 gate decision and its facts: the ledger head the
+    signature was checked against, who signed, whether duties were separated,
+    any advisory GUI check, and whether a git merge actually happened.
+    """
+
+    task_id: str
+    title: str
+    passed: bool
+    ledger_repo: str
+    role: str | None = None
+    head_before: str | None = None
+    head_after: str | None = None
+    signer: dict[str, str | None] | None = None
+    author_human: str | None = None
+    separation_of_duties: bool | None = None
+    #: dx.approval_tier.TierDecision.as_json(): tier, reasons, touched paths,
+    #: and the sod_exception when the author signed (Decision 0020).
+    approval_tier: dict[str, object] | None = None
+    gui: dict[str, object] | None = None
+    merged: dict[str, str | None] | None = None
+    failure: str | None = None
+    checks: dict[str, Check] = field(default_factory=dict)
+    source_head: str | None = None
+    boundary: tuple[str, ...] = MERGE_DEFAULT_BOUNDARY
+
+
+@dataclass
+class StagedActionBundle:
+    """The inputs a ``dx.staged_action.v1`` bundle is built from.
+
+    A staged action is a *proposal*: an ordered sequence bound to a perceived
+    world-state, filed for a human to approve. The bundle stores the sequence and
+    the bindings so the approver reviews what will actually execute, not a summary.
+    """
+
+    stage_id: str
+    title: str
+    #: STAGED | APPROVED | EXECUTED | REJECTED | STALE
+    state: str
+    #: the ordered actions + parameters + element bindings (written as JSON)
+    staged_sequence: dict[str, object]
+    per_action_risk: list[str] = field(default_factory=list)
+    bundle_risk_class: str = "T0"
+    risk_reasons: list[str] = field(default_factory=list)
+    #: the world-state this stage is bound to
+    frame_hash: str | None = None
+    ledger_head: str | None = None
+    trigger_rule: str | None = None
+    #: the named human seat the stage routes to (never an agent)
+    routes_to_seat: str | None = None
+    #: observer-produced; the windows zeroed before staging (RL-011)
+    redaction_manifest: dict[str, object] | None = None
+    #: present only once APPROVED — a signed row against one world-state
+    approval: dict[str, object] | None = None
+    passed: bool = True
+    source_head: str | None = None
+    checks: dict[str, Check] = field(default_factory=dict)
+    boundary: tuple[str, ...] = STAGED_DEFAULT_BOUNDARY
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def bundle_digest(bundle_dir: Path) -> str:
+    """One digest committing to a whole bundle: sha256 of its ``SHA256SUMS``.
+
+    ``SHA256SUMS`` already lists the hash of every file in the bundle, so hashing
+    it binds the entire bundle to a single value — the value a ledger row carries
+    so the append-only chain commits to the evidence, not just to the fact that a
+    merge happened. Raises EvidenceError if the bundle has no ``SHA256SUMS``.
+    """
+    sums = bundle_dir / "SHA256SUMS"
+    if not sums.is_file():
+        raise EvidenceError(f"no SHA256SUMS in {bundle_dir}; not a bundle")
+    return _sha256(sums)
+
+
+def _render_readme(bundle: RoleTaskBundle, generated_utc: str) -> str:
+    lines = [
+        f"# {bundle.title}",
+        "",
+        f"**Schema:** `{SCHEMA}` · **Task:** `{bundle.task_id}` · "
+        f"**Generated:** {generated_utc}",
+        f"**Result:** {'PASSED' if bundle.passed else 'FAILED'}",
+        "",
+    ]
+    if bundle.role:
+        lines += [f"**Role:** `{bundle.role}`", ""]
+    if bundle.routing:
+        lines += ["## Routing", ""]
+        lines += [f"- **{k}:** `{v}`" for k, v in bundle.routing.items() if v]
+        lines += [""]
+    lines += ["## Tests — the executor's own run", ""]
+    lines += [_render_tests_line(bundle.tests), ""]
+    if bundle.review is not None:
+        lines += ["## Review — the executor's own reviewer leg", ""]
+        lines += [render_review_line(bundle.review), ""]
+    if bundle.checks:
+        lines += ["## Checks", "", "| Check | Result | Artifact |", "| --- | --- | --- |"]
+        for name, check in bundle.checks.items():
+            mark = "✅" if check.ok else "❌"
+            lines.append(f"| `{name}` | {mark} | {f'`{check.path}`' if check.path else '—'} |")
+        lines += [""]
+    lines += ["## Boundary — what this bundle does NOT prove", ""]
+    lines += [f"- {line}" for line in bundle.boundary]
+    lines += [
+        "",
+        "## Verify",
+        "",
+        "```sh",
+        "sha256sum -c SHA256SUMS",
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _render_tests_line(tests: dict[str, Any] | None) -> str:
+    """One sentence, from the recorded gate events only."""
+    if not tests:
+        return ("The executor recorded no test run. Nothing here says the tests "
+                "passed; nothing here says they were run.")
+    state = "passed" if tests.get("passed") else f"{tests.get('failing')} failing"
+    sandboxed = tests.get("sandboxed")
+    where = ("sandboxed" if sandboxed is True
+             else "UNSANDBOXED" if sandboxed is False else "sandboxing unknown")
+    intro = tests.get("introduced_failures")
+    return (f"pxx ran the project's test command {tests.get('runs')} time(s), "
+            f"{where}; last run: {state}"
+            + (f"; {intro} failure(s) introduced over the baseline" if intro is not None else "")
+            + f" (pxx run `{tests.get('run_id')}`).")
+
+
+def render_review_line(review: dict[str, Any]) -> str:
+    """One sentence from the recorded review fact only. Public: the AskPS
+    bridge re-derives the same fact phrase for phrase (the two repositories
+    cannot import each other), so the two surfaces cannot drift apart on what
+    "did not run" means. The closing sentence follows the recorded ``mode``,
+    never a constant, so widening ``REVIEW_MODES`` cannot leave a blocking
+    run described as advisory."""
+    if not review.get("requested"):
+        return f"reviewer not requested ({review.get('why') or 'no reason recorded'})."
+    mode = review.get("mode") or "mode unknown"
+    if not review.get("ran"):
+        return (f"reviewer requested ({mode}), DID NOT RUN: "
+                f"{review.get('why') or 'no reason recorded'}.")
+    seconds = review.get("review_seconds")
+    took = f", {float(seconds):.1f}s" if isinstance(seconds, int | float) else ""
+    stale = review.get("stale_rereviews") or 0
+    contributing = review.get("contributing") or []
+    unparseable = review.get("unparseable_review_count") or 0
+    tail = ""
+    if contributing:
+        tail += f"; {', '.join(contributing)}"
+    if stale:
+        tail += f"; {stale} re-review(s) after the commit moved"
+    if unparseable:
+        tail += f"; {unparseable} unparseable reply(ies)"
+    if mode == "advisory":
+        close = "Advisory: it was recorded, never a gate."
+    else:
+        # Reachable only once REVIEW_MODES (config_loader) admits more than
+        # advisory; say what that mode means rather than the advisory sentence.
+        close = (f"Mode {mode}: pxx applied the verdict as a gate "
+                 f"(last allowed {review.get('allowed')}).")
+    return (f"reviewer ({mode}) ran {review.get('runs')}x, last verdict "
+            f"{review.get('verdict')}, {review.get('findings')} finding(s){took}{tail} "
+            f"(pxx run `{review.get('run_id')}`). {close}")
+
+
+def _check_boundary(boundary: tuple[str, ...]) -> None:
+    if not boundary or not any(line.strip() for line in boundary):
+        raise EvidenceError(
+            "refusing to write a bundle with an empty boundary block. Every "
+            "bundle must state what it does not prove; see VISION.md "
+            "§ Reference formats."
+        )
+
+
+def _prepare_out(root: Path, task_id: str, generated_utc: str) -> Path:
+    stamp = generated_utc.replace(":", "").replace("-", "")
+    out = root / task_id / stamp
+    try:
+        (out / "artifacts").mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise EvidenceError(f"could not create bundle directory {out}: {exc}") from exc
+    return out
+
+
+def _redact_manifest_strings(node: object) -> list[str]:
+    """Redact every string leaf of the manifest in place; return the findings.
+    Hashes, paths and enum values match none of the patterns, so a clean
+    manifest is untouched — a test pins that."""
+    hits: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str):
+                red, found = redact(value)
+                if found:
+                    node[key] = red
+                    hits.extend(found)
+            else:
+                hits.extend(_redact_manifest_strings(value))
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            if isinstance(value, str):
+                red, found = redact(value)
+                if found:
+                    node[i] = red
+                    hits.extend(found)
+            else:
+                hits.extend(_redact_manifest_strings(value))
+    return hits
+
+
+def _with_redaction_section(readme: str, findings: dict[str, list[str]]) -> str:
+    """Insert a `## Redaction (RL-011)` section ahead of the shared `## Verify`
+    tail every family's README ends with. Placed here rather than in each
+    renderer so the section cannot be forgotten by a new family."""
+    if findings:
+        body = [
+            "Credential-shaped strings were removed from these artifacts before "
+            "the write; each is replaced in place by a `[REDACTED:<label>]` marker. "
+            "The unredacted content was never stored.",
+            "",
+            *(f"- `{where}`: {', '.join(hits)}" for where, hits in findings.items()),
+        ]
+    else:
+        body = [f"No credential-shaped strings found (pattern set `{PATTERN_SET}`)."]
+    section = "\n".join(["## Redaction (RL-011)", "", *body, ""])
+    marker = "\n## Verify\n"
+    if marker in readme:
+        return readme.replace(marker, f"\n{section}\n## Verify\n", 1)
+    return readme.rstrip("\n") + "\n\n" + section
+
+
+def _finalize(
+    out: Path,
+    manifest: dict[str, object],
+    readme: str,
+    text_artifacts: dict[str, str],
+    binary_artifacts: dict[str, bytes],
+) -> Path:
+    """Write artifacts, manifest.json, README.md and SHA256SUMS into ``out``.
+
+    This is the one place a bundle is written, so it is the one place RL-011
+    is enforced: every text artifact passes :func:`dx.redact.redact` first, and
+    the findings go into the manifest, the checks and the README. A family
+    cannot opt out by construction — there is no other writer.
+    """
+    # Artifacts first, then the README and every string leaf of the manifest:
+    # a VLM reply, an `expected` string or a ledger `evidence` field lands in
+    # manifest.json and README.md, not under artifacts/, and a filter that
+    # covered artifacts only would let a secret the model read off a screen
+    # straight through. Findings are keyed by the file they were found in.
+    text_artifacts, findings = redact_artifacts(text_artifacts)
+    findings = {f"artifacts/{name}": hits for name, hits in findings.items()}
+    readme, readme_hits = redact(readme)
+    if readme_hits:
+        findings["README.md"] = readme_hits
+    manifest_hits = _redact_manifest_strings(manifest)
+    if manifest_hits:
+        findings["manifest.json"] = manifest_hits
+    manifest["redaction"] = {"patterns": PATTERN_SET, "findings": findings}
+    checks = manifest.get("checks")
+    if isinstance(checks, dict):
+        checks["redaction_applied"] = Check(
+            ok=True,
+            detail=(
+                "; ".join(f"{n}: {', '.join(h)}" for n, h in findings.items())
+                if findings
+                else f"no credential-shaped strings found ({PATTERN_SET})"
+            ),
+        ).as_json()
+    readme = _with_redaction_section(readme, findings)
+    try:
+        for name, content in text_artifacts.items():
+            target = out / "artifacts" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        for name, blob in binary_artifacts.items():
+            target = out / "artifacts" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
+
+        (out / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        (out / "README.md").write_text(readme, encoding="utf-8")
+
+        # SHA256SUMS covers every file in the bundle except itself, in the exact
+        # `<hex>  <path>` form GNU coreutils expects, with paths relative to the
+        # bundle root so `sha256sum -c` works from inside the directory.
+        files = sorted(
+            p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS"
+        )
+        sums = "".join(f"{_sha256(p)}  {p.relative_to(out).as_posix()}\n" for p in files)
+        (out / "SHA256SUMS").write_text(sums, encoding="utf-8")
+    except OSError as exc:
+        raise EvidenceError(f"could not write bundle at {out}: {exc}") from exc
+
+    return out
+
+
+def write_bundle(bundle: RoleTaskBundle, root: Path, *, now: str | None = None) -> Path:
+    """Write ``bundle`` under ``root`` and return the bundle directory.
+
+    ``root`` is the evidence root; the bundle lands at
+    ``<root>/<task_id>/<timestamp>/`` so repeated runs of one task accumulate
+    rather than overwrite — an evidence store that silently replaces its own
+    history is not an evidence store.
+    """
+    _check_boundary(bundle.boundary)
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.task_id, generated_utc)
+    manifest: dict[str, object] = {
+        "schema": SCHEMA,
+        "title": bundle.title,
+        "task_id": bundle.task_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed, "tests": bundle.tests, "review": bundle.review},
+        "role": bundle.role,
+        "routing": bundle.routing,
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(out, manifest, _render_readme(bundle, generated_utc), bundle.artifacts, {})
+
+
+def _render_gui_readme(bundle: GuiVerificationBundle, generated_utc: str) -> str:
+    lines = [
+        f"# {bundle.title}",
+        "",
+        f"**Schema:** `{GUI_SCHEMA}` · **Task:** `{bundle.task_id}` · "
+        f"**Generated:** {generated_utc}",
+        f"**Result:** {'PASSED' if bundle.passed else 'FAILED'}",
+        "",
+        "## GUI verification",
+        "",
+        f"- **Expected:** {bundle.expected}",
+        f"- **Verdict:** `{bundle.verdict}`",
+        f"- **VLM answer:** {bundle.vlm_answer}",
+        f"- **VLM model:** `{bundle.vlm_model}`",
+        f"- **VLM endpoint:** `{bundle.vlm_endpoint}`",
+    ]
+    if bundle.capture:
+        lines.append(f"- **Capture:** `{bundle.capture}`")
+    lines += [f"- **Screenshot:** `artifacts/{bundle.screenshot_name}`"]
+    if bundle.observer:
+        lines += [
+            f"- **Observer attestation:** verified — key `{bundle.observer.get('key_id')}`, "
+            f"frame hash matches (`{str(bundle.observer.get('frame_hash'))[:16]}…`)"
+        ]
+    lines += [""]
+    if bundle.checks:
+        lines += ["## Checks", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
+        for name, check in bundle.checks.items():
+            mark = "✅" if check.ok else "❌"
+            lines.append(f"| `{name}` | {mark} | {check.detail or '—'} |")
+        lines += [""]
+    lines += ["## Boundary — what this bundle does NOT prove", ""]
+    lines += [f"- {line}" for line in bundle.boundary]
+    lines += ["", "## Verify", "", "```sh", "sha256sum -c SHA256SUMS", "```", ""]
+    return "\n".join(lines)
+
+
+def write_gui_bundle(
+    bundle: GuiVerificationBundle, root: Path, *, now: str | None = None
+) -> Path:
+    """Write a ``dx.gui_verification.v1`` bundle and return its directory.
+
+    Same core as :func:`write_bundle` — directory layout, SHA256SUMS,
+    mandatory boundary — with a family-specific tail (`gui_verification`) and
+    the screenshot stored as a binary artifact, since the whole point is that a
+    later reader can look at what the model was actually shown.
+    """
+    _check_boundary(bundle.boundary)
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.task_id, generated_utc)
+    manifest: dict[str, object] = {
+        "schema": GUI_SCHEMA,
+        "title": bundle.title,
+        "task_id": bundle.task_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed},
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "gui_verification": {
+            "expected": bundle.expected,
+            "verdict": bundle.verdict,
+            "vlm_answer": bundle.vlm_answer,
+            "vlm_model": bundle.vlm_model,
+            "vlm_endpoint": bundle.vlm_endpoint,
+            "capture": bundle.capture,
+            "screenshot": f"artifacts/{bundle.screenshot_name}",
+            "observer": bundle.observer,
+        },
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(
+        out,
+        manifest,
+        _render_gui_readme(bundle, generated_utc),
+        {},
+        {bundle.screenshot_name: bundle.screenshot},
+    )
+
+
+def _render_merge_readme(bundle: MergeGateBundle, generated_utc: str) -> str:
+    lines = [
+        f"# {bundle.title}",
+        "",
+        f"**Schema:** `{MERGE_SCHEMA}` · **Task:** `{bundle.task_id}` · "
+        f"**Generated:** {generated_utc}",
+        f"**Result:** {'PASSED' if bundle.passed else 'FAILED'}",
+        "",
+        "## Merge gate",
+        "",
+        f"- **Ledger:** `{bundle.ledger_repo}`",
+    ]
+    if bundle.role:
+        lines.append(f"- **Approve role:** `{bundle.role}`")
+    if bundle.head_before:
+        lines.append(f"- **Head checked against:** `{bundle.head_before}`")
+    if bundle.head_after:
+        lines.append(f"- **Head after merge rows:** `{bundle.head_after}`")
+    if bundle.signer:
+        lines.append(
+            f"- **Signer:** {bundle.signer.get('name')} "
+            f"<{bundle.signer.get('email') or 'no-email'}>"
+        )
+    if bundle.author_human is not None:
+        lines.append(f"- **Author:** {bundle.author_human}")
+    if bundle.approval_tier is not None:
+        tier = bundle.approval_tier
+        reasons = tier.get("reasons")
+        why = "; ".join(str(r) for r in reasons) if isinstance(reasons, list) else ""
+        lines.append(f"- **Approval tier:** `{tier.get('tier')}` — {why}")
+    if bundle.separation_of_duties is not None:
+        exception = (bundle.approval_tier or {}).get("sod_exception") if bundle.separation_of_duties else None
+        if not bundle.separation_of_duties:
+            verdict = "VIOLATED"
+        elif exception:
+            verdict = f"exception recorded — `sod_exception={exception}` (the author signed on a single-reviewer scope)"
+        else:
+            verdict = "held — checked against the tier (signer ≠ author)"
+        lines.append(f"- **Separation of duties:** {verdict}")
+    if bundle.gui is not None:
+        lines.append(f"- **GUI check (advisory):** {bundle.gui.get('answer')}")
+    if bundle.merged is not None:
+        lines.append(
+            f"- **Merged:** `{bundle.merged.get('task_sha')}` → "
+            f"`{bundle.merged.get('merge_commit')}` in `{bundle.merged.get('repo')}`"
+        )
+    else:
+        lines.append("- **Merged:** no `--repo` given — approval recorded, no git merge")
+    if bundle.failure:
+        lines.append(f"- **Failure:** {bundle.failure}")
+    lines.append("")
+    if bundle.checks:
+        lines += ["## Checks", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
+        for name, check in bundle.checks.items():
+            mark = "✅" if check.ok else "❌"
+            lines.append(f"| `{name}` | {mark} | {check.detail or '—'} |")
+        lines += [""]
+    lines += ["## Boundary — what this bundle does NOT prove", ""]
+    lines += [f"- {line}" for line in bundle.boundary]
+    lines += ["", "## Verify", "", "```sh", "sha256sum -c SHA256SUMS", "```", ""]
+    return "\n".join(lines)
+
+
+def write_merge_bundle(
+    bundle: MergeGateBundle, root: Path, *, now: str | None = None
+) -> Path:
+    """Write a ``dx.merge_gate.v1`` bundle and return its directory.
+
+    Same core as the other families. A failed gate gets a bundle too — the
+    reason a merge was refused is worth as much as a merge that passed.
+    """
+    _check_boundary(bundle.boundary)
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.task_id, generated_utc)
+    manifest: dict[str, object] = {
+        "schema": MERGE_SCHEMA,
+        "title": bundle.title,
+        "task_id": bundle.task_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed},
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "merge_gate": {
+            "ledger_repo": bundle.ledger_repo,
+            "role": bundle.role,
+            "head_before": bundle.head_before,
+            "head_after": bundle.head_after,
+            "signer": bundle.signer,
+            "author_human": bundle.author_human,
+            "separation_of_duties": bundle.separation_of_duties,
+            "approval_tier": bundle.approval_tier,
+            "gui": bundle.gui,
+            "merged": bundle.merged,
+            "failure": bundle.failure,
+        },
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(out, manifest, _render_merge_readme(bundle, generated_utc), {}, {})
+
+
+_STAGED_STATES = ("STAGED", "APPROVED", "EXECUTED", "REJECTED", "STALE")
+
+
+def _render_staged_readme(bundle: StagedActionBundle, generated_utc: str) -> str:
+    lines = [
+        f"# {bundle.title}",
+        "",
+        f"**Schema:** `{STAGED_SCHEMA}` · **Stage:** `{bundle.stage_id}` · "
+        f"**Generated:** {generated_utc}",
+        f"**State:** {bundle.state} · **Result:** {'PASSED' if bundle.passed else 'FAILED'}",
+        "",
+        "## Staged action",
+        "",
+        f"- **Bundle risk:** {bundle.bundle_risk_class}"
+        + (f" ({', '.join(bundle.risk_reasons)})" if bundle.risk_reasons else ""),
+        f"- **Per-action risk:** {', '.join(bundle.per_action_risk) or '—'}",
+    ]
+    if bundle.routes_to_seat:
+        lines.append(f"- **Routes to seat:** {bundle.routes_to_seat}")
+    lines += ["", "## World-state bindings", ""]
+    lines += [
+        f"- **Frame hash:** `{bundle.frame_hash}`",
+        f"- **Ledger head:** `{bundle.ledger_head}`",
+    ]
+    if bundle.trigger_rule:
+        lines.append(f"- **Trigger rule:** `{bundle.trigger_rule}`")
+    lines += ["- **Staged sequence:** `artifacts/staged_sequence.json`"]
+    if bundle.redaction_manifest is not None:
+        lines.append("- **Redaction manifest:** `artifacts/redaction_manifest.json`")
+    if bundle.approval is not None:
+        lines.append(
+            f"- **Approval:** {bundle.approval.get('approval_class')} "
+            f"(mechanism: {bundle.approval.get('mechanism')})"
+        )
+    lines.append("")
+    if bundle.checks:
+        lines += ["## Checks", "", "| Check | Result | Detail |", "| --- | --- | --- |"]
+        for name, check in bundle.checks.items():
+            mark = "✅" if check.ok else "❌"
+            lines.append(f"| `{name}` | {mark} | {check.detail or '—'} |")
+        lines += [""]
+    lines += ["## Boundary — what this bundle does NOT prove", ""]
+    lines += [f"- {line}" for line in bundle.boundary]
+    lines += ["", "## Verify", "", "```sh", "sha256sum -c SHA256SUMS", "```", ""]
+    return "\n".join(lines)
+
+
+_DERIVED_MECHANISMS = frozenset(
+    {MECHANISM_STANDARD, MECHANISM_FALLBACK, MECHANISM_TEST_DOUBLE}
+)
+
+
+def _validate_approval(approval: dict[str, object] | None) -> None:
+    """An approval's mechanism must be a *verifier-derived* value, never an
+    arbitrary string the signing side wrote (RL-010, Decision 0017). This is the
+    wiring's teeth: a hand-asserted label like "touch-sign token" cannot reach a
+    recorded row — the mechanism comes from dx.staged_action.build_approval_record,
+    which derives it from the signing key's residency."""
+    if approval is None:
+        return
+    mechanism = approval.get("mechanism")
+    if mechanism not in _DERIVED_MECHANISMS:
+        raise EvidenceError(
+            f"approval mechanism {mechanism!r} is not a verifier-derived value "
+            f"{sorted(_DERIVED_MECHANISMS)}; build the approval with "
+            "dx.staged_action.build_approval_record so the mechanism is derived, "
+            "never asserted by the signer."
+        )
+
+
+def write_staged_action_bundle(
+    bundle: StagedActionBundle, root: Path, *, now: str | None = None
+) -> Path:
+    """Write a ``dx.staged_action.v1`` bundle and return its directory.
+
+    Same core as the other families — directory layout, ``SHA256SUMS``, mandatory
+    boundary. A rejected or stale stage gets a bundle too; the reason a proposal
+    did not proceed is worth as much as one that did. The staged sequence and the
+    redaction manifest are stored as artifacts; the ledger only ever sees hashes.
+    """
+    _check_boundary(bundle.boundary)
+    if bundle.state not in _STAGED_STATES:
+        raise EvidenceError(
+            f"unknown staged-action state {bundle.state!r}; expected one of {_STAGED_STATES}"
+        )
+    _validate_approval(bundle.approval)
+    generated_utc = now or _utc_now()
+    out = _prepare_out(root, bundle.stage_id, generated_utc)
+
+    text_artifacts = {
+        "staged_sequence.json": json.dumps(
+            bundle.staged_sequence, indent=2, sort_keys=True
+        )
+        + "\n"
+    }
+    if bundle.redaction_manifest is not None:
+        text_artifacts["redaction_manifest.json"] = (
+            json.dumps(bundle.redaction_manifest, indent=2, sort_keys=True) + "\n"
+        )
+
+    manifest: dict[str, object] = {
+        "schema": STAGED_SCHEMA,
+        "title": bundle.title,
+        "stage_id": bundle.stage_id,
+        "source_head": bundle.source_head,
+        "generated_utc": generated_utc,
+        "result": {"passed": bundle.passed},
+        "checks": {k: v.as_json() for k, v in bundle.checks.items()},
+        "staged_action": {
+            "state": bundle.state,
+            "risk": {
+                "per_action": bundle.per_action_risk,
+                "bundle_class": bundle.bundle_risk_class,
+                "reasons": bundle.risk_reasons,
+                "any_T3": "T3" in bundle.per_action_risk,
+            },
+            "bindings": {
+                "frame_hash": bundle.frame_hash,
+                "ledger_head": bundle.ledger_head,
+                "trigger_rule": bundle.trigger_rule,
+            },
+            "routes_to_seat": bundle.routes_to_seat,
+            "staged_sequence": "artifacts/staged_sequence.json",
+            "redaction_manifest": (
+                "artifacts/redaction_manifest.json"
+                if bundle.redaction_manifest is not None
+                else None
+            ),
+            "approval": bundle.approval,
+        },
+        "boundary": list(bundle.boundary),
+    }
+    return _finalize(
+        out, manifest, _render_staged_readme(bundle, generated_utc), text_artifacts, {}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Evidence-store location and inventory
+# ---------------------------------------------------------------------------
+
+#: Where dx writes bundles when neither ``--evidence-dir`` nor ``DX_EVIDENCE_DIR``
+#: is given. Deliberately outside any repo under edit.
+DEFAULT_EVIDENCE_ROOT = Path("~/.local/state/dx/evidence").expanduser()
+
+
+def default_evidence_root() -> Path:
+    """The store dx would write to with no per-command override: ``DX_EVIDENCE_DIR``
+    if set, else :data:`DEFAULT_EVIDENCE_ROOT`. (Per-command ``--evidence-dir`` wins
+    over both, but that is the command's concern, not the ambient store's.)"""
+    env = os.environ.get("DX_EVIDENCE_DIR")
+    return Path(env).expanduser() if env else DEFAULT_EVIDENCE_ROOT
+
+
+@dataclass(frozen=True)
+class StoreSummary:
+    """What is sitting in an evidence store, by family. ``referenceable`` counts
+    the one family a ledger row can bind (``dx.merge_gate.v1`` — A1/0.18.0): those
+    must not be pruned while a ledger row names their digest."""
+
+    root: Path
+    total: int
+    by_family: Mapping[str, int]  # read-only; mutating it would desync total/referenceable
+    referenceable: int
+
+
+def summarize_store(root: Path) -> StoreSummary:
+    """Inventory the bundles under ``root`` (``<task>/<timestamp>/manifest.json``)
+    by schema family, so a default store never becomes an unwatched pile. Pure and
+    read-only; a missing store summarizes as empty. A manifest that will not read
+    is counted ``"unreadable"``, and one that is valid JSON but not an object (a
+    list, ``null``, a string) is counted ``"malformed"`` — never raising, so a
+    single odd file cannot blank the whole inventory."""
+    by_family: Counter[str] = Counter()
+    if root.is_dir():
+        for manifest in root.glob("*/*/manifest.json"):
+            try:
+                decoded = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                by_family["unreadable"] += 1
+                continue
+            schema = decoded.get("schema", "unknown") if isinstance(decoded, dict) else "malformed"
+            by_family[str(schema)] += 1
+    return StoreSummary(
+        root=root,
+        total=sum(by_family.values()),
+        by_family=MappingProxyType(dict(by_family)),
+        referenceable=by_family.get(MERGE_SCHEMA, 0),
+    )
