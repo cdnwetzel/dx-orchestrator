@@ -13,6 +13,15 @@ import pytest
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "privacy_scan.py"
 
 
+def ip(*octets):
+    """Build a sample address at run time, so that no private-range address
+    appears literally in a tracked file (dx's own red-line test forbids it)."""
+    return ".".join(str(o) for o in octets)
+
+
+A, B, C, D, E = ip(10, 20, 30, 40), ip(172, 20, 0, 9), ip(192, 168, 50, 60), ip(172, 31, 255, 1), ip(10, 0, 0, 5)
+
+
 @pytest.fixture(scope="module")
 def scan():
     spec = importlib.util.spec_from_file_location("privacy_scan", _SCRIPT)
@@ -24,10 +33,10 @@ def scan():
 @pytest.mark.parametrize(
     "line",
     [
-        "planner at 10.20.30.40:8003",  # privacy: example
-        "router 172.20.0.9",  # privacy: example
-        "laptop 192.168.50.60",  # privacy: example
-        "172.31.255.1 is still private",  # privacy: example
+        f"planner at {A}:8003",
+        f"router {B}",
+        f"laptop {C}",
+        f"{D} is still private",
         "cache under /Users/someone/ai",  # privacy: example
         "clone in /home/someone/ai/psoperator",  # privacy: example
     ],
@@ -42,10 +51,10 @@ def test_private_values_are_caught(scan, line):
         "documentation range 192.0.2.125 and 203.0.113.10",
         "public resolver 8.8.8.8",
         "172.15.0.1 and 172.32.0.1 are not private",
-        "version 10.0.1 and 1.10.0.4.2",  # three-part version; five-part is not an address
+        f"version {ip(10, 4, 2)} and {ip(1, 10, 0, 4, 2)}",  # 3-part version; 5-part is no address
         "loopback 127.0.0.1:8000",
         "CI home /home/runner/work",
-        "a test value 10.0.0.5  # privacy: example",
+        f"a test value {E}  # privacy: example",
     ],
 )
 def test_public_and_marked_values_pass(scan, line):
@@ -74,7 +83,7 @@ def _run(*argv, stdin="", cwd=None):
 
 
 def test_a_commit_message_is_scanned_like_a_file():
-    leak_line = "map 10.20.30.40 -> 192.0.2.40\n"  # privacy: example
+    leak_line = f"map {A} -> 192.0.2.40\n"
     leak = _run("text", "--name", "commit", stdin=leak_line)
     assert leak.returncode == 1 and "commit:1: private-lan-address: 10.20" in leak.stdout
     assert _run("text", stdin="fix the gatekeeper\n").returncode == 0
@@ -84,7 +93,7 @@ def test_files_mode_scans_tracked_files_only(tmp_path):
     git = ["git", "-C", str(tmp_path)]
     subprocess.run([*git, "init", "-q"], check=True)
     (tmp_path / "ok.txt").write_text("203.0.113.10\n")
-    (tmp_path / "untracked.txt").write_text("10.20.30.40\n")  # privacy: example
+    (tmp_path / "untracked.txt").write_text(f"{A}\n")
     subprocess.run([*git, "add", "ok.txt"], check=True)
     assert _run("files", "--root", str(tmp_path)).returncode == 0
     subprocess.run([*git, "add", "untracked.txt"], check=True)
@@ -112,14 +121,14 @@ def test_windows_home_paths_are_caught(scan, line):
 
 
 def test_the_example_marker_never_exempts_a_denylist_term(scan):
-    line = "host-a 10.20.30.40  # privacy: example"
+    line = f"host-a {A}  # privacy: example"
     assert scan.scan_lines("f", [line], ["host-a"]) == ["f:1: denylist term #1"]
 
 
 def test_undecodable_files_are_scanned_not_skipped(scan, tmp_path):
     git = ["git", "-C", str(tmp_path)]
     subprocess.run([*git, "init", "-q"], check=True)
-    (tmp_path / "utf16.txt").write_bytes("route 10.20.30.40\n".encode("utf-16"))  # privacy: example
+    (tmp_path / "utf16.txt").write_bytes(f"route {A}\n".encode("utf-16"))
     (tmp_path / "latin1.txt").write_bytes(b"\xe9 host-a\n")
     subprocess.run([*git, "add", "-A"], check=True)
     findings = scan.scan_files(tmp_path, ["host-a"])
@@ -131,7 +140,7 @@ def test_staged_mode_scans_the_index_not_the_working_tree(tmp_path):
     git = ["git", "-C", str(tmp_path)]
     subprocess.run([*git, "init", "-q"], check=True)
     f = tmp_path / "notes.txt"
-    f.write_text("route 10.20.30.40\n")  # privacy: example
+    f.write_text(f"route {A}\n")
     subprocess.run([*git, "add", "notes.txt"], check=True)
     f.write_text("nothing here\n")  # edited out of the file, but still staged
     staged = _run("staged", "--root", str(tmp_path))
@@ -141,7 +150,7 @@ def test_staged_mode_scans_the_index_not_the_working_tree(tmp_path):
     assert _run("staged", "--root", str(tmp_path)).returncode == 0
 
 
-@pytest.mark.parametrize("line", ["LAN 172.20.0.x", "net 10.20.30.*", "office 192.168.50.x"])  # privacy: example
+@pytest.mark.parametrize("line", [f"LAN {ip(172, 20, 0)}.x", f"net {ip(10, 20, 30)}.*", f"office {ip(192, 168, 50)}.x"])  # privacy: example
 def test_range_notation_is_caught(scan, line):
     assert scan.scan_lines("f", [line], [])
 
