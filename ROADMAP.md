@@ -324,8 +324,11 @@ Pointing dx at `examples/run_isolated.py` would not fix that: it submits one
 action, and its element planner had 0 elements to target on the work node. The
 fix belongs to psoperator, as R-306 (a service-mode loop with `psoperator run`;
 see psoperator `docs/service-loop.md`). dx switches after that lands. Until then,
-the bridge exports the deployed kill-switch path, so `psoperator kill` stops an
-in-process GUI run.
+the bridge's unit exports the deployed kill-switch path, so `psoperator kill`
+stops an in-process GUI run. dx does not read this path from the manifest:
+`_env()` and `emergency_stop()` inherit it from the bridge's environment. The
+bridge, the gatekeeper, and any shell that runs `psoperator kill` must therefore
+all carry the same absolute `PSOPERATOR_KILL_SWITCH_PATH`.
 
 ### 3.1b — Bind every run-record lookup to this run ([#56])
 
