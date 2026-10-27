@@ -316,6 +316,20 @@ gatekeeper and executor — the input-injection path that `dx run --gui` would
 drive — are not wired here; they belong to whichever box runs that path (the
 Orin in the original plan), not the GUI-verification host.
 
+**Update 2026-10-27:** all three services now run as OpenRC units on a work node,
+with the executor in dry-run, and the manifest carries a `psoperator` section.
+dx does not use them yet. `launch_gui_task` runs psoperator's
+`examples/run_agent.py`, which builds its own in-process gatekeeper and executor.
+Pointing dx at `examples/run_isolated.py` would not fix that: it submits one
+action, and its element planner had 0 elements to target on the work node. The
+fix belongs to psoperator, as R-306 (a service-mode loop with `psoperator run`;
+see psoperator `docs/service-loop.md`). dx switches after that lands. Until then,
+the bridge's unit exports the deployed kill-switch path, so `psoperator kill`
+stops an in-process GUI run. dx does not read this path from the manifest:
+`_env()` and `emergency_stop()` inherit it from the bridge's environment. The
+bridge, the gatekeeper, and any shell that runs `psoperator kill` must therefore
+all carry the same absolute `PSOPERATOR_KILL_SWITCH_PATH`.
+
 ### 3.1b — Bind every run-record lookup to this run ([#56])
 
 dx finds pxx's run directory as the newest one by modification time
