@@ -40,7 +40,7 @@ so every way the gate *fails* can be reproduced. It attests to no real work.
 Point `DX_LEDGER_REPO`, or `ledger.repo` in the manifest, at your own ledger to
 gate real merges.
 
-The test suite is the part built to be evaluated from outside: 1307 tests
+The test suite is the part built to be evaluated from outside: 1311 tests
 collected — all pass in a full local run with psoperator and Pillow installed;
 without them those tests skip (CI installs them), and the count-claim
 check itself stands down unless the invocation is exactly `pytest tests` —
